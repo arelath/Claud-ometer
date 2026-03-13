@@ -18,6 +18,18 @@ import type {
   SessionMessage,
 } from './types';
 
+async function forEachJsonlLine(filePath: string, callback: (msg: SessionMessage) => void): Promise<void> {
+  const fileStream = fs.createReadStream(filePath);
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    try {
+      const msg = JSON.parse(line) as SessionMessage;
+      callback(msg);
+    } catch { /* skip malformed line */ }
+  }
+}
+
 function getClaudeDir(): string {
   if (getActiveDataSource() === 'imported') {
     return path.join(getImportDir(), 'claude-data');
@@ -54,7 +66,34 @@ function projectIdToFullPath(id: string): string {
   return id.replace(/^-/, '/').replace(/-/g, '/');
 }
 
-export function getProjects(): ProjectInfo[] {
+function extractCwdFromSession(filePath: string): string | null {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(8192); // Read first 8KB, enough for first few lines
+    const bytesRead = fs.readSync(fd, buffer, 0, 8192, 0);
+    fs.closeSync(fd);
+    const text = buffer.toString('utf-8', 0, bytesRead);
+    const lines = text.split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.cwd) return msg.cwd;
+      } catch { /* skip partial line */ }
+    }
+  } catch { /* skip */ }
+  return null;
+}
+
+function getProjectNameFromDir(projectPath: string, projectId: string): { name: string; fullPath: string } {
+  const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+  if (jsonlFiles.length > 0) {
+    const cwd = extractCwdFromSession(path.join(projectPath, jsonlFiles[0]));
+    if (cwd) return { name: path.basename(cwd), fullPath: cwd };
+  }
+  return { name: projectIdToName(projectId), fullPath: projectIdToFullPath(projectId) };
+}
+
+export async function getProjects(): Promise<ProjectInfo[]> {
   if (!fs.existsSync(getProjectsDir())) return [];
   const entries = fs.readdirSync(getProjectsDir());
   const projects: ProjectInfo[] = [];
@@ -78,37 +117,36 @@ export function getProjects(): ProjectInfo[] {
       const mtime = stat.mtime.toISOString();
       if (!lastActive || mtime > lastActive) lastActive = mtime;
 
-      const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line) as SessionMessage;
-          if (msg.type === 'user') totalMessages++;
-          if (msg.type === 'assistant') {
-            totalMessages++;
-            const model = msg.message?.model || '';
-            if (model) modelsSet.add(model);
-            const usage = msg.message?.usage;
-            if (usage) {
-              const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
-                (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-              totalTokens += tokens;
-              estimatedCost += calculateCost(
-                model,
-                usage.input_tokens || 0,
-                usage.output_tokens || 0,
-                usage.cache_creation_input_tokens || 0,
-                usage.cache_read_input_tokens || 0
-              );
-            }
+      await forEachJsonlLine(filePath, (msg) => {
+        if (msg.type === 'user') totalMessages++;
+        if (msg.type === 'assistant') {
+          totalMessages++;
+          const model = msg.message?.model || '';
+          if (model) modelsSet.add(model);
+          const usage = msg.message?.usage;
+          if (usage) {
+            const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
+              (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+            totalTokens += tokens;
+            estimatedCost += calculateCost(
+              model,
+              usage.input_tokens || 0,
+              usage.output_tokens || 0,
+              usage.cache_creation_input_tokens || 0,
+              usage.cache_read_input_tokens || 0
+            );
           }
-        } catch { /* skip */ }
-      }
+        }
+      });
     }
+
+    const firstSessionPath = path.join(projectPath, jsonlFiles[0]);
+    const cwd = extractCwdFromSession(firstSessionPath);
 
     projects.push({
       id: entry,
-      name: projectIdToName(entry),
-      path: projectIdToFullPath(entry),
+      name: cwd ? path.basename(cwd) : projectIdToName(entry),
+      path: cwd || projectIdToFullPath(entry),
       sessionCount: jsonlFiles.length,
       totalMessages,
       totalTokens,
@@ -121,16 +159,20 @@ export function getProjects(): ProjectInfo[] {
   return projects.sort((a, b) => b.lastActive.localeCompare(a.lastActive));
 }
 
-export function getProjectSessions(projectId: string): SessionInfo[] {
+export async function getProjectSessions(projectId: string): Promise<SessionInfo[]> {
   const projectPath = path.join(getProjectsDir(), projectId);
   if (!fs.existsSync(projectPath)) return [];
 
+  const { name: projectName } = getProjectNameFromDir(projectPath, projectId);
   const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
-  return jsonlFiles.map(file => parseSessionFile(path.join(projectPath, file), projectId, projectIdToName(projectId)))
-    .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const sessions: SessionInfo[] = [];
+  for (const file of jsonlFiles) {
+    sessions.push(await parseSessionFile(path.join(projectPath, file), projectId, projectName));
+  }
+  return sessions.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }
 
-export function getSessions(limit = 50, offset = 0): SessionInfo[] {
+export async function getSessions(limit = 50, offset = 0): Promise<SessionInfo[]> {
   const allSessions: SessionInfo[] = [];
 
   if (!fs.existsSync(getProjectsDir())) return [];
@@ -140,9 +182,10 @@ export function getSessions(limit = 50, offset = 0): SessionInfo[] {
     const projectPath = path.join(getProjectsDir(), entry);
     if (!fs.statSync(projectPath).isDirectory()) continue;
 
+    const { name: projectName } = getProjectNameFromDir(projectPath, entry);
     const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
     for (const file of jsonlFiles) {
-      allSessions.push(parseSessionFile(path.join(projectPath, file), entry, projectIdToName(entry)));
+      allSessions.push(await parseSessionFile(path.join(projectPath, file), entry, projectName));
     }
   }
 
@@ -150,8 +193,7 @@ export function getSessions(limit = 50, offset = 0): SessionInfo[] {
   return allSessions.slice(offset, offset + limit);
 }
 
-function parseSessionFile(filePath: string, projectId: string, projectName: string): SessionInfo {
-  const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
   const sessionId = path.basename(filePath, '.jsonl');
 
   let firstTimestamp = '';
@@ -176,66 +218,63 @@ function parseSessionFile(filePath: string, projectId: string, projectName: stri
   let totalTokensSaved = 0;
   const compactionTimestamps: string[] = [];
 
-  for (const line of lines) {
-    try {
-      const msg = JSON.parse(line) as SessionMessage;
-      if (msg.timestamp) {
-        if (!firstTimestamp) firstTimestamp = msg.timestamp;
-        lastTimestamp = msg.timestamp;
-      }
-      if (msg.gitBranch && !gitBranch) gitBranch = msg.gitBranch;
-      if (msg.cwd && !cwd) cwd = msg.cwd;
-      if (msg.version && !version) version = msg.version;
+  await forEachJsonlLine(filePath, (msg) => {
+    if (msg.timestamp) {
+      if (!firstTimestamp) firstTimestamp = msg.timestamp;
+      lastTimestamp = msg.timestamp;
+    }
+    if (msg.gitBranch && !gitBranch) gitBranch = msg.gitBranch;
+    if (msg.cwd && !cwd) cwd = msg.cwd;
+    if (msg.version && !version) version = msg.version;
 
-      // Track compaction events
-      if (msg.compactMetadata) {
-        compactions++;
-        if (msg.timestamp) compactionTimestamps.push(msg.timestamp);
-      }
-      if (msg.microcompactMetadata) {
-        microcompactions++;
-        totalTokensSaved += msg.microcompactMetadata.tokensSaved || 0;
-        if (msg.timestamp) compactionTimestamps.push(msg.timestamp);
-      }
+    // Track compaction events
+    if (msg.compactMetadata) {
+      compactions++;
+      if (msg.timestamp) compactionTimestamps.push(msg.timestamp);
+    }
+    if (msg.microcompactMetadata) {
+      microcompactions++;
+      totalTokensSaved += msg.microcompactMetadata.tokensSaved || 0;
+      if (msg.timestamp) compactionTimestamps.push(msg.timestamp);
+    }
 
-      if (msg.type === 'user') {
-        if (msg.message?.role === 'user' && typeof msg.message.content === 'string') {
-          userMessageCount++;
-        } else if (msg.message?.role === 'user') {
-          userMessageCount++;
-        }
+    if (msg.type === 'user') {
+      if (msg.message?.role === 'user' && typeof msg.message.content === 'string') {
+        userMessageCount++;
+      } else if (msg.message?.role === 'user') {
+        userMessageCount++;
       }
-      if (msg.type === 'assistant') {
-        assistantMessageCount++;
-        const model = msg.message?.model || '';
-        if (model) modelsSet.add(model);
-        const usage = msg.message?.usage;
-        if (usage) {
-          totalInputTokens += usage.input_tokens || 0;
-          totalOutputTokens += usage.output_tokens || 0;
-          totalCacheReadTokens += usage.cache_read_input_tokens || 0;
-          totalCacheWriteTokens += usage.cache_creation_input_tokens || 0;
-          estimatedCost += calculateCost(
-            model,
-            usage.input_tokens || 0,
-            usage.output_tokens || 0,
-            usage.cache_creation_input_tokens || 0,
-            usage.cache_read_input_tokens || 0
-          );
-        }
-        const content = msg.message?.content;
-        if (Array.isArray(content)) {
-          for (const c of content) {
-            if (c && typeof c === 'object' && 'type' in c && c.type === 'tool_use') {
-              toolCallCount++;
-              const name = ('name' in c ? c.name : 'unknown') as string;
-              toolsUsed[name] = (toolsUsed[name] || 0) + 1;
-            }
+    }
+    if (msg.type === 'assistant') {
+      assistantMessageCount++;
+      const model = msg.message?.model || '';
+      if (model) modelsSet.add(model);
+      const usage = msg.message?.usage;
+      if (usage) {
+        totalInputTokens += usage.input_tokens || 0;
+        totalOutputTokens += usage.output_tokens || 0;
+        totalCacheReadTokens += usage.cache_read_input_tokens || 0;
+        totalCacheWriteTokens += usage.cache_creation_input_tokens || 0;
+        estimatedCost += calculateCost(
+          model,
+          usage.input_tokens || 0,
+          usage.output_tokens || 0,
+          usage.cache_creation_input_tokens || 0,
+          usage.cache_read_input_tokens || 0
+        );
+      }
+      const content = msg.message?.content;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          if (c && typeof c === 'object' && 'type' in c && c.type === 'tool_use') {
+            toolCallCount++;
+            const name = ('name' in c ? c.name : 'unknown') as string;
+            toolsUsed[name] = (toolsUsed[name] || 0) + 1;
           }
         }
       }
-    } catch { /* skip */ }
-  }
+    }
+  });
 
   const duration = firstTimestamp && lastTimestamp
     ? new Date(lastTimestamp).getTime() - new Date(firstTimestamp).getTime()
@@ -284,7 +323,8 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
     const filePath = path.join(projectPath, `${sessionId}.jsonl`);
     if (!fs.existsSync(filePath)) continue;
 
-    const sessionInfo = parseSessionFile(filePath, entry, projectIdToName(entry));
+    const { name: projectName } = getProjectNameFromDir(projectPath, entry);
+    const sessionInfo = await parseSessionFile(filePath, entry, projectName);
     const messages: SessionMessageDisplay[] = [];
 
     const fileStream = fs.createReadStream(filePath);
@@ -353,7 +393,7 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
   return null;
 }
 
-export function searchSessions(query: string, limit = 50): SessionInfo[] {
+export async function searchSessions(query: string, limit = 50): Promise<SessionInfo[]> {
   if (!query.trim()) return getSessions(limit, 0);
 
   const lowerQuery = query.toLowerCase();
@@ -369,50 +409,45 @@ export function searchSessions(query: string, limit = 50): SessionInfo[] {
     const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
     for (const file of jsonlFiles) {
       const filePath = path.join(projectPath, file);
-      const fileContent = fs.readFileSync(filePath, 'utf-8');
-      const lines = fileContent.split('\n').filter(Boolean);
 
       let hasMatch = false;
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line) as SessionMessage;
-          if (msg.type === 'user' && msg.message?.role === 'user') {
-            const content = msg.message.content;
-            if (typeof content === 'string' && content.toLowerCase().includes(lowerQuery)) {
-              hasMatch = true;
-              break;
-            }
-            if (Array.isArray(content)) {
-              for (const c of content) {
-                if (c && typeof c === 'object' && 'type' in c && c.type === 'text' && 'text' in c) {
-                  if ((c.text as string).toLowerCase().includes(lowerQuery)) {
-                    hasMatch = true;
-                    break;
-                  }
+      await forEachJsonlLine(filePath, (msg) => {
+        if (hasMatch) return;
+        if (msg.type === 'user' && msg.message?.role === 'user') {
+          const content = msg.message.content;
+          if (typeof content === 'string' && content.toLowerCase().includes(lowerQuery)) {
+            hasMatch = true;
+            return;
+          }
+          if (Array.isArray(content)) {
+            for (const c of content) {
+              if (c && typeof c === 'object' && 'type' in c && c.type === 'text' && 'text' in c) {
+                if ((c.text as string).toLowerCase().includes(lowerQuery)) {
+                  hasMatch = true;
+                  return;
                 }
               }
-              if (hasMatch) break;
             }
           }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            const content = msg.message.content;
-            if (Array.isArray(content)) {
-              for (const c of content) {
-                if (c && typeof c === 'object' && 'type' in c && c.type === 'text' && 'text' in c) {
-                  if ((c.text as string).toLowerCase().includes(lowerQuery)) {
-                    hasMatch = true;
-                    break;
-                  }
+        }
+        if (msg.type === 'assistant' && msg.message?.content) {
+          const content = msg.message.content;
+          if (Array.isArray(content)) {
+            for (const c of content) {
+              if (c && typeof c === 'object' && 'type' in c && c.type === 'text' && 'text' in c) {
+                if ((c.text as string).toLowerCase().includes(lowerQuery)) {
+                  hasMatch = true;
+                  return;
                 }
               }
-              if (hasMatch) break;
             }
           }
-        } catch { /* skip */ }
-      }
+        }
+      });
 
       if (hasMatch) {
-        matchingSessions.push(parseSessionFile(filePath, entry, projectIdToName(entry)));
+        const { name: projectName } = getProjectNameFromDir(projectPath, entry);
+        matchingSessions.push(await parseSessionFile(filePath, entry, projectName));
       }
     }
   }
@@ -459,7 +494,7 @@ function getRecentSessionFiles(afterDate: string): string[] {
   return files;
 }
 
-function computeSupplementalStats(afterDate: string): SupplementalStats {
+async function computeSupplementalStats(afterDate: string): Promise<SupplementalStats> {
   const cacheKey = afterDate + ':' + getActiveDataSource();
   if (supplementalCache && supplementalCache.key === cacheKey && Date.now() - supplementalCache.ts < SUPPLEMENTAL_TTL_MS) {
     return supplementalCache.data;
@@ -477,115 +512,102 @@ function computeSupplementalStats(afterDate: string): SupplementalStats {
   let estimatedCost = 0;
 
   for (const filePath of files) {
-    const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
-
     let firstTimestamp = '';
     let sessionCounted = false;
+    let firstQualifyingDate = '';
 
-    for (const line of lines) {
-      try {
-        const msg = JSON.parse(line) as SessionMessage;
-        if (!msg.timestamp) continue;
+    await forEachJsonlLine(filePath, (msg) => {
+      if (!msg.timestamp) return;
 
-        if (!firstTimestamp) firstTimestamp = msg.timestamp;
+      if (!firstTimestamp) firstTimestamp = msg.timestamp;
 
-        const msgDate = msg.timestamp.slice(0, 10);
+      const msgDate = msg.timestamp.slice(0, 10);
 
-        // Only count messages strictly after the cache boundary day
-        if (afterDate && msgDate <= afterDate) continue;
+      // Only count messages strictly after the cache boundary day
+      if (afterDate && msgDate <= afterDate) return;
 
-        // Count session once based on first qualifying message
-        if (!sessionCounted) {
-          totalSessions++;
-          sessionCounted = true;
+      // Count session once based on first qualifying message
+      if (!sessionCounted) {
+        totalSessions++;
+        sessionCounted = true;
+        firstQualifyingDate = msgDate;
+      }
+
+      const hour = msg.timestamp.slice(11, 13);
+
+      if (msg.type === 'user' || msg.type === 'assistant') {
+        totalMessages++;
+
+        // dailyActivity
+        let day = dailyMap.get(msgDate);
+        if (!day) {
+          day = { date: msgDate, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+          dailyMap.set(msgDate, day);
         }
+        day.messageCount++;
+      }
 
-        const hour = msg.timestamp.slice(11, 13);
+      if (msg.type === 'assistant') {
+        const model = msg.message?.model || '';
+        const usage = msg.message?.usage;
 
-        if (msg.type === 'user' || msg.type === 'assistant') {
-          totalMessages++;
+        if (usage) {
+          const input = usage.input_tokens || 0;
+          const output = usage.output_tokens || 0;
+          const cacheRead = usage.cache_read_input_tokens || 0;
+          const cacheWrite = usage.cache_creation_input_tokens || 0;
+          const tokens = input + output + cacheRead + cacheWrite;
+          totalTokens += tokens;
 
-          // dailyActivity
-          let day = dailyMap.get(msgDate);
-          if (!day) {
-            day = { date: msgDate, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
-            dailyMap.set(msgDate, day);
-          }
-          day.messageCount++;
-        }
+          const cost = calculateCost(model, input, output, cacheWrite, cacheRead);
+          estimatedCost += cost;
 
-        if (msg.type === 'assistant') {
-          const model = msg.message?.model || '';
-          const usage = msg.message?.usage;
-
-          if (usage) {
-            const input = usage.input_tokens || 0;
-            const output = usage.output_tokens || 0;
-            const cacheRead = usage.cache_read_input_tokens || 0;
-            const cacheWrite = usage.cache_creation_input_tokens || 0;
-            const tokens = input + output + cacheRead + cacheWrite;
-            totalTokens += tokens;
-
-            const cost = calculateCost(model, input, output, cacheWrite, cacheRead);
-            estimatedCost += cost;
-
-            // modelUsage
-            if (model) {
-              if (!modelUsage[model]) {
-                modelUsage[model] = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
-              }
-              modelUsage[model].inputTokens += input;
-              modelUsage[model].outputTokens += output;
-              modelUsage[model].cacheReadInputTokens += cacheRead;
-              modelUsage[model].cacheCreationInputTokens += cacheWrite;
+          // modelUsage
+          if (model) {
+            if (!modelUsage[model]) {
+              modelUsage[model] = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
             }
-
-            // dailyModelTokens
-            if (model) {
-              let dayModel = dailyModelMap.get(msgDate);
-              if (!dayModel) {
-                dayModel = {};
-                dailyModelMap.set(msgDate, dayModel);
-              }
-              dayModel[model] = (dayModel[model] || 0) + tokens;
-            }
-
-            // hourCounts
-            hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+            modelUsage[model].inputTokens += input;
+            modelUsage[model].outputTokens += output;
+            modelUsage[model].cacheReadInputTokens += cacheRead;
+            modelUsage[model].cacheCreationInputTokens += cacheWrite;
           }
 
-          // tool calls
-          const content = msg.message?.content;
-          if (Array.isArray(content)) {
-            let toolCalls = 0;
-            for (const c of content) {
-              if (c && typeof c === 'object' && 'type' in c && c.type === 'tool_use') {
-                toolCalls++;
-              }
+          // dailyModelTokens
+          if (model) {
+            let dayModel = dailyModelMap.get(msgDate);
+            if (!dayModel) {
+              dayModel = {};
+              dailyModelMap.set(msgDate, dayModel);
             }
-            if (toolCalls > 0) {
-              const day = dailyMap.get(msgDate);
-              if (day) day.toolCallCount += toolCalls;
+            dayModel[model] = (dayModel[model] || 0) + tokens;
+          }
+
+          // hourCounts
+          hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+        }
+
+        // tool calls
+        const content = msg.message?.content;
+        if (Array.isArray(content)) {
+          let toolCalls = 0;
+          for (const c of content) {
+            if (c && typeof c === 'object' && 'type' in c && c.type === 'tool_use') {
+              toolCalls++;
             }
           }
+          if (toolCalls > 0) {
+            const day = dailyMap.get(msgDate);
+            if (day) day.toolCallCount += toolCalls;
+          }
         }
-      } catch { /* skip */ }
-    }
+      }
+    });
 
     // Track session count per day (based on first qualifying message)
-    if (sessionCounted && firstTimestamp) {
-      // Find the first date that's after the cutoff
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line) as SessionMessage;
-          if (!msg.timestamp) continue;
-          const d = msg.timestamp.slice(0, 10);
-          if (afterDate && d <= afterDate) continue;
-          const day = dailyMap.get(d);
-          if (day) day.sessionCount++;
-          break;
-        } catch { /* skip */ }
-      }
+    if (sessionCounted && firstQualifyingDate) {
+      const day = dailyMap.get(firstQualifyingDate);
+      if (day) day.sessionCount++;
     }
   }
 
@@ -609,13 +631,13 @@ function computeSupplementalStats(afterDate: string): SupplementalStats {
   return result;
 }
 
-export function getDashboardStats(): DashboardStats {
+export async function getDashboardStats(): Promise<DashboardStats> {
   const stats = getStatsCache();
-  const projects = getProjects();
+  const projects = await getProjects();
   const afterDate = stats?.lastComputedDate || '';
 
   // Compute supplemental stats from JSONL files modified after the cache date
-  const supplemental = computeSupplementalStats(afterDate);
+  const supplemental = await computeSupplementalStats(afterDate);
 
   // --- Base stats from cache ---
   let totalTokens = 0;
@@ -706,13 +728,17 @@ export function getDashboardStats(): DashboardStats {
     mergedHourCounts[hour] = (mergedHourCounts[hour] || 0) + count;
   }
 
-  const recentSessions = getSessions(10);
+  const recentSessions = await getSessions(10);
+
+  // Use project-level totals for cost/tokens to stay consistent with the Projects page
+  const projectTotalCost = projects.reduce((sum, p) => sum + p.estimatedCost, 0);
+  const projectTotalTokens = projects.reduce((sum, p) => sum + p.totalTokens, 0);
 
   return {
     totalSessions: (stats?.totalSessions || 0) + supplemental.totalSessions,
     totalMessages: (stats?.totalMessages || 0) + supplemental.totalMessages,
-    totalTokens,
-    estimatedCost,
+    totalTokens: projectTotalTokens || totalTokens,
+    estimatedCost: projectTotalCost || estimatedCost,
     dailyActivity: mergedDailyActivity,
     dailyModelTokens: mergedDailyModelTokens,
     modelUsage: modelUsageWithCost,

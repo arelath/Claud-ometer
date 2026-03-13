@@ -119,7 +119,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               >
                 <div>
                   <div className="flex items-center gap-2">
-                    {session.models.map(m => (
+                    {[...new Set(session.models)].map(m => (
                       <Badge key={m} variant="secondary" className="text-[10px] px-1.5 py-0">
                         {m}
                       </Badge>

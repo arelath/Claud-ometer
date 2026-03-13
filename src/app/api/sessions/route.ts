@@ -12,16 +12,16 @@ export async function GET(request: Request) {
     const offset = parseInt(searchParams.get('offset') || '0');
 
     if (query) {
-      const sessions = searchSessions(query, limit);
+      const sessions = await searchSessions(query, limit);
       return NextResponse.json(sessions);
     }
 
     if (projectId) {
-      const sessions = getProjectSessions(projectId);
+      const sessions = await getProjectSessions(projectId);
       return NextResponse.json(sessions);
     }
 
-    const sessions = getSessions(limit, offset);
+    const sessions = await getSessions(limit, offset);
     return NextResponse.json(sessions);
   } catch (error) {
     console.error('Error fetching sessions:', error);

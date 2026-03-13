@@ -114,7 +114,7 @@ function SessionsContent() {
                       <FolderKanban className="h-3.5 w-3.5 text-muted-foreground" />
                       {session.projectName}
                     </span>
-                    {session.models.map(m => (
+                    {[...new Set(session.models)].map(m => (
                       <Badge key={m} variant="secondary" className="text-[10px] px-1.5 py-0">
                         {m}
                       </Badge>

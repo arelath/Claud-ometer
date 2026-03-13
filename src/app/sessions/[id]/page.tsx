@@ -38,7 +38,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10);
 
-  const models = session.models || [];
+  const models = [...new Set(session.models || [])];
   const messages = session.messages || [];
   const compaction = session.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] };
   const compactionCount = compaction.compactions + compaction.microcompactions;

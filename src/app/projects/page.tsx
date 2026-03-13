@@ -49,7 +49,7 @@ export default function ProjectsPage() {
                   </div>
 
                   <div className="flex flex-wrap gap-1">
-                    {project.models.map(m => (
+                    {[...new Set(project.models)].map(m => (
                       <Badge key={m} variant="secondary" className="text-[10px] px-1.5 py-0">
                         {m}
                       </Badge>
