@@ -10,7 +10,9 @@ import type {
   ProjectInfo,
   SessionInfo,
   SessionDetail,
+  SessionMessageBlockDisplay,
   SessionMessageDisplay,
+  SessionToolCallDisplay,
   DashboardStats,
   DailyActivity,
   DailyModelTokens,
@@ -52,6 +54,618 @@ function getClaudeDir(): string {
 
 function getProjectsDir(): string {
   return path.join(getClaudeDir(), 'projects');
+}
+
+const TOOL_DETAIL_LABELS: Record<string, string> = {
+  args: 'Args',
+  addedNames: 'Added',
+  command: 'Command',
+  content: 'Content',
+  'content.file.filePath': 'File',
+  'content.file.numLines': 'Lines',
+  'content.file.totalLines': 'Total lines',
+  displayPath: 'Display path',
+  endLine: 'End line',
+  exitCode: 'Exit code',
+  filename: 'Filename',
+  file_path: 'File',
+  filePath: 'File',
+  file_text: 'Content',
+  goal: 'Goal',
+  hookCount: 'Hook count',
+  hookInfos: 'Hooks',
+  includePattern: 'Include',
+  lastPrompt: 'Prompt',
+  leafUuid: 'Leaf UUID',
+  level: 'Level',
+  lineContent: 'Line match',
+  max_results: 'Max results',
+  maxResults: 'Max results',
+  messageCount: 'Message count',
+  messageId: 'Message ID',
+  mode: 'Mode',
+  newString: 'New text',
+  new_string: 'New text',
+  newName: 'New name',
+  oldString: 'Old text',
+  old_string: 'Old text',
+  originalFile: 'Original file',
+  path: 'Path',
+  paths: 'Paths',
+  permissionMode: 'Permission mode',
+  promptText: 'Prompt',
+  query: 'Query',
+  replace_all: 'Replace all',
+  removedNames: 'Removed',
+  scope: 'Scope',
+  selector: 'Selector',
+  signature: 'Signature',
+  skillCount: 'Skills',
+  sourceToolAssistantUUID: 'Source assistant',
+  startLine: 'Start line',
+  stderr: 'Stderr',
+  stdout: 'Stdout',
+  symbol: 'Symbol',
+  thinking: 'Thinking',
+  timeout: 'Timeout',
+  tool_use_id: 'Tool call',
+  toolUseId: 'Tool call',
+  durationMs: 'Duration',
+  url: 'URL',
+};
+
+const TOOL_DETAIL_PRIORITY: Record<string, string[]> = {
+  Bash: ['command', 'goal', 'mode', 'timeout'],
+  Edit: ['file_path', 'replace_all', 'old_string', 'new_string'],
+  Read: ['file_path', 'startLine', 'endLine'],
+  ToolSearch: ['query', 'max_results'],
+  Write: ['file_path', 'content'],
+};
+
+const COMMON_TOOL_DETAIL_KEYS = [
+  'file_path',
+  'filePath',
+  'path',
+  'paths',
+  'command',
+  'query',
+  'goal',
+  'mode',
+  'url',
+  'selector',
+  'symbol',
+  'newName',
+  'scope',
+  'includePattern',
+  'lineContent',
+  'args',
+  'startLine',
+  'endLine',
+  'replace_all',
+  'max_results',
+  'maxResults',
+];
+
+const LARGE_TEXT_TOOL_KEYS = new Set(['code', 'content', 'file_text', 'new_string', 'old_string']);
+const FILE_LIKE_TOOL_KEYS = new Set(['file_path', 'filePath', 'path', 'paths']);
+
+const STRUCTURED_DETAIL_KEYS = [
+  'type',
+  'subtype',
+  'permissionMode',
+  'filePath',
+  'file_path',
+  'path',
+  'displayPath',
+  'filename',
+  'content.file.filePath',
+  'content.file.numLines',
+  'content.file.totalLines',
+  'query',
+  'command',
+  'tool_use_id',
+  'toolUseId',
+  'sourceToolAssistantUUID',
+  'messageId',
+  'leafUuid',
+  'durationMs',
+  'messageCount',
+  'exitCode',
+  'level',
+  'matches',
+  'addedNames',
+  'removedNames',
+  'hookCount',
+  'hookInfos',
+  'skillCount',
+];
+
+const LARGE_TEXT_DETAIL_KEYS = new Set([
+  ...LARGE_TEXT_TOOL_KEYS,
+  'content',
+  'lastPrompt',
+  'newString',
+  'oldString',
+  'originalFile',
+  'signature',
+  'stderr',
+  'stdout',
+  'thinking',
+]);
+
+const PREVIEW_TEXT_DETAIL_KEYS = new Set(['content', 'lastPrompt', 'stderr', 'stdout', 'text', 'thinking']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getDetailKeyTail(key: string): string {
+  const parts = key.split('.');
+  return parts[parts.length - 1] || key;
+}
+
+function humanizeToolKey(key: string): string {
+  return key
+    .replace(/\./g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .replace(/^./, char => char.toUpperCase());
+}
+
+function truncateInline(text: string, maxLength = 160): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function summarizeLargeText(value: string): string {
+  const lineCount = value.split(/\r\n?|\n/).length;
+  if (lineCount > 1) return `${lineCount.toLocaleString()} lines`;
+  return `${value.length.toLocaleString()} chars`;
+}
+
+function formatToolDetailValue(key: string, value: unknown): string | null {
+  if (value == null) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return '""';
+    if (LARGE_TEXT_TOOL_KEYS.has(key)) return summarizeLargeText(trimmed);
+    return truncateInline(trimmed);
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    const primitiveValues = value.filter(item => item != null).map(item => {
+      if (typeof item === 'string') return item.trim();
+      if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+      return null;
+    }).filter(Boolean) as string[];
+
+    if (primitiveValues.length === value.length) {
+      const joined = FILE_LIKE_TOOL_KEYS.has(key) ? primitiveValues.join('\n') : primitiveValues.join(', ');
+      if (joined.length <= 220) return truncateInline(joined, 220);
+      return `${value.length.toLocaleString()} items`;
+    }
+
+    return `${value.length.toLocaleString()} items`;
+  }
+
+  if (typeof value === 'object') {
+    const fieldCount = Object.keys(value as Record<string, unknown>).length;
+    return fieldCount === 0 ? '{}' : `${fieldCount.toLocaleString()} fields`;
+  }
+
+  return null;
+}
+
+function buildToolCallDetails(name: string, input: unknown): SessionToolCallDisplay['details'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    const singleValue = formatToolDetailValue('input', input);
+    return singleValue ? [{ key: 'input', label: 'Input', value: singleValue }] : [];
+  }
+
+  const inputObject = input as Record<string, unknown>;
+  const candidateKeys = [
+    ...(TOOL_DETAIL_PRIORITY[name] || []),
+    ...COMMON_TOOL_DETAIL_KEYS,
+    ...Object.keys(inputObject),
+  ];
+
+  const details: SessionToolCallDisplay['details'] = [];
+  const seenKeys = new Set<string>();
+
+  for (const key of candidateKeys) {
+    if (seenKeys.has(key) || !(key in inputObject)) continue;
+
+    const value = formatToolDetailValue(key, inputObject[key]);
+    if (!value) continue;
+
+    details.push({
+      key,
+      label: TOOL_DETAIL_LABELS[key] || humanizeToolKey(key),
+      value,
+    });
+    seenKeys.add(key);
+
+    if (details.length >= 6) break;
+  }
+
+  return details;
+}
+
+function buildToolCallSummary(name: string, details: SessionToolCallDisplay['details']): string {
+  const primaryDetail =
+    details.find(detail => FILE_LIKE_TOOL_KEYS.has(detail.key)) ||
+    details.find(detail => detail.key === 'command') ||
+    details.find(detail => detail.key === 'query') ||
+    details[0];
+
+  if (!primaryDetail) return name;
+
+  if (name === 'Read') {
+    const startLine = details.find(detail => detail.key === 'startLine')?.value;
+    const endLine = details.find(detail => detail.key === 'endLine')?.value;
+    if (startLine || endLine) {
+      const rangeStart = startLine || '?';
+      const rangeEnd = endLine || '?';
+      return `${primaryDetail.value} (${rangeStart}-${rangeEnd})`;
+    }
+  }
+
+  return primaryDetail.value;
+}
+
+function buildToolCallDisplay(name: string, id: string, input: unknown): SessionToolCallDisplay {
+  const details = buildToolCallDetails(name, input);
+  return {
+    name,
+    id,
+    summary: buildToolCallSummary(name, details),
+    details,
+  };
+}
+
+function toPreviewText(text: string, maxLength = 2_000): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trimEnd()}\n\n[truncated ${text.length.toLocaleString()} chars]`;
+}
+
+function flattenStructuredRecord(
+  record: Record<string, unknown>,
+  prefix = '',
+  depth = 0,
+): Record<string, unknown> {
+  const flattened: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(record)) {
+    if (value == null) continue;
+
+    const nextKey = prefix ? `${prefix}.${key}` : key;
+    if (isRecord(value) && depth < 2) {
+      Object.assign(flattened, flattenStructuredRecord(value, nextKey, depth + 1));
+      continue;
+    }
+
+    flattened[nextKey] = value;
+  }
+
+  return flattened;
+}
+
+function formatStructuredDetailValue(key: string, value: unknown): string | null {
+  const keyTail = getDetailKeyTail(key);
+
+  if (value == null) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return '""';
+
+    if (keyTail === 'signature') {
+      return `${truncateInline(trimmed, 72)} (${trimmed.length.toLocaleString()} chars)`;
+    }
+
+    if (LARGE_TEXT_DETAIL_KEYS.has(keyTail)) return summarizeLargeText(trimmed);
+    return truncateInline(trimmed, 220);
+  }
+
+  if (typeof value === 'number') {
+    if (keyTail === 'durationMs') return `${value.toLocaleString()} ms`;
+    return value.toLocaleString();
+  }
+
+  if (typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+
+    const primitiveValues = value
+      .map(item => {
+        if (typeof item === 'string') return item.trim();
+        if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+        return null;
+      })
+      .filter(Boolean) as string[];
+
+    if (primitiveValues.length === value.length) {
+      const joined = FILE_LIKE_TOOL_KEYS.has(keyTail) ? primitiveValues.join('\n') : primitiveValues.join(', ');
+      return joined.length <= 220 ? truncateInline(joined, 220) : `${value.length.toLocaleString()} items`;
+    }
+
+    return `${value.length.toLocaleString()} items`;
+  }
+
+  if (isRecord(value)) {
+    const fieldCount = Object.keys(value).length;
+    return fieldCount === 0 ? '{}' : `${fieldCount.toLocaleString()} fields`;
+  }
+
+  return null;
+}
+
+function buildStructuredDetails(
+  value: unknown,
+  priorityKeys: string[] = STRUCTURED_DETAIL_KEYS,
+  maxDetails = 8,
+): SessionToolCallDisplay['details'] {
+  if (!isRecord(value)) {
+    const singleValue = formatStructuredDetailValue('value', value);
+    return singleValue ? [{ key: 'value', label: 'Value', value: singleValue }] : [];
+  }
+
+  const flattened = flattenStructuredRecord(value);
+  const details: SessionToolCallDisplay['details'] = [];
+  const seenKeys = new Set<string>();
+
+  for (const key of [...priorityKeys, ...Object.keys(flattened)]) {
+    if (seenKeys.has(key) || !(key in flattened)) continue;
+
+    const detailValue = formatStructuredDetailValue(key, flattened[key]);
+    if (!detailValue) continue;
+
+    details.push({
+      key,
+      label: TOOL_DETAIL_LABELS[key] || TOOL_DETAIL_LABELS[getDetailKeyTail(key)] || humanizeToolKey(key),
+      value: detailValue,
+    });
+    seenKeys.add(key);
+
+    if (details.length >= maxDetails) break;
+  }
+
+  return details;
+}
+
+function extractTextPreview(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? toPreviewText(trimmed) : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map(item => {
+        if (typeof item === 'string') return item.trim();
+        if (isRecord(item)) {
+          if (typeof item.text === 'string') return item.text.trim();
+          if (typeof item.content === 'string') return item.content.trim();
+          if (typeof item.tool_name === 'string') return item.tool_name;
+          if (typeof item.toolName === 'string') return item.toolName;
+        }
+        return '';
+      })
+      .filter(Boolean);
+
+    if (parts.length === 0) return undefined;
+    const separator = parts.some(part => part.includes('\n')) ? '\n' : ', ';
+    return toPreviewText(parts.join(separator));
+  }
+
+  if (isRecord(value)) {
+    if (typeof value.text === 'string') return extractTextPreview(value.text);
+    if (typeof value.content === 'string') return extractTextPreview(value.content);
+  }
+
+  return undefined;
+}
+
+function buildStructuredContent(value: unknown): string | undefined {
+  const directPreview = extractTextPreview(value);
+  if (directPreview) return directPreview;
+
+  if (!isRecord(value)) return undefined;
+
+  const flattened = flattenStructuredRecord(value);
+  for (const key of Object.keys(flattened)) {
+    if (!PREVIEW_TEXT_DETAIL_KEYS.has(getDetailKeyTail(key))) continue;
+    const preview = extractTextPreview(flattened[key]);
+    if (preview) return preview;
+  }
+
+  return undefined;
+}
+
+function detailKeyMatches(key: string, candidates: string[]): boolean {
+  const keyTail = getDetailKeyTail(key);
+  return candidates.includes(key) || candidates.includes(keyTail);
+}
+
+function buildStructuredSummary(
+  title: string,
+  details: SessionToolCallDisplay['details'],
+  content?: string,
+): string {
+  if (content) return truncateInline(content, 160);
+
+  const fileDetail = details.find(detail =>
+    detailKeyMatches(detail.key, ['displayPath', 'filePath', 'file_path', 'filename', 'path']),
+  );
+  const typeDetail = details.find(detail =>
+    detailKeyMatches(detail.key, ['type', 'subtype', 'permissionMode', 'query', 'command']),
+  );
+
+  if (typeDetail && fileDetail) return `${typeDetail.value}: ${fileDetail.value}`;
+  if (fileDetail) return fileDetail.value;
+  if (typeDetail) return typeDetail.value;
+  return details[0]?.value || title;
+}
+
+function buildToolResultBlock(
+  toolResultContent: Record<string, unknown> | undefined,
+  toolUseResult: Record<string, unknown> | undefined,
+  sourceToolAssistantUUID?: string,
+): SessionMessageBlockDisplay {
+  const details = buildStructuredDetails(toolUseResult || toolResultContent, [
+    'type',
+    'filePath',
+    'path',
+    'displayPath',
+    'filename',
+    'content.file.filePath',
+    'content.file.numLines',
+    'content.file.totalLines',
+    'query',
+    'matches',
+    'addedNames',
+    'removedNames',
+    'oldString',
+    'newString',
+    'originalFile',
+  ]);
+
+  if (toolResultContent && typeof toolResultContent.tool_use_id === 'string') {
+    details.unshift({
+      key: 'tool_use_id',
+      label: TOOL_DETAIL_LABELS.tool_use_id,
+      value: toolResultContent.tool_use_id,
+    });
+  }
+
+  if (sourceToolAssistantUUID) {
+    details.push({
+      key: 'sourceToolAssistantUUID',
+      label: TOOL_DETAIL_LABELS.sourceToolAssistantUUID,
+      value: sourceToolAssistantUUID,
+    });
+  }
+
+  const content =
+    extractTextPreview(toolResultContent?.content) ||
+    buildStructuredContent(toolUseResult) ||
+    buildStructuredContent(toolResultContent);
+
+  const title = toolUseResult && typeof toolUseResult.type === 'string'
+    ? humanizeToolKey(toolUseResult.type)
+    : 'Tool Result';
+
+  return {
+    type: 'tool-result',
+    title,
+    summary: buildStructuredSummary(title, details, content),
+    details,
+    content,
+  };
+}
+
+function buildThinkingBlock(contentBlock: Record<string, unknown>): SessionMessageBlockDisplay | null {
+  const thinkingText = typeof contentBlock.thinking === 'string' ? contentBlock.thinking.trim() : '';
+  const signature = typeof contentBlock.signature === 'string' ? contentBlock.signature.trim() : '';
+  const details: SessionToolCallDisplay['details'] = [];
+
+  if (thinkingText) {
+    details.push({
+      key: 'thinking',
+      label: TOOL_DETAIL_LABELS.thinking,
+      value: summarizeLargeText(thinkingText),
+    });
+  }
+
+  if (signature) {
+    details.push({
+      key: 'signature',
+      label: TOOL_DETAIL_LABELS.signature,
+      value: formatStructuredDetailValue('signature', signature) || 'Present',
+    });
+  }
+
+  if (details.length === 0) return null;
+
+  return {
+    type: 'thinking',
+    title: 'Thinking',
+    summary: thinkingText ? summarizeLargeText(thinkingText) : '',
+    details,
+    content: thinkingText ? toPreviewText(thinkingText) : undefined,
+  };
+}
+
+function buildEventBlock(msg: SessionMessage): SessionMessageBlockDisplay | null {
+  if (msg.type === 'attachment' && msg.attachment) {
+    const attachmentType = typeof msg.attachment.type === 'string' ? msg.attachment.type : 'attachment';
+    const details = buildStructuredDetails(msg.attachment, [
+      'type',
+      'displayPath',
+      'filename',
+      'content.file.filePath',
+      'content.file.numLines',
+      'content.file.totalLines',
+      'skillCount',
+      'addedNames',
+      'removedNames',
+    ]);
+    const content = buildStructuredContent(msg.attachment);
+    const title = `Attachment: ${humanizeToolKey(attachmentType)}`;
+
+    return {
+      type: 'event',
+      title,
+      summary: buildStructuredSummary(title, details, content),
+      details,
+      content,
+    };
+  }
+
+  const eventRecord: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(msg)) {
+    if (value == null) continue;
+    if (['attachment', 'compactMetadata', 'data', 'message', 'microcompactMetadata', 'toolUseResult'].includes(key)) continue;
+    eventRecord[key] = value;
+  }
+
+  if (Object.keys(eventRecord).length === 0) return null;
+
+  const title = msg.type === 'system'
+    ? `System: ${humanizeToolKey(msg.subtype || 'event')}`
+    : humanizeToolKey(msg.type);
+  const details = buildStructuredDetails(eventRecord, [
+    'subtype',
+    'permissionMode',
+    'messageId',
+    'leafUuid',
+    'durationMs',
+    'messageCount',
+    'level',
+    'exitCode',
+    'command',
+    'hookCount',
+    'toolUseID',
+  ]);
+  const content = buildStructuredContent(eventRecord);
+
+  return {
+    type: 'event',
+    title,
+    summary: buildStructuredSummary(title, details, content),
+    details,
+    content,
+  };
 }
 
 export function getStatsCache(): StatsCache | null {
@@ -353,53 +967,154 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
         const msg = JSON.parse(line) as SessionMessage;
         if (msg.type === 'user' && msg.message?.role === 'user') {
           const content = msg.message.content;
+          const textParts: string[] = [];
+          const blocks: SessionMessageBlockDisplay[] = [];
+
+          // Detect command XML patterns
+          const rawText = typeof content === 'string' ? content : '';
+          const commandNameMatch = rawText.match(/<command-name>([\s\S]*?)<\/command-name>/);
+          const commandStdoutMatch = rawText.match(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/);
+          const commandCaveatMatch = rawText.match(/<local-command-caveat>([\s\S]*?)<\/local-command-caveat>/);
+
+          if (commandNameMatch || commandStdoutMatch || commandCaveatMatch) {
+            // This is a command message
+            let commandContent = '';
+            if (commandCaveatMatch) {
+              commandContent = commandCaveatMatch[1].trim();
+            } else if (commandNameMatch) {
+              const name = commandNameMatch[1].trim();
+              const argsMatch = rawText.match(/<command-args>([\s\S]*?)<\/command-args>/);
+              const args = argsMatch ? argsMatch[1].trim() : '';
+              commandContent = args ? `${name} ${args}` : name;
+            } else if (commandStdoutMatch) {
+              // Strip ANSI escape codes
+              commandContent = commandStdoutMatch[1].replace(/\x1b\[[0-9;]*m/g, '').trim();
+            }
+            messages.push({
+              role: 'command',
+              content: commandContent,
+              timestamp: msg.timestamp,
+              isMeta: msg.isMeta || Boolean(commandCaveatMatch),
+            });
+            continue;
+          }
+
+          if (typeof content === 'string') {
+            textParts.push(content);
+          } else if (Array.isArray(content)) {
+            let structuredResultUsed = false;
+
+            for (const contentBlock of content) {
+              if (!isRecord(contentBlock)) continue;
+
+              if (contentBlock.type === 'text' && typeof contentBlock.text === 'string') {
+                textParts.push(contentBlock.text);
+                continue;
+              }
+
+              if (contentBlock.type === 'tool_result') {
+                const structuredToolUseResult: Record<string, unknown> | undefined =
+                  !structuredResultUsed && isRecord(msg.toolUseResult)
+                  ? msg.toolUseResult
+                  : undefined;
+
+                blocks.push(
+                  buildToolResultBlock(
+                    contentBlock,
+                    structuredToolUseResult,
+                    typeof msg.sourceToolAssistantUUID === 'string' ? msg.sourceToolAssistantUUID : undefined,
+                  ),
+                );
+                structuredResultUsed = structuredResultUsed || Boolean(structuredToolUseResult);
+              }
+            }
+          }
+
+          if (blocks.length === 0 && isRecord(msg.toolUseResult)) {
+            blocks.push(
+              buildToolResultBlock(
+                undefined,
+                msg.toolUseResult,
+                typeof msg.sourceToolAssistantUUID === 'string' ? msg.sourceToolAssistantUUID : undefined,
+              ),
+            );
+          }
+
+          const text = textParts.join('\n').trim();
+          if (text || blocks.length > 0) {
+            const isToolResultOnly = !text && blocks.length > 0;
+            messages.push({
+              role: isToolResultOnly ? 'tool-result' : 'user',
+              content: text,
+              timestamp: msg.timestamp,
+              blocks: blocks.length > 0 ? blocks : undefined,
+              isMeta: msg.isMeta,
+            });
+          }
+          continue;
+        }
+
+        if (msg.type === 'assistant' && msg.message?.content) {
+          const content = msg.message.content;
+          const toolCalls: SessionToolCallDisplay[] = [];
+          const blocks: SessionMessageBlockDisplay[] = [];
           let text = '';
+
           if (typeof content === 'string') {
             text = content;
           } else if (Array.isArray(content)) {
-            text = content
-              .map((c: Record<string, unknown>) => {
-                if (c.type === 'text') return c.text as string;
-                if (c.type === 'tool_result') return '[Tool Result]';
-                return '';
-              })
-              .filter(Boolean)
-              .join('\n');
-          }
-          if (text && !text.startsWith('[Tool Result]')) {
-            messages.push({
-              role: 'user',
-              content: text,
-              timestamp: msg.timestamp,
-            });
-          }
-        }
-        if (msg.type === 'assistant' && msg.message?.content) {
-          const content = msg.message.content;
-          const toolCalls: { name: string; id: string }[] = [];
-          let text = '';
-          if (Array.isArray(content)) {
             for (const c of content) {
-              if (c && typeof c === 'object') {
+              if (isRecord(c)) {
                 if ('type' in c && c.type === 'text' && 'text' in c) {
                   text += (c.text as string) + '\n';
+                  continue;
                 }
+
+                if ('type' in c && c.type === 'thinking') {
+                  const thinkingBlock = buildThinkingBlock(c);
+                  if (thinkingBlock) blocks.push(thinkingBlock);
+                  continue;
+                }
+
                 if ('type' in c && c.type === 'tool_use' && 'name' in c) {
-                  toolCalls.push({ name: c.name as string, id: (c.id as string) || '' });
+                  toolCalls.push(
+                    buildToolCallDisplay(
+                      c.name as string,
+                      (c.id as string) || '',
+                      'input' in c ? c.input : undefined,
+                    ),
+                  );
                 }
               }
             }
           }
-          if (text.trim() || toolCalls.length > 0) {
+
+          if (text.trim() || toolCalls.length > 0 || blocks.length > 0) {
+            const isToolUseOnly = !text.trim() && toolCalls.length > 0;
             messages.push({
-              role: 'assistant',
-              content: text.trim() || `[Used ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}]`,
+              role: isToolUseOnly ? 'tool-use' : 'assistant',
+              content: text.trim(),
               timestamp: msg.timestamp,
               model: msg.message.model,
               usage: msg.message.usage as TokenUsage | undefined,
+              stopReason: msg.message.stop_reason,
               toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+              blocks: blocks.length > 0 ? blocks : undefined,
+              isMeta: msg.isMeta,
             });
           }
+          continue;
+        }
+
+        const eventBlock = buildEventBlock(msg);
+        if (eventBlock) {
+          messages.push({
+            role: 'system',
+            content: eventBlock.summary,
+            timestamp: msg.timestamp,
+            blocks: [eventBlock],
+            isMeta: msg.isMeta,
+          });
         }
       } catch { /* skip */ }
     }

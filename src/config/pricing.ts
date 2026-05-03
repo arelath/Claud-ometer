@@ -6,11 +6,12 @@ export interface ModelPricing {
 }
 
 export const MODEL_PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4-6': { inputPerMillion: 15, outputPerMillion: 75, cacheWritePerMillion: 18.75, cacheReadPerMillion: 1.50 },
-  'claude-opus-4-5-20251101': { inputPerMillion: 15, outputPerMillion: 75, cacheWritePerMillion: 18.75, cacheReadPerMillion: 1.50 },
+  'claude-opus-4-7': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 10, cacheReadPerMillion: 0.50 },
+  'claude-opus-4-6': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 10, cacheReadPerMillion: 0.50 },
+  'claude-opus-4-5': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 10, cacheReadPerMillion: 0.50 },
   'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
-  'claude-sonnet-4-5-20250929': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
-  'claude-haiku-4-5-20251001': { inputPerMillion: 0.80, outputPerMillion: 4, cacheWritePerMillion: 1.00, cacheReadPerMillion: 0.08 },
+  'claude-sonnet-4-5': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
+  'claude-haiku-4-5': { inputPerMillion: 1.00, outputPerMillion: 5, cacheWritePerMillion: 1.25, cacheReadPerMillion: 0.1 },
 };
 
 /**
