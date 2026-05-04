@@ -94,6 +94,7 @@ export interface SessionMessage {
   lastPrompt?: string;
   leafUuid?: string;
   message?: {
+    id?: string;
     role: string;
     model?: string;
     content: unknown;

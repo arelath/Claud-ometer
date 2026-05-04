@@ -3,6 +3,7 @@
 import { createContext, use, useState, useCallback, useMemo, useRef, useEffect, useContext } from 'react';
 import { useSessionDetail } from '@/lib/hooks';
 import { useCostMode } from '@/lib/cost-mode-context';
+import { getModelDisplayName } from '@/config/pricing';
 import { formatCost, formatDuration, formatTokens } from '@/lib/format';
 import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -1211,7 +1212,7 @@ function AssistantCard({ msg, index, toolPairs }: {
   const eventBlocks = (msg.blocks || []).filter(b => b.type === 'event');
 
   const modelLabel = msg.model
-    ? (msg.model.includes('opus') ? 'Opus' : msg.model.includes('sonnet') ? 'Sonnet' : msg.model.includes('haiku') ? 'Haiku' : msg.model)
+    ? getModelDisplayName(msg.model)
     : null;
 
   // Rough per-turn cost estimate

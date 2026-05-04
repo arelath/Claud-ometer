@@ -6,9 +6,9 @@ export interface ModelPricing {
 }
 
 export const MODEL_PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4-7': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 10, cacheReadPerMillion: 0.50 },
-  'claude-opus-4-6': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 10, cacheReadPerMillion: 0.50 },
-  'claude-opus-4-5': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 10, cacheReadPerMillion: 0.50 },
+  'claude-opus-4-7': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.50 },
+  'claude-opus-4-6': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.50 },
+  'claude-opus-4-5': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.50 },
   'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
   'claude-sonnet-4-5': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
   'claude-haiku-4-5': { inputPerMillion: 1.00, outputPerMillion: 5, cacheWritePerMillion: 1.25, cacheReadPerMillion: 0.1 },
@@ -58,16 +58,20 @@ const COST_MODE_MULTIPLIERS: Record<CostMode, { cacheWrite: number; cacheRead: n
 export const DEFAULT_COST_MODE: CostMode = 'subscription';
 
 export function getModelDisplayName(modelId: string): string {
-  if (modelId.includes('opus')) return 'Opus';
-  if (modelId.includes('sonnet')) return 'Sonnet';
-  if (modelId.includes('haiku')) return 'Haiku';
+  const normalized = modelId.toLowerCase();
+  if (normalized.includes('synthetic')) return 'Synthetic';
+  if (normalized.includes('opus')) return 'Opus';
+  if (normalized.includes('sonnet')) return 'Sonnet';
+  if (normalized.includes('haiku')) return 'Haiku';
   return modelId;
 }
 
 export function getModelColor(modelId: string): string {
-  if (modelId.includes('opus')) return '#D4764E';
-  if (modelId.includes('sonnet')) return '#6B8AE6';
-  if (modelId.includes('haiku')) return '#5CB87A';
+  const normalized = modelId.toLowerCase();
+  if (normalized.includes('synthetic')) return '#7A7A7A';
+  if (normalized.includes('opus')) return '#D4764E';
+  if (normalized.includes('sonnet')) return '#6B8AE6';
+  if (normalized.includes('haiku')) return '#5CB87A';
   return '#888888';
 }
 
@@ -120,5 +124,5 @@ function findClosestPricing(model: string): ModelPricing | null {
     const family = key.includes('opus') ? 'opus' : key.includes('sonnet') ? 'sonnet' : 'haiku';
     if (model.includes(family)) return pricing;
   }
-  return MODEL_PRICING['claude-sonnet-4-5-20250929'];
+  return null;
 }

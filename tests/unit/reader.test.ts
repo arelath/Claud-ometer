@@ -238,4 +238,295 @@ describe('reader imported-data fixtures', () => {
       vi.resetModules();
     }
   });
+
+  it('preserves cache writes from hidden thinking snapshots on completed assistant turns', async () => {
+    const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-hidden-thinking-cache-write-import');
+    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const sessionId = '00000000-0000-4000-8000-000000000003';
+    const projectId = 'hidden-thinking-cache-write-project';
+    const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
+
+    fs.rmSync(importDir, { recursive: true, force: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    const mainSessionLines = [
+      {
+        type: 'user',
+        sessionId,
+        timestamp: '2026-05-03T10:30:00.000Z',
+        message: {
+          role: 'user',
+          content: 'Please summarize the file.',
+        },
+      },
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T10:30:05.000Z',
+        uuid: 'assistant-thinking',
+        message: {
+          id: 'assistant-turn-hidden-thinking',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 15,
+            cache_creation_input_tokens: 120,
+            cache_read_input_tokens: 25,
+          },
+          stop_reason: 'end_turn',
+          content: [
+            { type: 'thinking', thinking: 'Planning the response.' },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T10:30:06.000Z',
+        uuid: 'assistant-visible',
+        message: {
+          id: 'assistant-turn-hidden-thinking',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 15,
+            cache_creation_input_tokens: 120,
+            cache_read_input_tokens: 25,
+          },
+          stop_reason: 'end_turn',
+          content: [
+            { type: 'text', text: 'Here is the summary.' },
+          ],
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join('\n');
+
+    fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), mainSessionLines);
+    fs.writeFileSync(
+      path.join(importDir, 'claude-data', 'export-meta.json'),
+      JSON.stringify({ exportedAt: '2026-05-03T00:00:00.000Z', exportedFrom: 'Unit test' }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(importDir, 'meta.json'),
+      JSON.stringify({
+        importedAt: '2026-05-03T00:00:00.000Z',
+        exportedAt: '2026-05-03T00:00:00.000Z',
+        exportedFrom: 'Unit test',
+        projectCount: 1,
+        sessionCount: 1,
+        fileCount: 2,
+        totalSize: mainSessionLines.length,
+      }, null, 2),
+    );
+    fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
+
+    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    vi.resetModules();
+
+    try {
+      const { getProjects, getSessions, getDashboardStats } = await import('@/lib/claude-data/reader');
+      const { calculateCostAllModes } = await import('@/config/pricing');
+
+      const sessions = await getSessions(10, 0);
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      const projects = await getProjects();
+      const project = projects.find((candidate) => candidate.id === projectId);
+      const dashboard = await getDashboardStats();
+      const expectedCosts = calculateCostAllModes('claude-opus-4', 10, 15, 240, 25);
+
+      expect(session).toBeDefined();
+      expect(session?.assistantMessageCount).toBe(1);
+      expect(session?.totalInputTokens).toBe(10);
+      expect(session?.totalOutputTokens).toBe(15);
+      expect(session?.totalCacheReadTokens).toBe(25);
+      expect(session?.totalCacheWriteTokens).toBe(240);
+      expect(session?.estimatedCosts.subscription).toBeCloseTo(expectedCosts.subscription, 12);
+
+      expect(project).toBeDefined();
+      expect(project?.totalTokens).toBe(290);
+      expect(project?.estimatedCosts.subscription).toBeCloseTo(expectedCosts.subscription, 12);
+
+      expect(dashboard.totalTokens).toBe(290);
+    } finally {
+      process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      fs.rmSync(importDir, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
+
+  it('deduplicates repeated assistant usage and includes subagent models in aggregates', async () => {
+    const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-session-aggregate-import');
+    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const sessionId = '00000000-0000-4000-8000-000000000002';
+    const projectId = 'session-aggregate-project';
+    const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
+    const subagentDir = path.join(projectDir, sessionId, 'subagents');
+
+    fs.rmSync(importDir, { recursive: true, force: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(subagentDir, { recursive: true });
+
+    const mainSessionLines = [
+      {
+        type: 'user',
+        sessionId,
+        timestamp: '2026-05-03T11:00:00.000Z',
+        cwd: 'D:/dev/research/Claud-ometer',
+        gitBranch: 'main',
+        version: '2.1.126',
+        message: {
+          role: 'user',
+          content: 'Use the subagent if needed.',
+        },
+      },
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T11:00:05.000Z',
+        uuid: 'assistant-1a',
+        message: {
+          id: 'assistant-turn-1',
+          role: 'assistant',
+          model: 'claude-opus-4-7',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 40,
+          },
+          stop_reason: 'tool_use',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: { filePath: 'src/app.tsx' } },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T11:00:06.000Z',
+        uuid: 'assistant-1b',
+        message: {
+          id: 'assistant-turn-1',
+          role: 'assistant',
+          model: 'claude-opus-4-7',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 40,
+          },
+          stop_reason: 'end_turn',
+          content: [
+            { type: 'text', text: 'Done with the read.' },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T11:00:07.000Z',
+        uuid: 'assistant-2',
+        message: {
+          id: 'assistant-turn-2',
+          role: 'assistant',
+          model: '<synthetic>',
+          usage: {
+            input_tokens: 5,
+            output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+          stop_reason: 'end_turn',
+          content: [
+            { type: 'text', text: 'Synthetic summary.' },
+          ],
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join('\n');
+
+    const subagentLines = [
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T11:00:08.000Z',
+        uuid: 'subagent-1',
+        message: {
+          id: 'subagent-turn-1',
+          role: 'assistant',
+          model: 'claude-haiku-4-5-20251001',
+          usage: {
+            input_tokens: 7,
+            output_tokens: 3,
+            cache_creation_input_tokens: 2,
+            cache_read_input_tokens: 11,
+          },
+          stop_reason: 'end_turn',
+          content: [
+            { type: 'text', text: 'Subagent result.' },
+          ],
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join('\n');
+
+    fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), mainSessionLines);
+    fs.writeFileSync(path.join(subagentDir, 'agent-haiku.jsonl'), subagentLines);
+    fs.writeFileSync(
+      path.join(importDir, 'claude-data', 'export-meta.json'),
+      JSON.stringify({ exportedAt: '2026-05-03T00:00:00.000Z', exportedFrom: 'Unit test' }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(importDir, 'meta.json'),
+      JSON.stringify({
+        importedAt: '2026-05-03T00:00:00.000Z',
+        exportedAt: '2026-05-03T00:00:00.000Z',
+        exportedFrom: 'Unit test',
+        projectCount: 1,
+        sessionCount: 1,
+        fileCount: 3,
+        totalSize: mainSessionLines.length + subagentLines.length,
+      }, null, 2),
+    );
+    fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
+
+    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    vi.resetModules();
+
+    try {
+      const { getProjects, getSessions, getDashboardStats } = await import('@/lib/claude-data/reader');
+      const { calculateCostAllModes } = await import('@/config/pricing');
+
+      const sessions = await getSessions(10, 0);
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      const projects = await getProjects();
+      const project = projects.find((candidate) => candidate.id === projectId);
+      const dashboard = await getDashboardStats();
+
+      const opusCosts = calculateCostAllModes('claude-opus-4-7', 100, 50, 30, 40);
+      const haikuCosts = calculateCostAllModes('claude-haiku-4-5-20251001', 7, 3, 2, 11);
+
+      expect(session).toBeDefined();
+      expect(session?.assistantMessageCount).toBe(2);
+      expect(session?.toolCallCount).toBe(1);
+      expect(session?.totalInputTokens).toBe(112);
+      expect(session?.totalOutputTokens).toBe(58);
+      expect(session?.totalCacheWriteTokens).toBe(32);
+      expect(session?.totalCacheReadTokens).toBe(51);
+      expect(session?.models).toEqual(expect.arrayContaining(['Opus', 'Haiku', 'Synthetic']));
+      expect(session?.estimatedCosts.subscription).toBeCloseTo(opusCosts.subscription + haikuCosts.subscription, 12);
+
+      expect(project).toBeDefined();
+      expect(project?.totalTokens).toBe(253);
+      expect(project?.models).toEqual(expect.arrayContaining(['Opus', 'Haiku', 'Synthetic']));
+      expect(project?.estimatedCosts.subscription).toBeCloseTo(opusCosts.subscription + haikuCosts.subscription, 12);
+
+      expect(dashboard.totalTokens).toBe(253);
+      expect(Object.keys(dashboard.modelUsage)).toEqual(expect.arrayContaining(['claude-opus-4-7', 'claude-haiku-4-5-20251001', '<synthetic>']));
+    } finally {
+      process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      fs.rmSync(importDir, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
 });

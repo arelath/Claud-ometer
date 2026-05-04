@@ -73,6 +73,139 @@ function getProjectsDir(): string {
   return path.join(getClaudeDir(), 'projects');
 }
 
+interface AssistantTurnAggregate {
+  model: string;
+  usage?: TokenUsage;
+  timestamp: string;
+  topLevel: boolean;
+  toolCalls: Map<string, string>;
+  extraCacheWriteTokens: number;
+  pendingThinkingOnlyCacheWriteTokens: number;
+  sawNonThinkingSnapshot: boolean;
+}
+
+function getTopLevelSessionFiles(projectPath: string): string[] {
+  return fs.readdirSync(projectPath).filter(entry => entry.endsWith('.jsonl'));
+}
+
+function collectJsonlFilesRecursively(dirPath: string): string[] {
+  if (!fs.existsSync(dirPath)) return [];
+
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(dirPath)) {
+    const entryPath = path.join(dirPath, entry);
+    const stat = fs.statSync(entryPath);
+    if (stat.isDirectory()) {
+      files.push(...collectJsonlFilesRecursively(entryPath));
+      continue;
+    }
+    if (entry.endsWith('.jsonl')) files.push(entryPath);
+  }
+
+  return files;
+}
+
+function getSessionAggregateFilePaths(filePath: string): string[] {
+  const sessionId = path.basename(filePath, '.jsonl');
+  const subagentDir = path.join(path.dirname(filePath), sessionId, 'subagents');
+  return [filePath, ...collectJsonlFilesRecursively(subagentDir)];
+}
+
+function getAssistantTurnKey(filePath: string, msg: SessionMessage): string {
+  const messageId = typeof msg.message?.id === 'string' && msg.message.id
+    ? msg.message.id
+    : msg.uuid || msg.timestamp || 'unknown-assistant-turn';
+  return `${filePath}:${messageId}`;
+}
+
+function isThinkingOnlyAssistantSnapshot(msg: SessionMessage): boolean {
+  const content = msg.message?.content;
+  return Array.isArray(content)
+    && content.length > 0
+    && content.every(block => isRecord(block) && block.type === 'thinking');
+}
+
+function hasVisibleAssistantSnapshotContent(msg: SessionMessage): boolean {
+  const content = msg.message?.content;
+  if (typeof content === 'string') return Boolean(content.trim());
+  if (!Array.isArray(content)) return false;
+
+  return content.some(block => isRecord(block) && (
+    (block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
+    || block.type === 'tool_use'
+  ));
+}
+
+function getAssistantTurnCacheWriteTokens(turn: AssistantTurnAggregate): number {
+  return (turn.usage?.cache_creation_input_tokens || 0) + turn.extraCacheWriteTokens;
+}
+
+function recordAssistantTurn(
+  turns: Map<string, AssistantTurnAggregate>,
+  filePath: string,
+  msg: SessionMessage,
+  topLevel: boolean,
+): void {
+  if (msg.type !== 'assistant') return;
+
+  const turnKey = getAssistantTurnKey(filePath, msg);
+  let turn = turns.get(turnKey);
+
+  if (!turn) {
+    turn = {
+      model: '',
+      timestamp: msg.timestamp || '',
+      topLevel,
+      toolCalls: new Map<string, string>(),
+      extraCacheWriteTokens: 0,
+      pendingThinkingOnlyCacheWriteTokens: 0,
+      sawNonThinkingSnapshot: false,
+    };
+    turns.set(turnKey, turn);
+  }
+
+  turn.topLevel = turn.topLevel || topLevel;
+  if (msg.timestamp) turn.timestamp = msg.timestamp;
+  if (typeof msg.message?.model === 'string' && msg.message.model) turn.model = msg.message.model;
+
+  const isThinkingOnlySnapshot = isThinkingOnlyAssistantSnapshot(msg);
+  const hasVisibleContent = hasVisibleAssistantSnapshotContent(msg);
+
+  if (msg.message?.usage) {
+    const usage = msg.message.usage as TokenUsage;
+
+    if (isThinkingOnlySnapshot && !turn.sawNonThinkingSnapshot) {
+      turn.pendingThinkingOnlyCacheWriteTokens = usage.cache_creation_input_tokens || 0;
+    } else {
+      if (
+        hasVisibleContent
+        && msg.message?.stop_reason === 'end_turn'
+        && !turn.sawNonThinkingSnapshot
+        && turn.pendingThinkingOnlyCacheWriteTokens > 0
+      ) {
+        turn.extraCacheWriteTokens += turn.pendingThinkingOnlyCacheWriteTokens;
+      }
+
+      if (!isThinkingOnlySnapshot) {
+        turn.sawNonThinkingSnapshot = true;
+      }
+
+      turn.pendingThinkingOnlyCacheWriteTokens = 0;
+    }
+
+    turn.usage = usage;
+  }
+
+  if (!topLevel || !Array.isArray(msg.message?.content)) return;
+
+  msg.message.content.forEach((contentBlock, index) => {
+    if (!isRecord(contentBlock) || contentBlock.type !== 'tool_use') return;
+    const toolName = typeof contentBlock.name === 'string' && contentBlock.name ? contentBlock.name : 'unknown';
+    const toolId = typeof contentBlock.id === 'string' && contentBlock.id ? contentBlock.id : `${toolName}-${index}`;
+    turn.toolCalls.set(toolId, toolName);
+  });
+}
+
 const TOOL_DETAIL_LABELS: Record<string, string> = {
   args: 'Args',
   addedNames: 'Added',
@@ -1070,7 +1203,7 @@ export async function getProjects(): Promise<ProjectInfo[]> {
     const projectPath = path.join(getProjectsDir(), entry);
     if (!fs.statSync(projectPath).isDirectory()) continue;
 
-    const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+    const jsonlFiles = getTopLevelSessionFiles(projectPath);
     if (jsonlFiles.length === 0) continue;
 
     let totalMessages = 0;
@@ -1080,33 +1213,18 @@ export async function getProjects(): Promise<ProjectInfo[]> {
     const modelsSet = new Set<string>();
 
     for (const file of jsonlFiles) {
-      const filePath = path.join(projectPath, file);
-      const stat = fs.statSync(filePath);
-      const mtime = stat.mtime.toISOString();
-      if (!lastActive || mtime > lastActive) lastActive = mtime;
+      const sessionFilePath = path.join(projectPath, file);
+      const session = await parseSessionFile(sessionFilePath, entry, getProjectNameFromDir(projectPath, entry).name);
 
-      await forEachJsonlLine(filePath, (msg) => {
-        if (msg.type === 'user') totalMessages++;
-        if (msg.type === 'assistant') {
-          totalMessages++;
-          const model = msg.message?.model || '';
-          if (model) modelsSet.add(model);
-          const usage = msg.message?.usage;
-          if (usage) {
-            const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
-              (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-            totalTokens += tokens;
-            const costs = calculateCostAllModes(
-              model,
-              usage.input_tokens || 0,
-              usage.output_tokens || 0,
-              usage.cache_creation_input_tokens || 0,
-              usage.cache_read_input_tokens || 0
-            );
-            estimatedCosts = addCosts(estimatedCosts, costs);
-          }
-        }
-      });
+      for (const aggregateFilePath of getSessionAggregateFilePaths(sessionFilePath)) {
+        const mtime = fs.statSync(aggregateFilePath).mtime.toISOString();
+        if (!lastActive || mtime > lastActive) lastActive = mtime;
+      }
+
+      totalMessages += session.messageCount;
+      totalTokens += session.totalInputTokens + session.totalOutputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens;
+      estimatedCosts = addCosts(estimatedCosts, session.estimatedCosts || zeroCosts());
+      session.models.forEach(model => modelsSet.add(model));
     }
 
     const firstSessionPath = path.join(projectPath, jsonlFiles[0]);
@@ -1122,7 +1240,7 @@ export async function getProjects(): Promise<ProjectInfo[]> {
       estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
       estimatedCosts,
       lastActive,
-      models: Array.from(modelsSet).map(getModelDisplayName),
+      models: Array.from(modelsSet),
     });
   }
 
@@ -1134,7 +1252,7 @@ export async function getProjectSessions(projectId: string): Promise<SessionInfo
   if (!fs.existsSync(projectPath)) return [];
 
   const { name: projectName } = getProjectNameFromDir(projectPath, projectId);
-  const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+  const jsonlFiles = getTopLevelSessionFiles(projectPath);
   const sessions: SessionInfo[] = [];
   for (const file of jsonlFiles) {
     sessions.push(await parseSessionFile(path.join(projectPath, file), projectId, projectName));
@@ -1153,7 +1271,7 @@ export async function getSessions(limit = 50, offset = 0): Promise<SessionInfo[]
     if (!fs.statSync(projectPath).isDirectory()) continue;
 
     const { name: projectName } = getProjectNameFromDir(projectPath, entry);
-    const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+    const jsonlFiles = getTopLevelSessionFiles(projectPath);
     for (const file of jsonlFiles) {
       allSessions.push(await parseSessionFile(path.join(projectPath, file), entry, projectName));
     }
@@ -1165,6 +1283,7 @@ export async function getSessions(limit = 50, offset = 0): Promise<SessionInfo[]
 
 async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
   const sessionId = path.basename(filePath, '.jsonl');
+  const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
 
   let firstTimestamp = '';
   let lastTimestamp = '';
@@ -1187,6 +1306,7 @@ async function parseSessionFile(filePath: string, projectId: string, projectName
   let microcompactions = 0;
   let totalTokensSaved = 0;
   const compactionTimestamps: string[] = [];
+  const assistantTurns = new Map<string, AssistantTurnAggregate>();
 
   await forEachJsonlLine(filePath, (msg) => {
     if (msg.timestamp) {
@@ -1216,36 +1336,44 @@ async function parseSessionFile(filePath: string, projectId: string, projectName
       }
     }
     if (msg.type === 'assistant') {
-      assistantMessageCount++;
-      const model = msg.message?.model || '';
-      if (model) modelsSet.add(model);
-      const usage = msg.message?.usage;
-      if (usage) {
-        totalInputTokens += usage.input_tokens || 0;
-        totalOutputTokens += usage.output_tokens || 0;
-        totalCacheReadTokens += usage.cache_read_input_tokens || 0;
-        totalCacheWriteTokens += usage.cache_creation_input_tokens || 0;
-        const costs = calculateCostAllModes(
-          model,
-          usage.input_tokens || 0,
-          usage.output_tokens || 0,
-          usage.cache_creation_input_tokens || 0,
-          usage.cache_read_input_tokens || 0
-        );
-        estimatedCosts = addCosts(estimatedCosts, costs);
-      }
-      const content = msg.message?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          if (c && typeof c === 'object' && 'type' in c && c.type === 'tool_use') {
-            toolCallCount++;
-            const name = ('name' in c ? c.name : 'unknown') as string;
-            toolsUsed[name] = (toolsUsed[name] || 0) + 1;
-          }
-        }
-      }
+      recordAssistantTurn(assistantTurns, filePath, msg, true);
     }
   });
+
+  for (const aggregateFilePath of aggregateFilePaths.slice(1)) {
+    await forEachJsonlLine(aggregateFilePath, (msg) => {
+      if (msg.timestamp && msg.timestamp > lastTimestamp) lastTimestamp = msg.timestamp;
+      recordAssistantTurn(assistantTurns, aggregateFilePath, msg, false);
+    });
+  }
+
+  for (const assistantTurn of assistantTurns.values()) {
+    if (assistantTurn.topLevel) {
+      assistantMessageCount++;
+      for (const toolName of assistantTurn.toolCalls.values()) {
+        toolCallCount++;
+        toolsUsed[toolName] = (toolsUsed[toolName] || 0) + 1;
+      }
+    }
+
+    if (assistantTurn.model) modelsSet.add(assistantTurn.model);
+    if (!assistantTurn.usage) continue;
+
+    totalInputTokens += assistantTurn.usage.input_tokens || 0;
+    totalOutputTokens += assistantTurn.usage.output_tokens || 0;
+    totalCacheReadTokens += assistantTurn.usage.cache_read_input_tokens || 0;
+    totalCacheWriteTokens += getAssistantTurnCacheWriteTokens(assistantTurn);
+    estimatedCosts = addCosts(
+      estimatedCosts,
+      calculateCostAllModes(
+        assistantTurn.model,
+        assistantTurn.usage.input_tokens || 0,
+        assistantTurn.usage.output_tokens || 0,
+        getAssistantTurnCacheWriteTokens(assistantTurn),
+        assistantTurn.usage.cache_read_input_tokens || 0,
+      ),
+    );
+  }
 
   const duration = firstTimestamp && lastTimestamp
     ? new Date(lastTimestamp).getTime() - new Date(firstTimestamp).getTime()
@@ -1585,9 +1713,10 @@ function getRecentSessionFiles(afterDate: string): string[] {
     const projectPath = path.join(projectsDir, entry);
     if (!fs.statSync(projectPath).isDirectory()) continue;
 
-    for (const f of fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'))) {
+    for (const f of getTopLevelSessionFiles(projectPath)) {
       const filePath = path.join(projectPath, f);
-      if (fs.statSync(filePath).mtimeMs > cutoff) {
+      const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
+      if (aggregateFilePaths.some(aggregateFilePath => fs.statSync(aggregateFilePath).mtimeMs > cutoff)) {
         files.push(filePath);
       }
     }
@@ -1615,105 +1744,107 @@ async function computeSupplementalStats(afterDate: string): Promise<Supplemental
   let estimatedCosts = zeroCosts();
 
   for (const filePath of files) {
-    let firstTimestamp = '';
     let sessionCounted = false;
     let firstQualifyingDate = '';
+    const assistantTurns = new Map<string, AssistantTurnAggregate>();
 
     await forEachJsonlLine(filePath, (msg) => {
-      if (!msg.timestamp) return;
+      if (msg.type === 'assistant') {
+        recordAssistantTurn(assistantTurns, filePath, msg, true);
+      }
 
-      if (!firstTimestamp) firstTimestamp = msg.timestamp;
+      if (!msg.timestamp || msg.type !== 'user' || msg.message?.role !== 'user') return;
 
       const msgDate = msg.timestamp.slice(0, 10);
-
-      // Only count messages strictly after the cache boundary day
       if (afterDate && msgDate <= afterDate) return;
 
-      // Count session once based on first qualifying message
       if (!sessionCounted) {
         totalSessions++;
         sessionCounted = true;
         firstQualifyingDate = msgDate;
       }
 
-      const hour = msg.timestamp.slice(11, 13);
+      totalMessages++;
+      let day = dailyMap.get(msgDate);
+      if (!day) {
+        day = { date: msgDate, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+        dailyMap.set(msgDate, day);
+      }
+      day.messageCount++;
+    });
 
-      if (msg.type === 'user' || msg.type === 'assistant') {
+    for (const aggregateFilePath of getSessionAggregateFilePaths(filePath).slice(1)) {
+      await forEachJsonlLine(aggregateFilePath, (msg) => {
+        if (msg.type === 'assistant') {
+          recordAssistantTurn(assistantTurns, aggregateFilePath, msg, false);
+        }
+      });
+    }
+
+    const qualifyingAssistantTurns = Array.from(assistantTurns.values())
+      .filter(turn => turn.timestamp)
+      .filter(turn => !afterDate || turn.timestamp.slice(0, 10) > afterDate);
+
+    for (const assistantTurn of qualifyingAssistantTurns) {
+      const msgDate = assistantTurn.timestamp.slice(0, 10);
+      const hour = assistantTurn.timestamp.slice(11, 13);
+
+      if (!sessionCounted) {
+        totalSessions++;
+        sessionCounted = true;
+        firstQualifyingDate = msgDate;
+      }
+
+      if (assistantTurn.topLevel) {
         totalMessages++;
-
-        // dailyActivity
         let day = dailyMap.get(msgDate);
         if (!day) {
           day = { date: msgDate, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
           dailyMap.set(msgDate, day);
         }
         day.messageCount++;
+        day.toolCallCount += assistantTurn.toolCalls.size;
       }
 
-      if (msg.type === 'assistant') {
-        const model = msg.message?.model || '';
-        const usage = msg.message?.usage;
+      if (!assistantTurn.usage) continue;
 
-        if (usage) {
-          const input = usage.input_tokens || 0;
-          const output = usage.output_tokens || 0;
-          const cacheRead = usage.cache_read_input_tokens || 0;
-          const cacheWrite = usage.cache_creation_input_tokens || 0;
-          const tokens = input + output + cacheRead + cacheWrite;
-          totalTokens += tokens;
+      const model = assistantTurn.model;
+      const input = assistantTurn.usage.input_tokens || 0;
+      const output = assistantTurn.usage.output_tokens || 0;
+      const cacheRead = assistantTurn.usage.cache_read_input_tokens || 0;
+      const cacheWrite = getAssistantTurnCacheWriteTokens(assistantTurn);
+      const tokens = input + output + cacheRead + cacheWrite;
+      const costs = calculateCostAllModes(model, input, output, cacheWrite, cacheRead);
 
-          const costs = calculateCostAllModes(model, input, output, cacheWrite, cacheRead);
-          estimatedCosts = addCosts(estimatedCosts, costs);
+      totalTokens += tokens;
+      estimatedCosts = addCosts(estimatedCosts, costs);
+      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
 
-          // modelUsage
-          if (model) {
-            if (!modelUsage[model]) {
-              modelUsage[model] = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, estimatedCosts: zeroCosts() };
-            }
-            modelUsage[model].inputTokens += input;
-            modelUsage[model].outputTokens += output;
-            modelUsage[model].cacheReadInputTokens += cacheRead;
-            modelUsage[model].cacheCreationInputTokens += cacheWrite;
-            modelUsage[model].estimatedCosts = addCosts(modelUsage[model].estimatedCosts, costs);
-          }
-
-          // dailyModelTokens + dailyModelCosts
-          if (model) {
-            let dayModel = dailyModelMap.get(msgDate);
-            if (!dayModel) {
-              dayModel = {};
-              dailyModelMap.set(msgDate, dayModel);
-            }
-            dayModel[model] = (dayModel[model] || 0) + tokens;
-
-            let dayCost = dailyModelCostMap.get(msgDate);
-            if (!dayCost) {
-              dayCost = {};
-              dailyModelCostMap.set(msgDate, dayCost);
-            }
-            dayCost[model] = dayCost[model] ? addCosts(dayCost[model], costs) : { ...costs };
-          }
-
-          // hourCounts
-          hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+      if (model) {
+        if (!modelUsage[model]) {
+          modelUsage[model] = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, estimatedCosts: zeroCosts() };
         }
+        modelUsage[model].inputTokens += input;
+        modelUsage[model].outputTokens += output;
+        modelUsage[model].cacheReadInputTokens += cacheRead;
+        modelUsage[model].cacheCreationInputTokens += cacheWrite;
+        modelUsage[model].estimatedCosts = addCosts(modelUsage[model].estimatedCosts, costs);
 
-        // tool calls
-        const content = msg.message?.content;
-        if (Array.isArray(content)) {
-          let toolCalls = 0;
-          for (const c of content) {
-            if (c && typeof c === 'object' && 'type' in c && c.type === 'tool_use') {
-              toolCalls++;
-            }
-          }
-          if (toolCalls > 0) {
-            const day = dailyMap.get(msgDate);
-            if (day) day.toolCallCount += toolCalls;
-          }
+        let dayModel = dailyModelMap.get(msgDate);
+        if (!dayModel) {
+          dayModel = {};
+          dailyModelMap.set(msgDate, dayModel);
         }
+        dayModel[model] = (dayModel[model] || 0) + tokens;
+
+        let dayCost = dailyModelCostMap.get(msgDate);
+        if (!dayCost) {
+          dayCost = {};
+          dailyModelCostMap.set(msgDate, dayCost);
+        }
+        dayCost[model] = dayCost[model] ? addCosts(dayCost[model], costs) : { ...costs };
       }
-    });
+    }
 
     // Track session count per day (based on first qualifying message)
     if (sessionCounted && firstQualifyingDate) {
