@@ -70,18 +70,31 @@ export interface MicrocompactMetadata {
 }
 
 export interface SessionMessage {
-  type: 'user' | 'assistant' | 'progress' | 'system' | 'file-history-snapshot';
+  type: string;
   sessionId: string;
   timestamp: string;
-  uuid: string;
-  parentUuid: string | null;
-  cwd: string;
-  version: string;
-  gitBranch: string;
+  uuid?: string;
+  parentUuid?: string | null;
+  cwd?: string;
+  version?: string;
+  gitBranch?: string;
+  isMeta?: boolean;
+  subtype?: string;
+  permissionMode?: string;
+  messageId?: string;
+  isSnapshotUpdate?: boolean;
+  sourceToolAssistantUUID?: string;
   compactMetadata?: CompactMetadata;
   microcompactMetadata?: MicrocompactMetadata;
   isCompactSummary?: boolean;
+  attachment?: Record<string, unknown>;
+  toolUseResult?: Record<string, unknown>;
+  snapshot?: Record<string, unknown>;
+  content?: string;
+  lastPrompt?: string;
+  leafUuid?: string;
   message?: {
+    id?: string;
     role: string;
     model?: string;
     content: unknown;
@@ -154,17 +167,64 @@ export interface SessionInfo {
   compaction: CompactionInfo;
 }
 
+export interface SessionPromptTokenBreakdown {
+  totalTokens: number;
+  systemTokens: number;
+  conversationTokens: number;
+  filesTokens: number;
+  thinkingTokens: number;
+  toolTokens: number;
+  otherTokens: number;
+}
+
 export interface SessionDetail extends SessionInfo {
   messages: SessionMessageDisplay[];
 }
 
+export interface SessionToolCallDetail {
+  key: string;
+  label: string;
+  value: string;
+}
+
+export interface SessionArtifactDisplay {
+  kind: 'text' | 'diff';
+  title: string;
+  content?: string;
+  oldText?: string;
+  newText?: string;
+  location?: string;
+}
+
+export interface SessionToolCallDisplay {
+  name: string;
+  id: string;
+  summary: string;
+  details: SessionToolCallDetail[];
+  artifact?: SessionArtifactDisplay;
+}
+
+export interface SessionMessageBlockDisplay {
+  type: 'thinking' | 'tool-result' | 'event';
+  title: string;
+  summary: string;
+  details: SessionToolCallDetail[];
+  content?: string;
+}
+
 export interface SessionMessageDisplay {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system' | 'tool-use' | 'tool-result' | 'command';
   content: string;
   timestamp: string;
+  messageId?: string;
   model?: string;
   usage?: TokenUsage;
-  toolCalls?: { name: string; id: string }[];
+  estimatedCosts?: CostEstimates;
+  promptBreakdown?: SessionPromptTokenBreakdown;
+  stopReason?: string | null;
+  toolCalls?: SessionToolCallDisplay[];
+  blocks?: SessionMessageBlockDisplay[];
+  isMeta?: boolean;
 }
 
 export interface DashboardStats {
