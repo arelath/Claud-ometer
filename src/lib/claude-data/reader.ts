@@ -1582,6 +1582,7 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
               role: isToolUseOnly ? 'tool-use' : 'assistant',
               content: text.trim(),
               timestamp: msg.timestamp,
+              messageId: msg.message.id,
               model: msg.message.model,
               usage: msg.message.usage as TokenUsage | undefined,
               promptBreakdown,

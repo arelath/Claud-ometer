@@ -2,8 +2,10 @@
 
 import { createContext, use, useState, useCallback, useMemo, useRef, useEffect, useContext } from 'react';
 import { useSessionDetail } from '@/lib/hooks';
+import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { getModelDisplayName } from '@/config/pricing';
+import { getCodeLanguageLabel, guessCodeLanguage, tokenizeCode, type CodeLanguage, type HighlightToken } from '@/lib/code-highlighting';
 import { formatCost, formatDuration, formatTokens } from '@/lib/format';
 import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -110,29 +112,13 @@ function hasVisibleAssistantContent(message: SessionMessageDisplay): boolean {
   });
 }
 
-function mergeTokenUsage(usages: Array<SessionMessageDisplay['usage']>): SessionMessageDisplay['usage'] {
-  const present = usages.filter((usage): usage is NonNullable<SessionMessageDisplay['usage']> => Boolean(usage));
-  if (present.length === 0) return undefined;
-
-  return {
-    input_tokens: present.reduce((sum, usage) => sum + (usage.input_tokens || 0), 0),
-    output_tokens: present.reduce((sum, usage) => sum + (usage.output_tokens || 0), 0),
-    cache_creation_input_tokens: present.reduce((sum, usage) => sum + (usage.cache_creation_input_tokens || 0), 0),
-    cache_read_input_tokens: present.reduce((sum, usage) => sum + (usage.cache_read_input_tokens || 0), 0),
-    cache_creation: {
-      ephemeral_5m_input_tokens: present.reduce((sum, usage) => sum + (usage.cache_creation?.ephemeral_5m_input_tokens || 0), 0),
-      ephemeral_1h_input_tokens: present.reduce((sum, usage) => sum + (usage.cache_creation?.ephemeral_1h_input_tokens || 0), 0),
-    },
-    service_tier: present[present.length - 1]?.service_tier,
-  };
-}
-
 function mergeAssistantRun(run: { message: SessionMessageDisplay; index: number }[]): SessionMessageDisplay | null {
   const visibleMessages = run.filter(({ message }) => hasVisibleAssistantContent(message));
   if (visibleMessages.length === 0) return null;
 
   const first = run[0].message;
   const lastVisible = visibleMessages[visibleMessages.length - 1].message;
+  const assistantMetrics = buildAssistantTurnMetrics(run.map(({ message }) => message));
   const content = visibleMessages
     .map(({ message }) => message.content.trim())
     .filter(Boolean)
@@ -145,7 +131,8 @@ function mergeAssistantRun(run: { message: SessionMessageDisplay; index: number 
     content,
     timestamp: lastVisible.timestamp || first.timestamp,
     model: lastVisible.model || first.model,
-    usage: mergeTokenUsage(run.map(({ message }) => message.usage)),
+    usage: assistantMetrics.usage,
+    estimatedCosts: assistantMetrics.estimatedCosts,
     promptBreakdown: lastVisible.promptBreakdown,
     stopReason: lastVisible.stopReason || first.stopReason,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -416,6 +403,7 @@ function groupMessages(items: { message: SessionMessageDisplay; index: number }[
       }
 
       const mergedMessage = mergeAssistantRun(assistantRun);
+      const assistantMetrics = buildAssistantTurnMetrics(assistantRun.map(({ message: runMessage }) => runMessage));
       if (!mergedMessage && toolPairs.length === 0) {
         i = j;
         continue;
@@ -428,7 +416,8 @@ function groupMessages(items: { message: SessionMessageDisplay; index: number }[
           content: '',
           timestamp: assistantRun[assistantRun.length - 1].message.timestamp,
           model: assistantRun[assistantRun.length - 1].message.model,
-          usage: mergeTokenUsage(assistantRun.map(({ message: runMessage }) => runMessage.usage)),
+          usage: assistantMetrics.usage,
+          estimatedCosts: assistantMetrics.estimatedCosts,
           stopReason: assistantRun[assistantRun.length - 1].message.stopReason,
           isMeta: assistantRun.some(({ message: runMessage }) => Boolean(runMessage.isMeta)),
         },
@@ -579,6 +568,8 @@ interface ArtifactViewerState {
   title: string;
   subtitle?: string;
   kind: 'text' | 'diff';
+  language?: CodeLanguage;
+  sourcePath?: string;
   content?: string;
   oldText?: string;
   newText?: string;
@@ -621,6 +612,12 @@ function formatDisplayPath(pathValue: string, projectRoot?: string): string {
     .join('\n');
 }
 
+const CODE_PATH_DETAIL_KEYS = ['originalFile', 'content.file.filePath', 'displayPath', 'filePath', 'file_path', 'filename', 'path'];
+
+function getCodePathDetailValue(details: SessionToolCallDisplay['details']): string | undefined {
+  return findPreferredDetail(details, CODE_PATH_DETAIL_KEYS)?.value;
+}
+
 function isPathDetailKey(key: string): boolean {
   return detailMatchesKey(key, ['displayPath', 'file_path', 'filePath', 'path', 'paths', 'filename', 'content.file.filePath']);
 }
@@ -634,6 +631,47 @@ function formatDisplayValue(key: string, value: string, projectRoot?: string): s
 function toPreviewLines(value: string): string[] {
   const normalized = normalizeDisplayNewlines(value).replace(/\r\n?/g, '\n');
   return normalized ? normalized.split('\n') : [];
+}
+
+const HIGHLIGHT_TOKEN_CLASSES: Record<HighlightToken['kind'], string> = {
+  plain: '',
+  comment: 'text-muted-foreground/90 italic',
+  function: 'text-violet-700 dark:text-violet-300',
+  keyword: 'text-sky-700 dark:text-sky-300',
+  number: 'text-fuchsia-700 dark:text-fuchsia-300',
+  operator: 'text-rose-700 dark:text-rose-300',
+  string: 'text-amber-700 dark:text-amber-300',
+  type: 'text-emerald-700 dark:text-emerald-300',
+};
+
+function renderHighlightedTokens(tokens: HighlightToken[], keyPrefix: string) {
+  return tokens.map((token, index) => {
+    const className = HIGHLIGHT_TOKEN_CLASSES[token.kind];
+    return (
+      <span key={`${keyPrefix}-${index}`} className={className || undefined}>
+        {token.text}
+      </span>
+    );
+  });
+}
+
+function HighlightedCode({ content, language, className }: {
+  content: string;
+  language?: CodeLanguage;
+  className: string;
+}) {
+  const tokenLines = useMemo(() => tokenizeCode(content, language), [content, language]);
+
+  return (
+    <pre className={className}>
+      {tokenLines.map((tokens, lineIndex) => (
+        <span key={`line-${lineIndex}`}>
+          {renderHighlightedTokens(tokens, `token-${lineIndex}`)}
+          {lineIndex < tokenLines.length - 1 ? '\n' : null}
+        </span>
+      ))}
+    </pre>
+  );
 }
 
 interface DiffPreviewLine {
@@ -658,6 +696,7 @@ function ArtifactPreviewContent({ artifact, maxLines, fullscreen = false }: {
   fullscreen?: boolean;
 }) {
   const visibleLines = fullscreen ? Number.MAX_SAFE_INTEGER : (maxLines ?? COLLAPSED_PREVIEW_LINES);
+  const artifactLanguage = artifact.language ?? guessCodeLanguage(artifact.sourcePath);
 
   if (artifact.kind === 'diff') {
     const diffLines = buildDiffPreviewLines(artifact.oldText || '', artifact.newText || '', artifact.location);
@@ -675,7 +714,12 @@ function ArtifactPreviewContent({ artifact, maxLines, fullscreen = false }: {
                 : 'bg-green-500/10 text-green-700 dark:text-green-300';
             return (
               <div key={`${line.tone}-${index}`} className={`whitespace-pre-wrap break-words rounded px-2 py-0.5 ${toneClass}`}>
-                {line.text}
+                {line.tone === 'meta' || !artifactLanguage ? line.text : (
+                  <>
+                    <span className="opacity-70">{line.text.slice(0, 2)}</span>
+                    {renderHighlightedTokens(tokenizeCode(line.text.slice(2), artifactLanguage)[0] || [], `diff-${index}`)}
+                  </>
+                )}
               </div>
             );
           })}
@@ -695,9 +739,11 @@ function ArtifactPreviewContent({ artifact, maxLines, fullscreen = false }: {
 
   return (
     <>
-      <pre className={`whitespace-pre-wrap break-words text-foreground ${fullscreen ? 'font-mono text-sm leading-6' : 'font-mono text-[11px] leading-5'}`}>
-        {shownLines.join('\n')}
-      </pre>
+      <HighlightedCode
+        content={shownLines.join('\n')}
+        language={artifactLanguage}
+        className={`whitespace-pre-wrap break-words text-foreground ${fullscreen ? 'font-mono text-sm leading-6' : 'font-mono text-[11px] leading-5'}`}
+      />
       {!fullscreen && hiddenLines > 0 && (
         <div className="mt-2 border-t border-border/40 pt-1 text-[10px] italic text-muted-foreground">
           + {hiddenLines} more lines
@@ -714,6 +760,7 @@ function ArtifactPreview({ artifact, label, className = '' }: {
 }) {
   const { openArtifact } = useSessionRenderContext();
   const [expanded, setExpanded] = useState(false);
+  const artifactLanguage = artifact.language ?? guessCodeLanguage(artifact.sourcePath);
   const totalLines = artifact.kind === 'diff'
     ? buildDiffPreviewLines(artifact.oldText || '', artifact.newText || '', artifact.location).length
     : Math.max(toPreviewLines(artifact.content || '').length, 1);
@@ -722,7 +769,14 @@ function ArtifactPreview({ artifact, label, className = '' }: {
   return (
     <div className={`overflow-hidden rounded-md border ${artifact.kind === 'diff' ? 'border-border/50 bg-background/95' : 'border-green-500/20 bg-green-500/[0.02]'} ${className}`}>
       <div className={`flex items-center justify-between gap-2 px-2 py-0.5 ${artifact.kind === 'diff' ? 'border-b border-border/40 bg-muted/25' : 'border-b border-green-500/15 bg-green-500/[0.03]'}`}>
-        <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
+          {artifactLanguage && (
+            <span className="rounded-full border border-border/50 bg-background/70 px-1.5 py-0 font-mono text-[10px] leading-4 text-muted-foreground">
+              {getCodeLanguageLabel(artifactLanguage)}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           {canExpandInline && (
             <button
@@ -771,6 +825,8 @@ function ArtifactFullscreenViewer({ artifact, onClose }: {
 
   if (!artifact) return null;
 
+  const artifactLanguage = artifact.language ?? guessCodeLanguage(artifact.sourcePath);
+
   return (
     <div className="fixed inset-0 z-50 bg-black/45 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
@@ -779,7 +835,14 @@ function ArtifactFullscreenViewer({ artifact, onClose }: {
       >
         <div className="flex items-start justify-between gap-4 border-b border-border/60 bg-card px-4 py-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-foreground">{artifact.title}</h2>
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="truncate text-sm font-semibold text-foreground">{artifact.title}</h2>
+              {artifactLanguage && (
+                <span className="rounded-full border border-border/50 bg-background/80 px-2 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground">
+                  {getCodeLanguageLabel(artifactLanguage)}
+                </span>
+              )}
+            </div>
             {artifact.subtitle && (
               <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{artifact.subtitle}</p>
             )}
@@ -822,10 +885,15 @@ function DetailPanel({ details, content, shownKeys = [], summaryLabel = 'details
   });
   if (filtered.length === 0 && !content) return null;
 
+  const codePath = getCodePathDetailValue(details);
+  const previewLanguage = guessCodeLanguage(codePath);
+
   const previewArtifact = content
     ? {
         title: summaryLabel,
         kind: 'text' as const,
+        language: previewLanguage,
+        sourcePath: codePath,
         content: normalizeDisplayNewlines(content),
       }
     : null;
@@ -916,6 +984,8 @@ function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
         title: `${tool.name} diff`,
         subtitle: primary && filePath ? formatDisplayPath(primary, projectRoot) : undefined,
         kind: 'diff',
+        language: guessCodeLanguage(primary),
+        sourcePath: primary,
         oldText: tool.artifact.oldText,
         newText: tool.artifact.newText,
         location: tool.artifact.location,
@@ -982,6 +1052,7 @@ function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
 }
 
 function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
+  const { projectRoot } = useSessionRenderContext();
   const blocks = msg.blocks || [];
   if (blocks.length === 0 && !msg.content) return null;
 
@@ -998,6 +1069,8 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
     ? 'border-l-2 border-red-500/70 bg-red-500/[0.02]'
     : 'border-l-2 border-green-500/40 bg-transparent';
   const textColor = hasError ? 'text-red-600 dark:text-red-400' : 'text-green-700/80 dark:text-green-500/80';
+  const previewPath = blocks.map(block => getCodePathDetailValue(block.details)).find(Boolean);
+  const previewLanguage = guessCodeLanguage(previewPath);
 
   // Determine effective content for display
   const effectiveContent = blockContent || normalizedMessageContent;
@@ -1009,9 +1082,11 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   if (isShortOutput) {
     return (
       <div className={`${accent} px-3 py-1.5`}>
-        <pre className={`whitespace-pre-wrap break-words font-mono text-[11px] leading-5 ${hasError ? 'text-red-600 dark:text-red-400' : 'text-foreground/80'}`}>
-          {effectiveContent}
-        </pre>
+        <HighlightedCode
+          content={effectiveContent}
+          language={previewLanguage}
+          className={`whitespace-pre-wrap break-words font-mono text-[11px] leading-5 ${hasError ? 'text-red-600 dark:text-red-400' : 'text-foreground/80'}`}
+        />
       </div>
     );
   }
@@ -1019,14 +1094,22 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   const previewArtifact: ArtifactViewerState | null = blockContent
     ? {
         title: blocks[0]?.title || (hasError ? 'Error output' : 'Tool output'),
-        subtitle: normalizedMessageContent && !normalizedMessageContent.includes('\n') ? normalizedMessageContent : undefined,
+        subtitle: previewPath
+          ? formatDisplayPath(previewPath, projectRoot)
+          : normalizedMessageContent && !normalizedMessageContent.includes('\n')
+            ? normalizedMessageContent
+            : undefined,
         kind: 'text',
+        language: previewLanguage,
+        sourcePath: previewPath,
         content: blockContent,
       }
     : normalizedMessageContent && (normalizedMessageContent.includes('\n') || normalizedMessageContent.length > 120)
       ? {
           title: hasError ? 'Error output' : 'Tool output',
           kind: 'text',
+          language: previewLanguage,
+          sourcePath: previewPath,
           content: normalizedMessageContent,
         }
       : null;
@@ -1208,6 +1291,7 @@ function AssistantCard({ msg, index, toolPairs }: {
   index: number;
   toolPairs: ToolPair[];
 }) {
+  const { pickCost } = useCostMode();
   const thinkingBlocks = (msg.blocks || []).filter(b => b.type === 'thinking');
   const eventBlocks = (msg.blocks || []).filter(b => b.type === 'event');
 
@@ -1215,10 +1299,7 @@ function AssistantCard({ msg, index, toolPairs }: {
     ? getModelDisplayName(msg.model)
     : null;
 
-  // Rough per-turn cost estimate
-  const turnCost = msg.usage
-    ? ((msg.usage.input_tokens || 0) + (msg.usage.cache_read_input_tokens || 0)) * 0.000015 + (msg.usage.output_tokens || 0) * 0.000075
-    : 0;
+  const turnCost = pickCost(msg.estimatedCosts, 0);
 
   // Surface a readable summary even when the assistant emitted only tool calls
   const allTools = [

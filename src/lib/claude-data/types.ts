@@ -216,8 +216,10 @@ export interface SessionMessageDisplay {
   role: 'user' | 'assistant' | 'system' | 'tool-use' | 'tool-result' | 'command';
   content: string;
   timestamp: string;
+  messageId?: string;
   model?: string;
   usage?: TokenUsage;
+  estimatedCosts?: CostEstimates;
   promptBreakdown?: SessionPromptTokenBreakdown;
   stopReason?: string | null;
   toolCalls?: SessionToolCallDisplay[];
