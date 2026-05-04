@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
+import claudeTokenizerModel from '@anthropic-ai/tokenizer/dist/cjs/claude.json';
+import { Tiktoken } from 'tiktoken/lite';
 import { calculateCostAllModes, getModelDisplayName, DEFAULT_COST_MODE } from '@/config/pricing';
 import { getActiveDataSource, getImportDir } from './data-source';
 import type {
@@ -10,6 +12,7 @@ import type {
   ProjectInfo,
   SessionInfo,
   SessionDetail,
+  SessionArtifactDisplay,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
   SessionToolCallDisplay,
@@ -19,7 +22,21 @@ import type {
   TokenUsage,
   SessionMessage,
   CostEstimates,
+  SessionPromptTokenBreakdown,
 } from './types';
+
+let claudeTokenizer: Tiktoken | null = null;
+
+function getClaudeTokenizer(): Tiktoken {
+  if (!claudeTokenizer) {
+    claudeTokenizer = new Tiktoken(
+      claudeTokenizerModel.bpe_ranks,
+      claudeTokenizerModel.special_tokens,
+      claudeTokenizerModel.pat_str,
+    );
+  }
+  return claudeTokenizer;
+}
 
 function zeroCosts(): CostEstimates {
   return { api: 0, conservative: 0, subscription: 0 };
@@ -224,6 +241,307 @@ function summarizeLargeText(value: string): string {
   return `${value.length.toLocaleString()} chars`;
 }
 
+interface PromptTokenTotals {
+  systemTokens: number;
+  conversationTokens: number;
+  filesTokens: number;
+  thinkingTokens: number;
+  toolTokens: number;
+  otherTokens: number;
+  hiddenThinkingBlocks: number;
+}
+
+function zeroPromptTokenTotals(): PromptTokenTotals {
+  return {
+    systemTokens: 0,
+    conversationTokens: 0,
+    filesTokens: 0,
+    thinkingTokens: 0,
+    toolTokens: 0,
+    otherTokens: 0,
+    hiddenThinkingBlocks: 0,
+  };
+}
+
+function getPromptUsageTokenCount(usage?: TokenUsage): number | null {
+  if (!usage) return null;
+  return (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+}
+
+function buildPromptBreakdown(
+  totals: PromptTokenTotals,
+  usage?: TokenUsage,
+  sessionId?: string,
+  timestamp?: string,
+): SessionPromptTokenBreakdown {
+  const systemTokens = totals.systemTokens;
+  const conversationTokens = totals.conversationTokens;
+  const filesTokens = totals.filesTokens;
+  let thinkingTokens = totals.thinkingTokens;
+  const toolTokens = totals.toolTokens;
+  let otherTokens = totals.otherTokens;
+
+  const knownTotal = systemTokens + conversationTokens + filesTokens + thinkingTokens + toolTokens + otherTokens;
+  const exactTotal = getPromptUsageTokenCount(usage);
+
+  if (exactTotal != null) {
+    if (knownTotal > exactTotal) {
+      const contextLabel = [sessionId, timestamp].filter(Boolean).join(' @ ');
+      throw new Error(`Prompt breakdown exceeds assistant usage${contextLabel ? ` for ${contextLabel}` : ''}: ${knownTotal} > ${exactTotal}`);
+    }
+
+    const residualTokens = exactTotal - knownTotal;
+    if (residualTokens > 0) {
+      if (totals.hiddenThinkingBlocks > 0) {
+        // Recent Claude traces often redact thinking text but keep a signature marker.
+        // Attribute the unrecoverable residual back to Thinking instead of bloating Other.
+        thinkingTokens += residualTokens;
+      } else {
+        otherTokens += residualTokens;
+      }
+    }
+
+    return {
+      totalTokens: exactTotal,
+      systemTokens,
+      conversationTokens,
+      filesTokens,
+      thinkingTokens,
+      toolTokens,
+      otherTokens,
+    };
+  }
+
+  return {
+    totalTokens: knownTotal,
+    systemTokens,
+    conversationTokens,
+    filesTokens,
+    thinkingTokens,
+    toolTokens,
+    otherTokens,
+  };
+}
+
+function addPromptTokenTotals(target: PromptTokenTotals, source: PromptTokenTotals): void {
+  target.systemTokens += source.systemTokens;
+  target.conversationTokens += source.conversationTokens;
+  target.filesTokens += source.filesTokens;
+  target.thinkingTokens += source.thinkingTokens;
+  target.toolTokens += source.toolTokens;
+  target.otherTokens += source.otherTokens;
+  target.hiddenThinkingBlocks += source.hiddenThinkingBlocks;
+}
+
+function hasPromptTokens(totals: PromptTokenTotals): boolean {
+  return Boolean(
+    totals.systemTokens ||
+    totals.conversationTokens ||
+    totals.filesTokens ||
+    totals.thinkingTokens ||
+    totals.toolTokens ||
+    totals.otherTokens ||
+    totals.hiddenThinkingBlocks
+  );
+}
+
+function countTokenizedText(text: string): number {
+  const normalized = text.trim();
+  if (!normalized) return 0;
+  return getClaudeTokenizer().encode(normalized.normalize('NFKC'), 'all').length;
+}
+
+function countSerializedTokens(value: unknown): number {
+  if (value == null) return 0;
+  if (typeof value === 'string') return countTokenizedText(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return countTokenizedText(String(value));
+
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized ? countTokenizedText(serialized) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getImageBlockTokenCount(block: Record<string, unknown>): number {
+  const descriptor: Record<string, unknown> = { type: 'image' };
+
+  if (typeof block.alt_text === 'string' && block.alt_text.trim()) {
+    descriptor.alt_text = block.alt_text.trim();
+  }
+
+  if (typeof block.file_id === 'string' && block.file_id.trim()) {
+    descriptor.file_id = block.file_id.trim();
+  }
+
+  if (typeof block.filename === 'string' && block.filename.trim()) {
+    descriptor.filename = block.filename.trim();
+  }
+
+  if (isRecord(block.source)) {
+    const sourceDescriptor: Record<string, unknown> = {};
+
+    if (typeof block.source.type === 'string' && block.source.type.trim()) {
+      sourceDescriptor.type = block.source.type.trim();
+    }
+
+    if (typeof block.source.media_type === 'string' && block.source.media_type.trim()) {
+      sourceDescriptor.media_type = block.source.media_type.trim();
+    }
+
+    if (typeof block.source.width === 'number') sourceDescriptor.width = block.source.width;
+    if (typeof block.source.height === 'number') sourceDescriptor.height = block.source.height;
+    if (typeof block.source.width_px === 'number') sourceDescriptor.width_px = block.source.width_px;
+    if (typeof block.source.height_px === 'number') sourceDescriptor.height_px = block.source.height_px;
+
+    if (Object.keys(sourceDescriptor).length > 0) {
+      descriptor.source = sourceDescriptor;
+    }
+  }
+
+  return countSerializedTokens(descriptor);
+}
+
+function getFileAttachmentTokenCount(attachment: Record<string, unknown>): number {
+  const parts: string[] = [];
+
+  if (typeof attachment.filename === 'string') parts.push(attachment.filename);
+  if (typeof attachment.displayPath === 'string') parts.push(attachment.displayPath);
+
+  const fileContent = isRecord(attachment.content) && isRecord(attachment.content.file)
+    ? attachment.content.file.content
+    : undefined;
+
+  if (typeof fileContent === 'string') {
+    parts.push(fileContent);
+  } else {
+    return countSerializedTokens(attachment);
+  }
+
+  return countTokenizedText(parts.join('\n\n'));
+}
+
+function isCommandLikeUserContent(text: string): boolean {
+  return /<command-name>|<local-command-stdout>|<local-command-caveat>/.test(text);
+}
+
+function getAttachmentPromptContribution(msg: SessionMessage): PromptTokenTotals {
+  const totals = zeroPromptTokenTotals();
+  if (msg.type !== 'attachment' || !isRecord(msg.attachment)) return totals;
+
+  const attachmentType = typeof msg.attachment.type === 'string' ? msg.attachment.type : 'attachment';
+  if (attachmentType === 'file') {
+    totals.filesTokens += getFileAttachmentTokenCount(msg.attachment);
+    return totals;
+  }
+
+  if (attachmentType === 'hook_success') {
+    totals.otherTokens += countSerializedTokens(msg.attachment);
+    return totals;
+  }
+
+  totals.systemTokens += countSerializedTokens(msg.attachment);
+  return totals;
+}
+
+function getUserPromptContribution(msg: SessionMessage): PromptTokenTotals {
+  const totals = zeroPromptTokenTotals();
+  if (msg.type !== 'user' || msg.message?.role !== 'user') return totals;
+
+  const content = msg.message.content;
+  if (typeof content === 'string') {
+    if (isCommandLikeUserContent(content) || msg.isMeta) {
+      totals.systemTokens += countTokenizedText(content);
+    } else {
+      totals.conversationTokens += countTokenizedText(content);
+    }
+    return totals;
+  }
+
+  if (!Array.isArray(content)) return totals;
+
+  if (isRecord(msg.toolUseResult)) {
+    totals.toolTokens += countSerializedTokens(msg.toolUseResult);
+    return totals;
+  }
+
+  for (const block of content) {
+    if (!isRecord(block)) {
+      totals.toolTokens += countSerializedTokens(block);
+      continue;
+    }
+
+    if (block.type === 'text') {
+      totals.conversationTokens += countSerializedTokens(block.text ?? block.content ?? block);
+      continue;
+    }
+
+    if (block.type === 'tool_result') {
+      totals.toolTokens += countSerializedTokens(block.content ?? block);
+      continue;
+    }
+
+    if (block.type === 'image') {
+      totals.otherTokens += getImageBlockTokenCount(block);
+      continue;
+    }
+
+    totals.otherTokens += countSerializedTokens({ type: block.type });
+  }
+
+  return totals;
+}
+
+function getAssistantPromptContribution(msg: SessionMessage): PromptTokenTotals {
+  const totals = zeroPromptTokenTotals();
+  if (msg.type !== 'assistant' || !msg.message?.content) return totals;
+
+  const content = msg.message.content;
+  if (typeof content === 'string') {
+    totals.conversationTokens += countTokenizedText(content);
+    return totals;
+  }
+
+  if (!Array.isArray(content)) return totals;
+
+  for (const block of content) {
+    if (!isRecord(block)) {
+      totals.otherTokens += countSerializedTokens(block);
+      continue;
+    }
+
+    if (block.type === 'text') {
+      totals.conversationTokens += countSerializedTokens(block.text);
+      continue;
+    }
+
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      const thinkingText = typeof block.thinking === 'string'
+        ? block.thinking.trim()
+        : typeof block.text === 'string'
+          ? block.text.trim()
+          : '';
+
+      if (thinkingText) {
+        totals.thinkingTokens += countTokenizedText(thinkingText);
+      } else if (typeof block.signature === 'string' && block.signature.trim()) {
+        totals.hiddenThinkingBlocks += 1;
+      }
+      continue;
+    }
+
+    if (block.type === 'tool_use') {
+      totals.toolTokens += countSerializedTokens({ name: block.name, input: block.input });
+      continue;
+    }
+
+    totals.otherTokens += countSerializedTokens({ type: block.type });
+  }
+
+  return totals;
+}
+
 function formatToolDetailValue(key: string, value: unknown): string | null {
   if (value == null) return null;
 
@@ -327,10 +645,11 @@ function buildToolCallDisplay(name: string, id: string, input: unknown): Session
     id,
     summary: buildToolCallSummary(name, details),
     details,
+    artifact: buildToolCallArtifact(name, input),
   };
 }
 
-function toPreviewText(text: string, maxLength = 2_000): string {
+function toPreviewText(text: string, maxLength = 50_000): string {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength).trimEnd()}\n\n[truncated ${text.length.toLocaleString()} chars]`;
 }
@@ -476,6 +795,28 @@ function extractTextPreview(value: unknown): string | undefined {
   return undefined;
 }
 
+function buildToolCallArtifact(name: string, input: unknown): SessionArtifactDisplay | undefined {
+  if (!isRecord(input)) return undefined;
+
+  const oldText = extractTextPreview(input.old_string ?? input.oldString);
+  const newText = extractTextPreview(input.new_string ?? input.newString);
+
+  if (!oldText || !newText) return undefined;
+
+  const startLine = input.startLine;
+  const location = typeof startLine === 'number' || typeof startLine === 'string'
+    ? `line ${startLine}`
+    : undefined;
+
+  return {
+    kind: 'diff',
+    title: `${name} preview`,
+    oldText,
+    newText,
+    location,
+  };
+}
+
 function buildStructuredContent(value: unknown): string | undefined {
   const directPreview = extractTextPreview(value);
   if (directPreview) return directPreview;
@@ -557,8 +898,8 @@ function buildToolResultBlock(
   }
 
   const content =
-    extractTextPreview(toolResultContent?.content) ||
     buildStructuredContent(toolUseResult) ||
+    extractTextPreview(toolResultContent?.content) ||
     buildStructuredContent(toolResultContent);
 
   const title = toolUseResult && typeof toolUseResult.type === 'string'
@@ -957,6 +1298,14 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
     const { name: projectName } = getProjectNameFromDir(projectPath, entry);
     const sessionInfo = await parseSessionFile(filePath, entry, projectName);
     const messages: SessionMessageDisplay[] = [];
+    const contextTotals = zeroPromptTokenTotals();
+    let pendingAssistantTotals = zeroPromptTokenTotals();
+
+    const flushPendingAssistantTotals = () => {
+      if (!hasPromptTokens(pendingAssistantTotals)) return;
+      addPromptTokenTotals(contextTotals, pendingAssistantTotals);
+      pendingAssistantTotals = zeroPromptTokenTotals();
+    };
 
     const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -965,6 +1314,8 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line) as SessionMessage;
+        if (msg.type !== 'assistant') flushPendingAssistantTotals();
+
         if (msg.type === 'user' && msg.message?.role === 'user') {
           const content = msg.message.content;
           const textParts: string[] = [];
@@ -996,6 +1347,7 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
               timestamp: msg.timestamp,
               isMeta: msg.isMeta || Boolean(commandCaveatMatch),
             });
+            addPromptTokenTotals(contextTotals, getUserPromptContribution(msg));
             continue;
           }
 
@@ -1051,10 +1403,17 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
               isMeta: msg.isMeta,
             });
           }
+          addPromptTokenTotals(contextTotals, getUserPromptContribution(msg));
           continue;
         }
 
         if (msg.type === 'assistant' && msg.message?.content) {
+          const promptBreakdown = buildPromptBreakdown(
+            contextTotals,
+            msg.message.usage as TokenUsage | undefined,
+            sessionId,
+            msg.timestamp,
+          );
           const content = msg.message.content;
           const toolCalls: SessionToolCallDisplay[] = [];
           const blocks: SessionMessageBlockDisplay[] = [];
@@ -1097,12 +1456,14 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
               timestamp: msg.timestamp,
               model: msg.message.model,
               usage: msg.message.usage as TokenUsage | undefined,
+              promptBreakdown,
               stopReason: msg.message.stop_reason,
               toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
               blocks: blocks.length > 0 ? blocks : undefined,
               isMeta: msg.isMeta,
             });
           }
+          addPromptTokenTotals(pendingAssistantTotals, getAssistantPromptContribution(msg));
           continue;
         }
 
@@ -1116,6 +1477,7 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
             isMeta: msg.isMeta,
           });
         }
+        addPromptTokenTotals(contextTotals, getAttachmentPromptContribution(msg));
       } catch { /* skip */ }
     }
 

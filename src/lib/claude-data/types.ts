@@ -166,6 +166,16 @@ export interface SessionInfo {
   compaction: CompactionInfo;
 }
 
+export interface SessionPromptTokenBreakdown {
+  totalTokens: number;
+  systemTokens: number;
+  conversationTokens: number;
+  filesTokens: number;
+  thinkingTokens: number;
+  toolTokens: number;
+  otherTokens: number;
+}
+
 export interface SessionDetail extends SessionInfo {
   messages: SessionMessageDisplay[];
 }
@@ -176,11 +186,21 @@ export interface SessionToolCallDetail {
   value: string;
 }
 
+export interface SessionArtifactDisplay {
+  kind: 'text' | 'diff';
+  title: string;
+  content?: string;
+  oldText?: string;
+  newText?: string;
+  location?: string;
+}
+
 export interface SessionToolCallDisplay {
   name: string;
   id: string;
   summary: string;
   details: SessionToolCallDetail[];
+  artifact?: SessionArtifactDisplay;
 }
 
 export interface SessionMessageBlockDisplay {
@@ -197,6 +217,7 @@ export interface SessionMessageDisplay {
   timestamp: string;
   model?: string;
   usage?: TokenUsage;
+  promptBreakdown?: SessionPromptTokenBreakdown;
   stopReason?: string | null;
   toolCalls?: SessionToolCallDisplay[];
   blocks?: SessionMessageBlockDisplay[];
