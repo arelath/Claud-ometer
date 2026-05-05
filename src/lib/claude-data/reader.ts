@@ -1012,6 +1012,7 @@ function buildToolResultBlock(
     'oldString',
     'newString',
     'originalFile',
+    'exitCode',
   ]);
 
   if (toolResultContent && typeof toolResultContent.tool_use_id === 'string') {

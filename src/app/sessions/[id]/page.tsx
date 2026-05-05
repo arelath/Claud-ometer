@@ -16,7 +16,7 @@ import {
   ArrowLeft, Clock, GitBranch, MessageSquare, Wrench,
   Bot, Coins, Activity, Minimize2, Brain, FileText, Info,
   Terminal, Copy, Check, Paperclip, ChevronDown,
-  AlertCircle, Maximize2, X,
+  AlertCircle, ExternalLink, X,
 } from 'lucide-react';
 import Link from 'next/link';
 import { format } from 'date-fns';
@@ -161,7 +161,7 @@ function buildUsageMeterSnapshot(session: SessionTokenSummary): MeterSnapshot {
     totalLabel: 'session total',
     segments: [
       { key: 'input', label: 'Input', value: session.totalInputTokens, color: '#378ADD' },
-      { key: 'files', label: 'Files', value: session.totalCacheReadTokens, color: '#BA7517' },
+      { key: 'cache-read', label: 'Cache read', value: session.totalCacheReadTokens, color: '#BA7517' },
       { key: 'output', label: 'Output', value: session.totalOutputTokens, color: '#5DCAA5' },
       { key: 'cache-write', label: 'Cache write', value: session.totalCacheWriteTokens, color: '#8B5CF6' },
     ].filter(segment => segment.value > 0),
@@ -482,7 +482,7 @@ function Minimap({ groups, scrollRatio, onJump }: {
         <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[rgb(107,114,128)]" />System</div>
       </div>
       <div
-        className="relative w-3.5 rounded bg-muted/50 border border-border/40 cursor-pointer"
+        className="relative w-3.5 rounded bg-muted/50 border border-border/40 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted"
         style={{ height: barHeight }}
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
@@ -520,12 +520,11 @@ function Minimap({ groups, scrollRatio, onJump }: {
         })}
         {/* Current viewport indicator — bordered box that follows scroll position */}
         <div
-          className="absolute -left-2 -right-2 border-2 border-foreground/80 rounded-sm pointer-events-none transition-[top] duration-75 shadow-md"
+          className="absolute -left-2.5 -right-2.5 rounded-sm border-2 border-primary bg-primary/20 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_2px_8px_rgba(0,0,0,0.22)] pointer-events-none transition-[top] duration-75"
           style={{
-            top: `calc(${scrollRatio * 100}% - ${(scrollRatio * indicatorHeightPct) / 100}%)`,
+            top: `${scrollRatio * (100 - indicatorHeightPct)}%`,
             height: `${indicatorHeightPct}%`,
             minHeight: '8px',
-            background: 'rgba(255,255,255,0.08)',
           }}
         />
       </div>
@@ -564,10 +563,13 @@ function normalizeDisplayNewlines(value: string): string {
 const COLLAPSED_PREVIEW_LINES = 5;
 const EXPANDED_PREVIEW_LINES = 50;
 
+type PreviewTone = 'neutral' | 'success' | 'error' | 'unknown';
+
 interface ArtifactViewerState {
   title: string;
   subtitle?: string;
   kind: 'text' | 'diff';
+  tone?: PreviewTone;
   language?: CodeLanguage;
   sourcePath?: string;
   content?: string;
@@ -626,6 +628,51 @@ function formatDisplayValue(key: string, value: string, projectRoot?: string): s
   const normalized = normalizeDisplayNewlines(value);
   if (!isPathDetailKey(key)) return normalized;
   return formatDisplayPath(normalized, projectRoot);
+}
+
+function splitDisplayPath(pathValue: string): { prefix: string; basename: string } {
+  const normalized = pathValue.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+
+  if (parts.length <= 1) {
+    return { prefix: '', basename: normalized };
+  }
+
+  const basename = parts[parts.length - 1];
+  const prefixParts = parts.slice(0, -1);
+  if (normalized.length <= 42) {
+    return { prefix: `${prefixParts.join('/')}/`, basename };
+  }
+
+  return { prefix: `${prefixParts[0]}.../`, basename };
+}
+
+function parseExitCodeValue(value: string | undefined): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const direct = trimmed.match(/^-?\d+$/);
+  if (direct) return Number.parseInt(direct[0], 10);
+
+  const labeled = trimmed.match(/\bexit\s+code\b\s*:?\s*(-?\d+)/i) || trimmed.match(/\bexit\b\s*:?\s*(-?\d+)/i);
+  return labeled ? Number.parseInt(labeled[1], 10) : null;
+}
+
+function getExitCodeFromDetails(details: SessionToolCallDisplay['details']): number | null {
+  const detail = findDetail(details, ['exitCode']);
+  return parseExitCodeValue(detail?.value);
+}
+
+function getOutputExitCode(blocks: SessionMessageBlockDisplay[], content: string): number | null {
+  for (const block of blocks) {
+    const exitCode = getExitCodeFromDetails(block.details);
+    if (exitCode !== null) return exitCode;
+  }
+  return parseExitCodeValue(content);
+}
+
+function getOutputTone(exitCode: number | null): PreviewTone {
+  if (exitCode === null) return 'unknown';
+  return exitCode === 0 ? 'success' : 'error';
 }
 
 function toPreviewLines(value: string): string[] {
@@ -688,6 +735,27 @@ function buildDiffPreviewLines(oldText: string, newText: string, location?: stri
     lines.push({ tone: 'add', text: `+ ${line}` });
   });
   return lines;
+}
+
+function getArtifactFrameClasses(artifact: ArtifactViewerState): { frame: string; header: string } {
+  if (artifact.kind === 'diff' || artifact.tone === 'neutral' || artifact.tone === 'unknown' || !artifact.tone) {
+    return {
+      frame: 'border-border/50 bg-background/95',
+      header: 'border-b border-border/40 bg-muted/25',
+    };
+  }
+
+  if (artifact.tone === 'error') {
+    return {
+      frame: 'border-red-500/30 bg-red-500/[0.025]',
+      header: 'border-b border-red-500/20 bg-red-500/[0.04]',
+    };
+  }
+
+  return {
+    frame: 'border-green-500/25 bg-green-500/[0.02]',
+    header: 'border-b border-green-500/20 bg-green-500/[0.035]',
+  };
 }
 
 function ArtifactPreviewContent({ artifact, maxLines, fullscreen = false }: {
@@ -761,14 +829,15 @@ function ArtifactPreview({ artifact, label, className = '' }: {
   const { openArtifact } = useSessionRenderContext();
   const [expanded, setExpanded] = useState(false);
   const artifactLanguage = artifact.language ?? guessCodeLanguage(artifact.sourcePath);
+  const frameClasses = getArtifactFrameClasses(artifact);
   const totalLines = artifact.kind === 'diff'
     ? buildDiffPreviewLines(artifact.oldText || '', artifact.newText || '', artifact.location).length
     : Math.max(toPreviewLines(artifact.content || '').length, 1);
   const canExpandInline = totalLines > COLLAPSED_PREVIEW_LINES;
 
   return (
-    <div className={`overflow-hidden rounded-md border ${artifact.kind === 'diff' ? 'border-border/50 bg-background/95' : 'border-green-500/20 bg-green-500/[0.02]'} ${className}`}>
-      <div className={`flex items-center justify-between gap-2 px-2 py-0.5 ${artifact.kind === 'diff' ? 'border-b border-border/40 bg-muted/25' : 'border-b border-green-500/15 bg-green-500/[0.03]'}`}>
+    <div className={`overflow-hidden rounded-md border ${frameClasses.frame} ${className}`}>
+      <div className={`flex items-center justify-between gap-2 px-2 py-0.5 ${frameClasses.header}`}>
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
           {artifactLanguage && (
@@ -782,9 +851,10 @@ function ArtifactPreview({ artifact, label, className = '' }: {
             <button
               type="button"
               onClick={() => setExpanded(current => !current)}
-              className="rounded border border-border/60 bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded border border-border/60 bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
             >
-              {expanded ? 'Less' : 'More'}
+              <ChevronDown className={`h-2.5 w-2.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              {expanded ? 'Collapse' : 'Expand'}
             </button>
           )}
           <button
@@ -792,8 +862,8 @@ function ArtifactPreview({ artifact, label, className = '' }: {
             onClick={() => openArtifact(artifact)}
             className="inline-flex items-center gap-1 rounded border border-border/60 bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
           >
-            <Maximize2 className="h-2.5 w-2.5" />
-            Fullscreen
+            <ExternalLink className="h-2.5 w-2.5" />
+            Open
           </button>
         </div>
       </div>
@@ -984,6 +1054,7 @@ function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
         title: `${tool.name} diff`,
         subtitle: primary && filePath ? formatDisplayPath(primary, projectRoot) : undefined,
         kind: 'diff',
+        tone: 'neutral',
         language: guessCodeLanguage(primary),
         sourcePath: primary,
         oldText: tool.artifact.oldText,
@@ -994,6 +1065,7 @@ function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
       ? {
           title: `${tool.name} command`,
           kind: 'text',
+          tone: 'neutral',
           content: normalizedCommand,
         }
       : null;
@@ -1056,7 +1128,6 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   const blocks = msg.blocks || [];
   if (blocks.length === 0 && !msg.content) return null;
 
-  const hasError = blocks.some(b => b.title.toLowerCase().includes('error'));
   const blockContent = normalizeDisplayNewlines(
     blocks
       .map(block => block.content)
@@ -1064,11 +1135,20 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
       .join('\n\n'),
   ).trim();
   const normalizedMessageContent = normalizeDisplayNewlines(msg.content).trim();
+  const exitCode = getOutputExitCode(blocks, `${normalizedMessageContent}\n${blockContent}`);
+  const outputTone = getOutputTone(exitCode);
+  const hasExplicitFailure = outputTone === 'error';
 
-  const accent = hasError
+  const accent = outputTone === 'error'
     ? 'border-l-2 border-red-500/70 bg-red-500/[0.02]'
-    : 'border-l-2 border-green-500/40 bg-transparent';
-  const textColor = hasError ? 'text-red-600 dark:text-red-400' : 'text-green-700/80 dark:text-green-500/80';
+    : outputTone === 'success'
+      ? 'border-l-2 border-green-500/40 bg-transparent'
+      : 'border-l-2 border-border/60 bg-transparent';
+  const textColor = outputTone === 'error'
+    ? 'text-red-600 dark:text-red-400'
+    : outputTone === 'success'
+      ? 'text-green-700/80 dark:text-green-500/80'
+      : 'text-muted-foreground';
   const previewPath = blocks.map(block => getCodePathDetailValue(block.details)).find(Boolean);
   const previewLanguage = guessCodeLanguage(previewPath);
 
@@ -1085,7 +1165,7 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
         <HighlightedCode
           content={effectiveContent}
           language={previewLanguage}
-          className={`whitespace-pre-wrap break-words font-mono text-[11px] leading-5 ${hasError ? 'text-red-600 dark:text-red-400' : 'text-foreground/80'}`}
+          className={`whitespace-pre-wrap break-words font-mono text-[11px] leading-5 ${outputTone === 'unknown' ? 'text-foreground/80' : textColor}`}
         />
       </div>
     );
@@ -1093,7 +1173,7 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
 
   const previewArtifact: ArtifactViewerState | null = blockContent
     ? {
-        title: blocks[0]?.title || (hasError ? 'Error output' : 'Tool output'),
+        title: blocks[0]?.title || (hasExplicitFailure ? 'Error output' : 'Tool output'),
         subtitle: previewPath
           ? formatDisplayPath(previewPath, projectRoot)
           : normalizedMessageContent && !normalizedMessageContent.includes('\n')
@@ -1103,11 +1183,13 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
         language: previewLanguage,
         sourcePath: previewPath,
         content: blockContent,
+        tone: outputTone,
       }
     : normalizedMessageContent && (normalizedMessageContent.includes('\n') || normalizedMessageContent.length > 120)
       ? {
-          title: hasError ? 'Error output' : 'Tool output',
+          title: hasExplicitFailure ? 'Error output' : 'Tool output',
           kind: 'text',
+          tone: outputTone,
           language: previewLanguage,
           sourcePath: previewPath,
           content: normalizedMessageContent,
@@ -1118,7 +1200,7 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   if (!previewArtifact) {
     return (
       <div className={`flex items-center gap-1.5 px-3 py-1 text-[11px] ${accent}`}>
-        {hasError
+        {outputTone === 'error'
           ? <AlertCircle className={`h-2.5 w-2.5 shrink-0 ${textColor}`} />
           : <Check className={`h-2.5 w-2.5 shrink-0 ${textColor}`} />}
         <span className={`truncate ${textColor}`}>{normalizedMessageContent || 'Completed'}</span>
@@ -1130,13 +1212,13 @@ function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
     <div className={`${accent} py-1`}>
       {showStatusRow && (
         <div className="flex items-center gap-1.5 px-3 py-1 text-[11px]">
-          {hasError
+          {outputTone === 'error'
             ? <AlertCircle className={`h-2.5 w-2.5 shrink-0 ${textColor}`} />
             : <Check className={`h-2.5 w-2.5 shrink-0 ${textColor}`} />}
           <span className={`truncate ${textColor}`}>{normalizedMessageContent}</span>
         </div>
       )}
-      <ArtifactPreview artifact={previewArtifact} label={hasError ? 'Error output' : 'Output preview'} className="mx-3 mb-1.5 mt-1" />
+      <ArtifactPreview artifact={previewArtifact} label={hasExplicitFailure ? 'Error output' : 'Output preview'} className="mx-3 mb-1.5 mt-1" />
     </div>
   );
 }
@@ -1208,6 +1290,7 @@ function BlockCard({ block }: { block: SessionMessageBlockDisplay }) {
 /** Collapsed system event group */
 function SystemGroup({ messages }: { messages: { message: SessionMessageDisplay; index: number }[] }) {
   const [expanded, setExpanded] = useState(false);
+  const firstIndex = messages[0]?.index;
   const timeRange = (() => {
     const timestamps = messages
       .map(m => m.message.timestamp)
@@ -1228,6 +1311,7 @@ function SystemGroup({ messages }: { messages: { message: SessionMessageDisplay;
   if (!expanded) {
     return (
       <button
+        id={firstIndex === undefined ? undefined : `conversation-message-${firstIndex}`}
         onClick={() => setExpanded(true)}
         className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/30 border border-dashed border-border/50 rounded text-[11px] text-muted-foreground hover:bg-muted/50 transition-colors"
       >
@@ -1239,7 +1323,7 @@ function SystemGroup({ messages }: { messages: { message: SessionMessageDisplay;
   }
 
   return (
-    <div className="border border-dashed border-border/50 rounded bg-muted/20 px-3 py-2 space-y-1">
+    <div id={firstIndex === undefined ? undefined : `conversation-message-${firstIndex}`} className="border border-dashed border-border/50 rounded bg-muted/20 px-3 py-2 space-y-1">
       <button
         onClick={() => setExpanded(false)}
         className="flex items-center gap-2 w-full text-[10px] text-muted-foreground hover:text-foreground mb-1"
@@ -1248,7 +1332,7 @@ function SystemGroup({ messages }: { messages: { message: SessionMessageDisplay;
         <ChevronDown className="h-3 w-3 ml-auto shrink-0 rotate-180 transition-transform" />
       </button>
       {messages.map(({ message, index }) => (
-        <div key={index} id={`conversation-message-${index}`} className="flex items-start gap-2 text-[11px] text-muted-foreground">
+        <div key={index} id={index === firstIndex ? undefined : `conversation-message-${index}`} className="flex items-start gap-2 text-[11px] text-muted-foreground">
           {message.role === 'command' ? (
             <Terminal className="h-2.5 w-2.5 text-blue-500/70" />
           ) : (
@@ -1526,16 +1610,7 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
   const totalCount = parseCount(file.totalLines);
   const isCopied = copiedPath === file.fullPath;
   const displayPath = formatDisplayPath(file.fullPath, projectRoot);
-
-  // Truncate from the middle, preserving the basename at the end
-  const truncatedPath = (() => {
-    if (displayPath.length <= 35) return displayPath;
-    const parts = displayPath.replace(/\\/g, '/').split('/');
-    if (parts.length <= 2) return displayPath;
-    const basename = parts[parts.length - 1];
-    const firstDir = parts[0];
-    return `${firstDir}/…/${basename}`;
-  })();
+  const displayPathParts = splitDisplayPath(displayPath);
 
   let fillPct = 100;
   let isPartial = false;
@@ -1564,9 +1639,12 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
             <button
               type="button"
               onClick={() => onJumpToMessage(file.messageIndexes)}
-              className="font-mono text-[11px] text-foreground truncate hover:underline text-left"
+              className="flex min-w-0 max-w-full flex-1 items-baseline font-mono text-[11px] text-foreground hover:underline text-left"
             >
-              {truncatedPath}
+              {displayPathParts.prefix && (
+                <span className="min-w-0 truncate text-muted-foreground">{displayPathParts.prefix}</span>
+              )}
+              <span className="shrink-0">{displayPathParts.basename}</span>
             </button>
           </TooltipTrigger>
           <TooltipContent side="left" className="max-w-[300px]">
@@ -1731,14 +1809,36 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     savePreset(next);
   }, []);
 
+  const scrollMessageIntoConversation = useCallback((messageIndex: number, block: 'start' | 'center' = 'center') => {
+    const container = conversationRef.current;
+    const selector = `#conversation-message-${messageIndex}`;
+    const element = (container?.querySelector<HTMLElement>(selector) || document.getElementById(`conversation-message-${messageIndex}`));
+    if (!element) return false;
+
+    if (!container) {
+      element.scrollIntoView({ behavior: 'smooth', block });
+      return true;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const elementTop = elementRect.top - containerRect.top + container.scrollTop;
+    const targetTop = block === 'center'
+      ? elementTop - (container.clientHeight / 2) + (elementRect.height / 2)
+      : elementTop;
+
+    container.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: 'smooth',
+    });
+    return true;
+  }, []);
+
   const handleJumpToMessage = useCallback((messageIndexes: number[]) => {
     for (const messageIndex of messageIndexes) {
-      const element = document.getElementById(`conversation-message-${messageIndex}`);
-      if (!element) continue;
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
+      if (scrollMessageIntoConversation(messageIndex, 'center')) return;
     }
-  }, []);
+  }, [scrollMessageIntoConversation]);
 
   const handleCopyContextPath = useCallback((filePath: string) => {
     void navigator.clipboard.writeText(filePath).then(() => {
@@ -1826,79 +1926,92 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     <SessionRenderContext.Provider value={sessionRenderContext}>
       <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <Link href="/sessions" className="rounded-lg border border-border p-1.5 hover:bg-accent transition-colors">
-          <ArrowLeft className="h-4 w-4" />
-        </Link>
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold tracking-tight">{session.projectName}</h1>
-            {models.map(m => <Badge key={m} variant="secondary" className="text-xs">{m}</Badge>)}
-            <Pill
-              value={compactionCount > 0 ? 'compacted' : 'completed'}
-              tone={compactionCount > 0 ? 'warn' : 'good'}
-            />
-          </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-            <span className="font-mono">{session.id.slice(0, 8)}</span>
-            {session.gitBranch && (
-              <>
-                <span className="opacity-40">•</span>
-                <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{session.gitBranch}</span>
-              </>
-            )}
-            <span className="opacity-40">•</span>
-            <span>{format(new Date(session.timestamp), 'MMM d, yyyy h:mm a')}</span>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <Link href="/sessions" className="mt-0.5 rounded-lg border border-border p-1.5 hover:bg-accent transition-colors">
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h1 className="min-w-0 truncate text-xl font-bold tracking-tight">{session.projectName}</h1>
+              {models.map(m => <Badge key={m} variant="secondary" className="text-xs">{m}</Badge>)}
+              <Pill
+                value={compactionCount > 0 ? 'compacted' : 'completed'}
+                tone={compactionCount > 0 ? 'warn' : 'good'}
+              />
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="font-mono">{session.id.slice(0, 8)}</span>
+              {session.gitBranch && (
+                <>
+                  <span className="opacity-40">•</span>
+                  <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{session.gitBranch}</span>
+                </>
+              )}
+              <span className="opacity-40">•</span>
+              <span>{format(new Date(session.timestamp), 'MMM d, yyyy h:mm a')}</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Stats row — cost-led when there's spend, compaction card only if > 0 */}
-      <div className={`grid gap-3 ${compactionCount > 0 ? 'grid-cols-6' : 'grid-cols-5'}`}>
-        <Card className="border-primary/30 bg-primary/5 shadow-sm">
-          <CardContent className="p-3 text-center">
-            <Coins className="h-3.5 w-3.5 mx-auto mb-1 text-primary" />
-            <p className="text-lg font-bold text-primary">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
-            <p className="text-[10px] text-muted-foreground">Est. Usage</p>
-          </CardContent>
-        </Card>
-        <Card className="border-border/50 shadow-sm">
-          <CardContent className="p-3 text-center">
-            <Clock className="h-3.5 w-3.5 mx-auto mb-1 text-muted-foreground" />
-            <p className="text-lg font-bold">{formatDuration(session.duration)}</p>
-            <p className="text-[10px] text-muted-foreground">Duration</p>
-          </CardContent>
-        </Card>
-        <Card className="border-border/50 shadow-sm">
-          <CardContent className="p-3 text-center">
-            <MessageSquare className="h-3.5 w-3.5 mx-auto mb-1 text-muted-foreground" />
-            <p className="text-lg font-bold">{session.messageCount}</p>
-            <p className="text-[10px] text-muted-foreground">Messages</p>
-          </CardContent>
-        </Card>
-        <Card className="border-border/50 shadow-sm">
-          <CardContent className="p-3 text-center">
-            <Wrench className="h-3.5 w-3.5 mx-auto mb-1 text-muted-foreground" />
-            <p className="text-lg font-bold">{session.toolCallCount}</p>
-            <p className="text-[10px] text-muted-foreground">Tool Calls</p>
-          </CardContent>
-        </Card>
-        <Card className="border-border/50 shadow-sm">
-          <CardContent className="p-3 text-center">
-            <Activity className="h-3.5 w-3.5 mx-auto mb-1 text-muted-foreground" />
-            <p className="text-lg font-bold">{formatTokens(session.totalInputTokens + session.totalOutputTokens)}</p>
-            <p className="text-[10px] text-muted-foreground">Tokens</p>
-          </CardContent>
-        </Card>
-        {compactionCount > 0 && (
-          <Card className="border-amber-300/50 bg-amber-50/30 dark:bg-amber-950/10 shadow-sm">
-            <CardContent className="p-3 text-center">
-              <Minimize2 className="h-3.5 w-3.5 mx-auto mb-1 text-amber-600" />
-              <p className="text-lg font-bold text-amber-700 dark:text-amber-400">{compactionCount}</p>
-              <p className="text-[10px] text-muted-foreground">Compactions</p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:flex lg:shrink-0 lg:justify-end">
+          <Card className="min-w-[86px] border-primary/30 bg-primary/5 shadow-sm">
+            <CardContent className="px-2.5 py-1.5 text-center">
+              <div className="flex items-center justify-center gap-1">
+                <Coins className="h-3 w-3 text-primary" />
+                <p className="whitespace-nowrap text-sm font-bold leading-5 text-primary">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
+              </div>
+              <p className="text-[9px] leading-3 text-muted-foreground">Est. Usage</p>
             </CardContent>
           </Card>
-        )}
+          <Card className="min-w-[86px] border-border/50 shadow-sm">
+            <CardContent className="px-2.5 py-1.5 text-center">
+              <div className="flex items-center justify-center gap-1">
+                <Clock className="h-3 w-3 text-muted-foreground" />
+                <p className="whitespace-nowrap text-sm font-bold leading-5">{formatDuration(session.duration)}</p>
+              </div>
+              <p className="text-[9px] leading-3 text-muted-foreground">Duration</p>
+            </CardContent>
+          </Card>
+          <Card className="min-w-[86px] border-border/50 shadow-sm">
+            <CardContent className="px-2.5 py-1.5 text-center">
+              <div className="flex items-center justify-center gap-1">
+                <MessageSquare className="h-3 w-3 text-muted-foreground" />
+                <p className="whitespace-nowrap text-sm font-bold leading-5">{session.messageCount}</p>
+              </div>
+              <p className="text-[9px] leading-3 text-muted-foreground">Messages</p>
+            </CardContent>
+          </Card>
+          <Card className="min-w-[86px] border-border/50 shadow-sm">
+            <CardContent className="px-2.5 py-1.5 text-center">
+              <div className="flex items-center justify-center gap-1">
+                <Wrench className="h-3 w-3 text-muted-foreground" />
+                <p className="whitespace-nowrap text-sm font-bold leading-5">{session.toolCallCount}</p>
+              </div>
+              <p className="text-[9px] leading-3 text-muted-foreground">Tool Calls</p>
+            </CardContent>
+          </Card>
+          <Card className="min-w-[86px] border-border/50 shadow-sm">
+            <CardContent className="px-2.5 py-1.5 text-center">
+              <div className="flex items-center justify-center gap-1">
+                <Activity className="h-3 w-3 text-muted-foreground" />
+                <p className="whitespace-nowrap text-sm font-bold leading-5">{formatTokens(session.totalInputTokens + session.totalOutputTokens)}</p>
+              </div>
+              <p className="text-[9px] leading-3 text-muted-foreground">Tokens</p>
+            </CardContent>
+          </Card>
+          {compactionCount > 0 && (
+            <Card className="min-w-[86px] border-amber-300/50 bg-amber-50/30 shadow-sm dark:bg-amber-950/10">
+              <CardContent className="px-2.5 py-1.5 text-center">
+                <div className="flex items-center justify-center gap-1">
+                  <Minimize2 className="h-3 w-3 text-amber-600" />
+                  <p className="whitespace-nowrap text-sm font-bold leading-5 text-amber-700 dark:text-amber-400">{compactionCount}</p>
+                </div>
+                <p className="text-[9px] leading-3 text-muted-foreground">Compactions</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
 
       {/* Main content: Conversation + Right rail. Stacks on narrower viewports so the rail never falls off-screen. */}
@@ -1938,8 +2051,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 groups={groupedMessages}
                 scrollRatio={scrollRatio}
                 onJump={(idx) => {
-                  const el = document.getElementById(`conversation-message-${idx}`);
-                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  scrollMessageIntoConversation(idx, 'start');
                 }}
               />
             </div>

@@ -38,7 +38,7 @@ test('session detail renders multiline tool output and theme toggle persists', a
 
   await page.getByRole('button', { name: /\+ Tools/i }).click();
 
-  const expandPreviewButton = page.getByRole('button', { name: 'More' }).first();
+  const expandPreviewButton = page.getByRole('button', { name: 'Expand' }).first();
   await expect(expandPreviewButton).toBeVisible();
   await expandPreviewButton.click();
   await expect(page.locator('*:visible').filter({ hasText: 'Everything else is deferred until a real run demands it.' }).first()).toBeVisible();
