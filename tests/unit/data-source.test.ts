@@ -16,27 +16,27 @@ describe('data source helpers', () => {
   });
 
   it('uses the import-dir override and only activates imported mode when metadata exists', async () => {
-    const module = await import('@/lib/claude-data/data-source');
+    const dataSourceModule = await import('@/lib/claude-data/data-source');
 
-    expect(module.getImportDir()).toBe(importDir);
-    module.setDataSource('imported');
-    expect(module.getActiveDataSource()).toBe('live');
+    expect(dataSourceModule.getImportDir()).toBe(importDir);
+    dataSourceModule.setDataSource('imported');
+    expect(dataSourceModule.getActiveDataSource()).toBe('live');
 
     fs.writeFileSync(path.join(importDir, 'meta.json'), JSON.stringify({ importedAt: 'now' }));
-    module.setDataSource('imported');
+    dataSourceModule.setDataSource('imported');
 
-    expect(module.hasImportedData()).toBe(true);
-    expect(module.getActiveDataSource()).toBe('imported');
+    expect(dataSourceModule.hasImportedData()).toBe(true);
+    expect(dataSourceModule.getActiveDataSource()).toBe('imported');
   });
 
   it('clears imported data recursively', async () => {
-    const module = await import('@/lib/claude-data/data-source');
+    const dataSourceModule = await import('@/lib/claude-data/data-source');
 
     fs.mkdirSync(importDir, { recursive: true });
     fs.writeFileSync(path.join(importDir, 'meta.json'), '{}');
     fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 
-    module.clearImportedData();
+    dataSourceModule.clearImportedData();
 
     expect(fs.existsSync(importDir)).toBe(false);
   });

@@ -5,7 +5,7 @@ import { test as base, expect } from '@playwright/test';
 const rawCoverageDir = path.join(process.cwd(), '.test-artifacts', 'e2e-coverage', 'raw');
 
 export const test = base.extend({
-  page: async ({ page, browserName }, use, testInfo) => {
+  page: async ({ page, browserName }, run, testInfo) => {
     if (browserName === 'chromium') {
       await page.coverage.startJSCoverage({
         resetOnNavigation: false,
@@ -13,7 +13,7 @@ export const test = base.extend({
       });
     }
 
-    await use(page);
+    await run(page);
 
     if (browserName === 'chromium') {
       const coverage = await page.coverage.stopJSCoverage();

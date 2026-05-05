@@ -12,10 +12,11 @@
     "electron:prepare": "npm run build && node scripts/prepare-electron-next.cjs",
     "electron:pack": "npm run electron:prepare && electron-builder --dir",
     "electron:dist": "npm run electron:prepare && electron-builder --win",
+    "electron:smoke": "node scripts/smoke-packaged-next-server.cjs",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:unit:coverage": "vitest run --coverage",
-    "test:e2e": "npm run build && playwright test",
+    "test:e2e": "npm run build && node scripts/prepare-electron-next.cjs && playwright test",
     "test:e2e:install": "playwright install chromium",
     "test:e2e:report": "playwright show-report reports/playwright",
     "test:coverage": "npm run test:unit:coverage && npm run test:e2e"

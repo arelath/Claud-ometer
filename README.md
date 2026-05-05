@@ -95,6 +95,17 @@ Release outputs are written to `dist-electron/`:
 
 See [docs/electron-exe-packaging-design.md](./docs/electron-exe-packaging-design.md) for the packaging architecture and follow-up work.
 
+## GitHub Automation
+
+GitHub Actions workflows live under `.github/workflows/`:
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `CI` | Pushes to `main`, pull requests, manual dispatch | Installs dependencies, typechecks, lints, runs unit tests, installs Chromium, and runs Playwright e2e tests |
+| `Release` | Tags matching `v*`, manual dispatch | Builds Windows Electron artifacts, smoke-tests the packaged Next server, uploads artifacts, and publishes a GitHub Release |
+
+The release workflow uses the repository `GITHUB_TOKEN` with `contents: write` permission. No extra secret is required for unsigned Windows builds.
+
 ## Release Checklist
 
 1. Update the version in `package.json`.
@@ -128,13 +139,14 @@ See [docs/electron-exe-packaging-design.md](./docs/electron-exe-packaging-design
    Verify Overview loads, live/imported data controls render, session detail pages open, and closing the window stops the local server.
 
 6. Smoke test the installer or portable executable from `dist-electron/`.
-7. Publish the `.exe` artifacts and `latest.yml` if using updater metadata.
-8. Create a git tag for the release, for example:
+7. Create and push a git tag that matches `package.json`, for example:
 
    ```bash
    git tag v0.1.0
    git push origin v0.1.0
    ```
+
+8. Watch the **Release** workflow in GitHub Actions. It publishes the `.exe` artifacts and `latest.yml` to the GitHub Release.
 
 Current release caveats: the Windows app is unsigned and uses the default Electron icon. Unsigned builds may trigger Windows SmartScreen warnings.
 
