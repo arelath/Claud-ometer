@@ -3,6 +3,17 @@
 import { createContext, use, useState, useCallback, useMemo, useRef, useEffect, useContext } from 'react';
 import { useSessionDetail } from '@/lib/hooks';
 import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
+import {
+  formatContextRanges,
+  getContextFileGroups,
+  getContextFilePathsText,
+  getContextLoadedLineCount,
+  getContextRangeLineCount,
+  mergeContextLineRanges,
+  parseContextLineCount,
+  type ContextFileGroups,
+  type ContextFileInfo,
+} from '@/lib/context-files';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { getModelDisplayName } from '@/config/pricing';
 import { getCodeLanguageLabel, guessCodeLanguage, tokenizeCode, type CodeLanguage, type HighlightToken } from '@/lib/code-highlighting';
@@ -188,11 +199,6 @@ function buildWindowMeterSnapshot(messages: SessionMessageDisplay[]): MeterSnaps
   };
 }
 
-const CONTEXT_FILE_DETAIL_KEYS = ['content.file.filePath', 'filePath', 'file_path', 'path', 'displayPath', 'filename'];
-const CONTEXT_LOADED_LINE_DETAIL_KEYS = ['content.file.numLines', 'numLines'];
-const CONTEXT_TOTAL_LINE_DETAIL_KEYS = ['content.file.totalLines', 'totalLines'];
-
-type ContextFileKind = 'in-context' | 'referenced';
 type TokenMeterMode = 'usage' | 'window';
 
 interface SessionTokenSummary {
@@ -215,158 +221,246 @@ interface MeterSnapshot {
   segments: MeterSegment[];
 }
 
-interface ContextFileInfo {
-  fullPath: string;
-  fileName: string;
-  kind: ContextFileKind;
-  attached: boolean;
-  firstMessageIndex: number;
-  messageIndexes: number[];
-  loadedLines?: string;
-  totalLines?: string;
-}
-
-interface ContextFileGroups {
-  inContext: ContextFileInfo[];
-  referenced: ContextFileInfo[];
-}
-
-function isLikelyFilePath(value: string): boolean {
-  if (!value || value === '[]' || value === '""') return false;
-  return /[\\/]/.test(value) || /\.[A-Za-z0-9]{1,12}$/.test(value);
-}
-
-function isBasenameOnly(value: string): boolean {
-  return !/[\\/]/.test(value);
-}
-
-function getFileBasename(value: string): string {
-  const normalized = value.replace(/\\/g, '/');
-  const parts = normalized.split('/');
-  return parts[parts.length - 1] || normalized;
-}
-
-function parseCount(value?: string): number | null {
-  if (!value) return null;
-  const normalized = value.replace(/,/g, '').trim();
-  if (!/^\d+$/.test(normalized)) return null;
-  return Number(normalized);
-}
-
-function chooseBetterCount(current?: string, candidate?: string): string | undefined {
-  if (!candidate) return current;
-  if (!current) return candidate;
-  const currentCount = parseCount(current);
-  const candidateCount = parseCount(candidate);
-  if (currentCount == null || candidateCount == null) return current;
-  return candidateCount > currentCount ? candidate : current;
-}
-
-function chooseBetterPath(current: string, candidate: string): string {
-  if (isBasenameOnly(current) && !isBasenameOnly(candidate)) return candidate;
-  return current;
-}
-
-function sortContextFiles(files: ContextFileInfo[]): ContextFileInfo[] {
-  return [...files].sort((left, right) => {
-    const nameCompare = left.fileName.localeCompare(right.fileName);
-    if (nameCompare !== 0) return nameCompare;
-    return left.fullPath.localeCompare(right.fullPath);
-  });
-}
-
-function getContextFileGroups(messages: SessionMessageDisplay[]): ContextFileGroups {
-  const files = new Map<string, ContextFileInfo>();
-
-  const upsertCandidate = (rawValue: string | undefined, next: Omit<ContextFileInfo, 'fullPath' | 'fileName'>) => {
-    if (!rawValue) return;
-    let candidate = rawValue.replace(/\r?\n/g, ' ').trim();
-    if (!isLikelyFilePath(candidate)) return;
-
-    let mapKey = candidate.toLowerCase();
-    let existing = files.get(mapKey);
-
-    if (!existing) {
-      for (const [existingKey, existingValue] of files.entries()) {
-        if (getFileBasename(existingValue.fullPath).toLowerCase() !== getFileBasename(candidate).toLowerCase()) continue;
-        if (isBasenameOnly(existingValue.fullPath) && !isBasenameOnly(candidate)) {
-          existing = existingValue;
-          mapKey = existingKey;
-          break;
-        }
-        if (!isBasenameOnly(existingValue.fullPath) && isBasenameOnly(candidate)) {
-          existing = existingValue;
-          mapKey = existingKey;
-          candidate = existingValue.fullPath;
-          break;
-        }
-      }
-    }
-
-    const fullPath = existing ? chooseBetterPath(existing.fullPath, candidate) : candidate;
-    const merged: ContextFileInfo = {
-      fullPath,
-      fileName: getFileBasename(fullPath),
-      kind: existing?.kind === 'in-context' || next.kind === 'in-context' ? 'in-context' : 'referenced',
-      attached: Boolean(existing?.attached || next.attached),
-      firstMessageIndex: Math.min(existing?.firstMessageIndex ?? next.firstMessageIndex, next.firstMessageIndex),
-      messageIndexes: Array.from(new Set([...(existing?.messageIndexes || []), ...next.messageIndexes])).sort((left, right) => left - right),
-      loadedLines: chooseBetterCount(existing?.loadedLines, next.loadedLines),
-      totalLines: chooseBetterCount(existing?.totalLines, next.totalLines),
-    };
-
-    files.delete(mapKey);
-    files.set(fullPath.toLowerCase(), merged);
-  };
-
-  messages.forEach((message, messageIndex) => {
-    for (const block of message.blocks || []) {
-      const fileDetail = findPreferredDetail(block.details, CONTEXT_FILE_DETAIL_KEYS);
-      if (!fileDetail) continue;
-
-      const loadedLines = findPreferredDetail(block.details, CONTEXT_LOADED_LINE_DETAIL_KEYS)?.value;
-      const totalLines = findPreferredDetail(block.details, CONTEXT_TOTAL_LINE_DETAIL_KEYS)?.value;
-      const attached = block.type === 'event' && block.title.startsWith('Attachment:');
-      const inContext = attached || Boolean(block.content) || Boolean(loadedLines) || Boolean(totalLines);
-
-      upsertCandidate(fileDetail.value, {
-        kind: inContext ? 'in-context' : 'referenced',
-        attached,
-        firstMessageIndex: messageIndex,
-        messageIndexes: [messageIndex],
-        loadedLines,
-        totalLines,
-      });
-    }
-  });
-
-  const allFiles = Array.from(files.values());
-  return {
-    inContext: sortContextFiles(allFiles.filter(file => file.kind === 'in-context')),
-    referenced: sortContextFiles(allFiles.filter(file => file.kind === 'referenced')),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Grouped message types for the new design
 // ---------------------------------------------------------------------------
 
 type GroupedItem =
   | { type: 'user'; message: SessionMessageDisplay; index: number }
-  | { type: 'assistant'; message: SessionMessageDisplay; index: number; toolPairs: ToolPair[] }
+  | { type: 'assistant'; message: SessionMessageDisplay; index: number; toolPairs: ToolPair[]; toolTimeline?: AssistantTimelineItem[] }
   | { type: 'system-group'; messages: { message: SessionMessageDisplay; index: number }[] };
+
+interface CompactionMarker {
+  type: 'compaction';
+  timestamp: string;
+  index: number;
+  targetId: string;
+}
+
+type TranscriptItem = GroupedItem | CompactionMarker;
 
 interface ToolPair {
   toolUse?: { message: SessionMessageDisplay; index: number };
   toolResult?: { message: SessionMessageDisplay; index: number };
 }
 
+type AssistantTimelineItem =
+  | { type: 'tool-pair'; pair: ToolPair }
+  | CompactionMarker;
+
+interface MinimapSegment {
+  type: 'user' | 'assistant' | 'system-group' | 'compaction';
+  targetId: string;
+  topPct: number;
+  heightPct: number;
+}
+
+interface MinimapViewport {
+  topPct: number;
+  heightPct: number;
+}
+
+interface TranscriptTarget {
+  type: MinimapSegment['type'];
+  targetId: string;
+}
+
+function parseTimestampMs(timestamp?: string): number | null {
+  if (!timestamp) return null;
+  const ms = new Date(timestamp).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function getGroupTimeRange(group: GroupedItem): { start: number; end: number } | null {
+  const timestamps: string[] = [];
+
+  if (group.type === 'user') {
+    timestamps.push(group.message.timestamp);
+  } else if (group.type === 'assistant') {
+    timestamps.push(group.message.timestamp);
+    for (const pair of group.toolPairs) {
+      if (pair.toolUse?.message.timestamp) timestamps.push(pair.toolUse.message.timestamp);
+      if (pair.toolResult?.message.timestamp) timestamps.push(pair.toolResult.message.timestamp);
+    }
+  } else {
+    timestamps.push(...group.messages.map(({ message }) => message.timestamp));
+  }
+
+  const times = timestamps
+    .map(timestamp => parseTimestampMs(timestamp))
+    .filter((time): time is number => time != null);
+
+  if (times.length === 0) return null;
+  return {
+    start: Math.min(...times),
+    end: Math.max(...times),
+  };
+}
+
+function getToolPairTimeRange(pair: ToolPair): { start: number; end: number } | null {
+  const times = [
+    parseTimestampMs(pair.toolUse?.message.timestamp),
+    parseTimestampMs(pair.toolResult?.message.timestamp),
+  ].filter((time): time is number => time != null);
+
+  if (times.length === 0) return null;
+  return {
+    start: Math.min(...times),
+    end: Math.max(...times),
+  };
+}
+
+function buildCompactionMarker(timestamp: string, index: number): CompactionMarker {
+  return {
+    type: 'compaction',
+    timestamp,
+    index,
+    targetId: `conversation-compaction-${index}`,
+  };
+}
+
+function insertCompactionsIntoAssistantTimeline(group: Extract<GroupedItem, { type: 'assistant' }>, markers: CompactionMarker[]): Extract<GroupedItem, { type: 'assistant' }> {
+  if (markers.length === 0) return group;
+
+  const markerQueue = markers
+    .map(marker => ({ marker, time: parseTimestampMs(marker.timestamp) }))
+    .filter((item): item is { marker: CompactionMarker; time: number } => item.time != null)
+    .sort((left, right) => left.time - right.time);
+
+  if (markerQueue.length === 0) return group;
+
+  const timeline: AssistantTimelineItem[] = [];
+  let markerIndex = 0;
+  const fallbackGroupStart = getGroupTimeRange(group)?.start ?? Number.NEGATIVE_INFINITY;
+
+  for (const pair of group.toolPairs) {
+    const pairRange = getToolPairTimeRange(pair);
+    const pairStart = pairRange?.start ?? fallbackGroupStart;
+    const pairEnd = pairRange?.end ?? pairStart;
+
+    while (markerIndex < markerQueue.length && markerQueue[markerIndex].time < pairStart) {
+      timeline.push(markerQueue[markerIndex].marker);
+      markerIndex++;
+    }
+
+    timeline.push({ type: 'tool-pair', pair });
+
+    while (markerIndex < markerQueue.length && markerQueue[markerIndex].time <= pairEnd) {
+      timeline.push(markerQueue[markerIndex].marker);
+      markerIndex++;
+    }
+  }
+
+  while (markerIndex < markerQueue.length) {
+    timeline.push(markerQueue[markerIndex].marker);
+    markerIndex++;
+  }
+
+  return { ...group, toolTimeline: timeline };
+}
+
+function insertCompactionMarkers(groups: GroupedItem[], timestamps: string[]): TranscriptItem[] {
+  const validTimestamps = timestamps
+    .map(timestamp => ({ timestamp, time: parseTimestampMs(timestamp) }))
+    .filter((item): item is { timestamp: string; time: number } => item.time != null)
+    .sort((left, right) => left.time - right.time);
+
+  if (validTimestamps.length === 0) return groups;
+
+  const items: TranscriptItem[] = [];
+  let compactionIndex = 0;
+
+  for (const group of groups) {
+    const range = getGroupTimeRange(group);
+    if (!range) {
+      items.push(group);
+      continue;
+    }
+
+    const groupStart = range.start;
+    const groupEnd = range.end;
+
+    while (compactionIndex < validTimestamps.length && validTimestamps[compactionIndex].time < groupStart) {
+      items.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
+      compactionIndex++;
+    }
+
+    const markersInsideGroup: CompactionMarker[] = [];
+    while (compactionIndex < validTimestamps.length && validTimestamps[compactionIndex].time <= groupEnd) {
+      markersInsideGroup.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
+      compactionIndex++;
+    }
+
+    items.push(group.type === 'assistant'
+      ? insertCompactionsIntoAssistantTimeline(group, markersInsideGroup)
+      : group);
+
+    if (group.type !== 'assistant') {
+      items.push(...markersInsideGroup);
+    }
+  }
+
+  while (compactionIndex < validTimestamps.length) {
+    items.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
+    compactionIndex++;
+  }
+
+  return items;
+}
+
+function getToolResultId(message: SessionMessageDisplay): string | undefined {
+  for (const block of message.blocks || []) {
+    const toolUseId = findDetail(block.details, ['tool_use_id', 'toolUseId'])?.value;
+    if (toolUseId) return toolUseId;
+  }
+  return undefined;
+}
+
+function buildSyntheticToolUseMessage(source: SessionMessageDisplay, tool: SessionToolCallDisplay): SessionMessageDisplay {
+  return {
+    role: 'tool-use',
+    content: '',
+    timestamp: source.timestamp,
+    messageId: source.messageId,
+    model: source.model,
+    usage: source.usage,
+    estimatedCosts: source.estimatedCosts,
+    promptBreakdown: source.promptBreakdown,
+    stopReason: source.stopReason,
+    toolCalls: [tool],
+    blocks: (source.blocks || []).filter(block => block.type === 'thinking'),
+    isMeta: source.isMeta,
+  };
+}
+
+function findMatchingToolResult(
+  items: { message: SessionMessageDisplay; index: number }[],
+  toolId: string | undefined,
+  afterIndex: number,
+  consumedIndexes: Set<number>,
+): { message: SessionMessageDisplay; index: number } | undefined {
+  if (!toolId) return undefined;
+
+  return items.find((item, itemIndex) => (
+    itemIndex > afterIndex
+    && !consumedIndexes.has(itemIndex)
+    && item.message.role === 'tool-result'
+    && getToolResultId(item.message) === toolId
+  ));
+}
+
 /** Group messages: pair tool-use/tool-result with their parent assistant, collapse consecutive system messages, merge consecutive empty assistant turns */
 function groupMessages(items: { message: SessionMessageDisplay; index: number }[]): GroupedItem[] {
   const groups: GroupedItem[] = [];
+  const consumedIndexes = new Set<number>();
   let i = 0;
 
   while (i < items.length) {
+    if (consumedIndexes.has(i)) {
+      i++;
+      continue;
+    }
+
     const { message, index } = items[i];
 
     if (message.role === 'user') {
@@ -383,13 +477,23 @@ function groupMessages(items: { message: SessionMessageDisplay; index: number }[
       // Collect following tool-use/tool-result pairs
       const toolPairs: ToolPair[] = [];
       while (j < items.length) {
+        if (consumedIndexes.has(j)) {
+          j++;
+          continue;
+        }
+
         const next = items[j];
         if (next.message.role === 'tool-use') {
           const pair: ToolPair = { toolUse: next };
           j++;
-          // Look for immediately following tool-result
-          if (j < items.length && items[j].message.role === 'tool-result') {
+          const toolId = next.message.toolCalls?.[0]?.id;
+          const matchedResult = findMatchingToolResult(items, toolId, j - 1, consumedIndexes);
+          if (matchedResult) {
+            pair.toolResult = matchedResult;
+            consumedIndexes.add(items.indexOf(matchedResult));
+          } else if (j < items.length && !consumedIndexes.has(j) && items[j].message.role === 'tool-result') {
             pair.toolResult = items[j];
+            consumedIndexes.add(j);
             j++;
           }
           toolPairs.push(pair);
@@ -404,6 +508,33 @@ function groupMessages(items: { message: SessionMessageDisplay; index: number }[
 
       const mergedMessage = mergeAssistantRun(assistantRun);
       const assistantMetrics = buildAssistantTurnMetrics(assistantRun.map(({ message: runMessage }) => runMessage));
+      const pairedInlineToolIds = new Set<string>();
+      if (mergedMessage?.toolCalls) {
+        for (const tool of mergedMessage.toolCalls) {
+          const matchedResult = findMatchingToolResult(items, tool.id, j - 1, consumedIndexes);
+          if (!matchedResult) continue;
+
+          const owner = assistantRun.find(({ message: runMessage }) => (
+            (runMessage.toolCalls || []).some(runTool => runTool.id === tool.id)
+          )) || assistantRun[assistantRun.length - 1];
+
+          toolPairs.push({
+            toolUse: {
+              message: buildSyntheticToolUseMessage(owner.message, tool),
+              index: owner.index,
+            },
+            toolResult: matchedResult,
+          });
+          consumedIndexes.add(items.indexOf(matchedResult));
+          pairedInlineToolIds.add(tool.id);
+        }
+
+        if (pairedInlineToolIds.size > 0) {
+          const unpairedToolCalls = mergedMessage.toolCalls.filter(tool => !pairedInlineToolIds.has(tool.id));
+          mergedMessage.toolCalls = unpairedToolCalls.length > 0 ? unpairedToolCalls : undefined;
+        }
+      }
+
       if (!mergedMessage && toolPairs.length === 0) {
         i = j;
         continue;
@@ -438,12 +569,23 @@ function groupMessages(items: { message: SessionMessageDisplay; index: number }[
     } else if (message.role === 'tool-use') {
       // Standalone tool-use not following an assistant
       const pair: ToolPair = { toolUse: { message, index } };
+      const toolId = message.toolCalls?.[0]?.id;
+      const matchedResult = findMatchingToolResult(items, toolId, i, consumedIndexes);
       i++;
-      if (i < items.length && items[i].message.role === 'tool-result') {
+      if (matchedResult) {
+        pair.toolResult = matchedResult;
+        consumedIndexes.add(items.indexOf(matchedResult));
+      } else if (i < items.length && !consumedIndexes.has(i) && items[i].message.role === 'tool-result') {
         pair.toolResult = items[i];
+        consumedIndexes.add(i);
         i++;
       }
-      groups.push({ type: 'assistant', message: { ...message, role: 'assistant', content: '' }, index, toolPairs: [pair] });
+      groups.push({
+        type: 'assistant',
+        message: { ...message, role: 'assistant', content: '', toolCalls: undefined },
+        index,
+        toolPairs: [pair],
+      });
     } else if (message.role === 'tool-result') {
       // Standalone tool-result
       groups.push({ type: 'assistant', message: { ...message, role: 'assistant', content: '' }, index, toolPairs: [{ toolResult: { message, index } }] });
@@ -460,17 +602,56 @@ function groupMessages(items: { message: SessionMessageDisplay; index: number }[
 // Minimap
 // ---------------------------------------------------------------------------
 
-function Minimap({ groups, scrollRatio, onJump }: {
-  groups: GroupedItem[];
-  scrollRatio: number;
-  onJump: (index: number) => void;
+function getTranscriptItemTargetId(item: TranscriptItem): string | null {
+  if (item.type === 'compaction') return item.targetId;
+  const index = item.type === 'system-group' ? item.messages[0].index : item.index;
+  return `conversation-message-${index}`;
+}
+
+function getMinimapTargets(items: TranscriptItem[]): TranscriptTarget[] {
+  const targets: TranscriptTarget[] = [];
+
+  for (const item of items) {
+    if (item.type === 'compaction') {
+      targets.push({ type: 'compaction', targetId: item.targetId });
+      continue;
+    }
+
+    const targetId = getTranscriptItemTargetId(item);
+    if (targetId) targets.push({ type: item.type, targetId });
+
+    if (item.type === 'assistant') {
+      for (const nestedItem of item.toolTimeline || []) {
+        if (nestedItem.type === 'compaction') {
+          targets.push({ type: 'compaction', targetId: nestedItem.targetId });
+        }
+      }
+    }
+  }
+
+  return targets;
+}
+
+function findSegmentForRatio(segments: MinimapSegment[], ratio: number): MinimapSegment | undefined {
+  if (segments.length === 0) return undefined;
+  const targetPct = ratio * 100;
+  return segments.find(segment => targetPct >= segment.topPct && targetPct <= segment.topPct + segment.heightPct)
+    || segments.reduce((closest, segment) => {
+      const closestCenter = closest.topPct + (closest.heightPct / 2);
+      const segmentCenter = segment.topPct + (segment.heightPct / 2);
+      return Math.abs(segmentCenter - targetPct) < Math.abs(closestCenter - targetPct) ? segment : closest;
+    }, segments[0]);
+}
+
+function Minimap({ segments, viewport, onJump }: {
+  segments: MinimapSegment[];
+  viewport: MinimapViewport;
+  onJump: (targetId: string) => void;
 }) {
-  const totalItems = groups.length;
+  const totalItems = segments.length;
   if (totalItems === 0) return null;
 
   const barHeight = 560;
-  // Show indicator height proportional to roughly visible viewport, with a sensible minimum
-  const indicatorHeightPct = Math.max(100 / Math.max(totalItems, 1) * 3, 6);
 
   return (
     <div className="sticky top-2 self-start flex flex-col items-center gap-2 w-14 shrink-0">
@@ -482,27 +663,51 @@ function Minimap({ groups, scrollRatio, onJump }: {
         <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[rgb(107,114,128)]" />System</div>
       </div>
       <div
+        role="button"
+        tabIndex={0}
+        aria-label="Session timeline"
+        data-testid="session-minimap"
         className="relative w-3.5 rounded bg-muted/50 border border-border/40 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted"
         style={{ height: barHeight }}
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const ratio = (e.clientY - rect.top) / rect.height;
-          const targetGroup = Math.floor(ratio * totalItems);
-          const group = groups[Math.min(targetGroup, totalItems - 1)];
-          const idx = group.type === 'system-group' ? group.messages[0].index : group.index;
-          onJump(idx);
+        onClick={(event) => {
+          const clickedSegment = (event.target as HTMLElement).closest<HTMLElement>('[data-target-id]');
+          if (clickedSegment && event.currentTarget.contains(clickedSegment)) {
+            const targetId = clickedSegment.dataset.targetId;
+            if (targetId) {
+              onJump(targetId);
+              return;
+            }
+          }
+
+          const rect = event.currentTarget.getBoundingClientRect();
+          const ratio = (event.clientY - rect.top) / rect.height;
+          const segment = findSegmentForRatio(segments, ratio);
+          if (segment) onJump(segment.targetId);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Home') {
+            event.preventDefault();
+            onJump(segments[0].targetId);
+          }
+          if (event.key === 'End') {
+            event.preventDefault();
+            onJump(segments[segments.length - 1].targetId);
+          }
         }}
       >
-        {groups.map((group, i) => {
-          const top = (i / totalItems) * 100;
-          const height = Math.max(100 / totalItems, 1.5);
+        {segments.map((segment, i) => {
+          const isCompaction = segment.type === 'compaction';
+          const height = isCompaction ? 0.7 : Math.max(segment.heightPct, 0.8);
           let color: string;
           let opacity = 0.7;
 
-          if (group.type === 'user') {
+          if (isCompaction) {
+            color = 'rgb(217, 119, 6)';
+            opacity = 1;
+          } else if (segment.type === 'user') {
             color = 'rgb(56, 138, 221)';
             opacity = 0.95;
-          } else if (group.type === 'assistant') {
+          } else if (segment.type === 'assistant') {
             color = 'rgb(186, 117, 23)';
             opacity = 0.85;
           } else {
@@ -513,17 +718,35 @@ function Minimap({ groups, scrollRatio, onJump }: {
           return (
             <div
               key={i}
-              className="absolute left-0 right-0 rounded-sm"
-              style={{ top: `${top}%`, height: `${height}%`, background: color, opacity }}
+              data-testid="session-minimap-segment"
+              data-marker-type={isCompaction ? 'compaction' : segment.type}
+              data-group-index={i}
+              data-target-id={segment.targetId}
+              className="absolute rounded-sm"
+              style={isCompaction
+                ? {
+                    top: `${segment.topPct}%`,
+                    left: '-8px',
+                    right: '-8px',
+                    height: '3px',
+                    background: '#F59E0B',
+                    opacity,
+                    zIndex: 20,
+                    transform: 'translateY(-50%)',
+                    boxShadow: '0 0 0 1px rgba(120,53,15,0.9), 0 0 0 4px rgba(245,158,11,0.18)',
+                  }
+                : { top: `${segment.topPct}%`, left: 0, right: 0, height: `${height}%`, background: color, opacity }}
+              title={isCompaction ? 'Context Window Compaction' : undefined}
             />
           );
         })}
         {/* Current viewport indicator — bordered box that follows scroll position */}
         <div
+          data-testid="session-minimap-indicator"
           className="absolute -left-2.5 -right-2.5 rounded-sm border-2 border-primary bg-primary/20 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_2px_8px_rgba(0,0,0,0.22)] pointer-events-none transition-[top] duration-75"
           style={{
-            top: `${scrollRatio * (100 - indicatorHeightPct)}%`,
-            height: `${indicatorHeightPct}%`,
+            top: `${viewport.topPct}%`,
+            height: `${viewport.heightPct}%`,
             minHeight: '8px',
           }}
         />
@@ -1082,7 +1305,7 @@ function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
     : null;
 
   return (
-    <div className="px-3 py-1.5 text-[13px]">
+    <div className="px-3 py-1.5 text-[13px]" data-testid="tool-call-inline" data-tool-call-id={tool.id}>
       <div className="flex flex-wrap items-start gap-2">
         <div className={`w-4 h-4 rounded flex items-center justify-center shrink-0 ${isEdit ? 'bg-amber-500/10' : 'bg-muted'}`}>
           {isEdit ? (
@@ -1352,6 +1575,22 @@ function SystemGroup({ messages }: { messages: { message: SessionMessageDisplay;
   );
 }
 
+function CompactionDivider({ timestamp, targetId }: { timestamp: string; targetId: string }) {
+  const timeLabel = !isNaN(new Date(timestamp).getTime())
+    ? format(new Date(timestamp), 'h:mm:ss a')
+    : null;
+
+  return (
+    <div id={targetId} data-testid="conversation-compaction-marker" className="flex items-center gap-3 py-2.5">
+      <div data-testid="conversation-compaction-line" className="h-px flex-1 bg-amber-500/50" />
+      <div className="shrink-0 rounded-full border border-amber-300/70 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
+        Context Window Compaction{timeLabel ? <span className="ml-1.5 font-mono font-normal opacity-70">{timeLabel}</span> : null}
+      </div>
+      <div data-testid="conversation-compaction-line" className="h-px flex-1 bg-amber-500/50" />
+    </div>
+  );
+}
+
 /** User message — colored left border, content-forward */
 function UserMessage({ msg, index }: { msg: SessionMessageDisplay; index: number }) {
   return (
@@ -1370,10 +1609,11 @@ function UserMessage({ msg, index }: { msg: SessionMessageDisplay; index: number
 }
 
 /** Assistant message — card-like with token/cost metadata right-aligned */
-function AssistantCard({ msg, index, toolPairs }: {
+function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
   msg: SessionMessageDisplay;
   index: number;
   toolPairs: ToolPair[];
+  toolTimeline?: AssistantTimelineItem[];
 }) {
   const { pickCost } = useCostMode();
   const thinkingBlocks = (msg.blocks || []).filter(b => b.type === 'thinking');
@@ -1384,27 +1624,25 @@ function AssistantCard({ msg, index, toolPairs }: {
     : null;
 
   const turnCost = pickCost(msg.estimatedCosts, 0);
+  const nestedTimeline = toolTimeline || toolPairs.map(pair => ({ type: 'tool-pair' as const, pair }));
 
   // Surface a readable summary even when the assistant emitted only tool calls
-  const allTools = [
-    ...(msg.toolCalls || []),
-    ...toolPairs.flatMap(p => p.toolUse?.message.toolCalls || []),
-  ];
+  const unpairedTools = msg.toolCalls || [];
   const fallbackSummary = (() => {
     if (msg.content) return null;
     const firstThink = thinkingBlocks.find(b => b.summary)?.summary;
     if (firstThink) return firstThink;
-    if (allTools.length === 1) {
-      const t = allTools[0];
+    if (unpairedTools.length === 1) {
+      const t = unpairedTools[0];
       const path = findDetail(t.details, ['file_path', 'filePath', 'path', 'displayPath'])?.value;
       const cmd = findDetail(t.details, ['command'])?.value;
       const query = findDetail(t.details, ['query'])?.value;
       const arg = path || cmd?.split('\n')[0] || query;
       return arg ? `${t.name} ${arg}` : t.name;
     }
-    if (allTools.length > 1) {
-      const names = Array.from(new Set(allTools.map(t => t.name))).slice(0, 3).join(', ');
-      return `${allTools.length} tool calls · ${names}`;
+    if (unpairedTools.length > 1) {
+      const names = Array.from(new Set(unpairedTools.map(t => t.name))).slice(0, 3).join(', ');
+      return `${unpairedTools.length} tool calls · ${names}`;
     }
     return null;
   })();
@@ -1494,30 +1732,52 @@ function AssistantCard({ msg, index, toolPairs }: {
       </div>
 
       {/* Nested tool pairs — visually attached to parent assistant turn via left rule */}
-      {toolPairs.length > 0 && (
+      {nestedTimeline.length > 0 && (
         <div className="ml-4 border-l-2 border-border/50 pl-3 mt-1 space-y-1">
-          {toolPairs.map((pair, i) => (
-            <div key={i} className="rounded border border-border/30 bg-card/40 overflow-hidden">
-              {pair.toolUse && (
-                <div id={`conversation-message-${pair.toolUse.index}`}>
-                  {(pair.toolUse.message.toolCalls || []).map((tool, j) => (
-                    <ToolCallInline key={tool.id || j} tool={tool} />
-                  ))}
-                  {(pair.toolUse.message.blocks || []).filter(b => b.type === 'thinking').filter(b => b.summary).map((block, j) => (
-                    <div key={`think-${j}`} className="flex items-center gap-1.5 px-3 py-0.5 text-[11px] text-muted-foreground">
-                      <Brain className="h-2.5 w-2.5 shrink-0" />
-                      <span className="truncate">{block.summary}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {pair.toolResult && (
-                <div id={`conversation-message-${pair.toolResult.index}`} className="border-t border-border/30">
-                  <ToolResultInline msg={pair.toolResult.message} />
-                </div>
-              )}
-            </div>
-          ))}
+          {nestedTimeline.map((item, i) => {
+            if (item.type === 'compaction') {
+              return (
+                <CompactionDivider
+                  key={`nested-compaction-${item.index}-${item.timestamp}`}
+                  timestamp={item.timestamp}
+                  targetId={item.targetId}
+                />
+              );
+            }
+
+            const { pair } = item;
+            const toolUseId = pair.toolUse?.message.toolCalls?.[0]?.id;
+            const toolResultId = pair.toolResult ? getToolResultId(pair.toolResult.message) : undefined;
+
+            return (
+              <div
+                key={i}
+                data-testid="tool-io-pair"
+                data-tool-use-id={toolUseId}
+                data-tool-result-id={toolResultId}
+                className="rounded border border-border/30 bg-card/40 overflow-hidden"
+              >
+                {pair.toolUse && (
+                  <div id={`conversation-message-${pair.toolUse.index}`}>
+                    {(pair.toolUse.message.toolCalls || []).map((tool, j) => (
+                      <ToolCallInline key={tool.id || j} tool={tool} />
+                    ))}
+                    {(pair.toolUse.message.blocks || []).filter(b => b.type === 'thinking').filter(b => b.summary).map((block, j) => (
+                      <div key={`think-${j}`} className="flex items-center gap-1.5 px-3 py-0.5 text-[11px] text-muted-foreground">
+                        <Brain className="h-2.5 w-2.5 shrink-0" />
+                        <span className="truncate">{block.summary}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {pair.toolResult && (
+                  <div id={`conversation-message-${pair.toolResult.index}`} className="border-t border-border/30">
+                    <ToolResultInline msg={pair.toolResult.message} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1606,8 +1866,12 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
   onCopyPath: (filePath: string) => void;
 }) {
   const { projectRoot } = useSessionRenderContext();
-  const loadedCount = parseCount(file.loadedLines);
-  const totalCount = parseCount(file.totalLines);
+  const totalCount = parseContextLineCount(file.totalLines);
+  const rangeSegments = totalCount != null && totalCount > 0
+    ? mergeContextLineRanges(file.loadedRanges, totalCount)
+    : [];
+  const rangeLoadedCount = getContextRangeLineCount(rangeSegments, totalCount ?? undefined);
+  const loadedCount = rangeLoadedCount ?? parseContextLineCount(file.loadedLines);
   const isCopied = copiedPath === file.fullPath;
   const displayPath = formatDisplayPath(file.fullPath, projectRoot);
   const displayPathParts = splitDisplayPath(displayPath);
@@ -1630,6 +1894,10 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
 
   const barColor = isPartial ? 'bg-amber-500' : 'bg-green-500';
   const lineColor = isPartial ? 'text-amber-600 dark:text-amber-400' : 'text-green-600 dark:text-green-400';
+  const rangeLabel = formatContextRanges(rangeSegments);
+  const barTitle = rangeLabel
+    ? `${rangeLabel} loaded`
+    : lineSummary || undefined;
 
   return (
     <div className="group py-1.5 border-b border-border/30 last:border-b-0">
@@ -1677,8 +1945,29 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
       {/* Fill bar */}
       {lineSummary && (
         <div className="flex items-center gap-2">
-          <div className="flex-1 h-1 bg-muted/50 rounded overflow-hidden">
-            <div className={`h-full ${barColor} rounded`} style={{ width: `${fillPct}%` }} />
+          <div
+            className="relative h-1 flex-1 overflow-hidden rounded bg-muted/50"
+            title={barTitle}
+            data-testid="context-file-range-bar"
+          >
+            {rangeSegments.length > 0 && totalCount != null && totalCount > 0 ? (
+              rangeSegments.map(range => (
+                <div
+                  key={`${range.start}-${range.end}`}
+                  className={`absolute inset-y-0 rounded-sm ${barColor}`}
+                  data-testid="context-file-range-segment"
+                  data-range-start={range.start}
+                  data-range-end={range.end}
+                  style={{
+                    left: `${((range.start - 1) / totalCount) * 100}%`,
+                    width: `${((range.end - range.start + 1) / totalCount) * 100}%`,
+                    minWidth: '2px',
+                  }}
+                />
+              ))
+            ) : (
+              <div className={`h-full ${barColor} rounded`} style={{ width: `${fillPct}%` }} />
+            )}
           </div>
           <span className={`w-[86px] shrink-0 text-right font-mono tabular-nums text-[10px] whitespace-nowrap ${lineColor}`}>{lineSummary}</span>
         </div>
@@ -1702,6 +1991,8 @@ function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessa
   const INITIAL_SHOW = 6;
   const visibleFiles = showAll ? allFiles : allFiles.slice(0, INITIAL_SHOW);
   const remaining = totalCount - INITIAL_SHOW;
+  const allPathsText = getContextFilePathsText(allFiles);
+  const isAllCopied = copiedPath === allPathsText;
 
   return (
     <Card className="border-border/50 shadow-sm py-0 gap-0">
@@ -1710,6 +2001,19 @@ function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessa
           <span className="text-xs font-medium text-foreground">
             Files in context <span className="text-muted-foreground font-normal">· {totalCount}</span>
           </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onCopyPath(allPathsText)}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+              >
+                {isAllCopied ? <Check className="h-2.5 w-2.5" /> : <Copy className="h-2.5 w-2.5" />}
+                Copy all
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{isAllCopied ? 'Copied all paths' : 'Copy all file paths'}</TooltipContent>
+          </Tooltip>
         </div>
         <div className="max-h-[320px] overflow-y-auto pr-1">
           {visibleFiles.map(file => (
@@ -1731,7 +2035,7 @@ function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessa
             {(() => {
               const hiddenFiles = allFiles.slice(INITIAL_SHOW);
               const hiddenLines = hiddenFiles.reduce((sum, f) => {
-                const loaded = parseCount(f.loadedLines);
+                const loaded = getContextLoadedLineCount(f);
                 return sum + (loaded ?? 0);
               }, 0);
               // ~4 tokens per line is a rough code estimate
@@ -1799,7 +2103,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
   const [preset, setPreset] = useState<FilterPreset>(loadPreset);
   const [copiedContextPath, setCopiedContextPath] = useState<string | null>(null);
-  const [scrollRatio, setScrollRatio] = useState(0);
+  const [minimapSegments, setMinimapSegments] = useState<MinimapSegment[]>([]);
+  const [minimapViewport, setMinimapViewport] = useState<MinimapViewport>({ topPct: 0, heightPct: 6 });
   const [artifactViewer, setArtifactViewer] = useState<ArtifactViewerState | null>(null);
   const [toolFilter, setToolFilter] = useState<string | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -1809,10 +2114,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     savePreset(next);
   }, []);
 
-  const scrollMessageIntoConversation = useCallback((messageIndex: number, block: 'start' | 'center' = 'center') => {
+  const scrollElementIntoConversation = useCallback((targetId: string, block: 'start' | 'center' = 'center') => {
     const container = conversationRef.current;
-    const selector = `#conversation-message-${messageIndex}`;
-    const element = (container?.querySelector<HTMLElement>(selector) || document.getElementById(`conversation-message-${messageIndex}`));
+    const safeTargetId = CSS.escape(targetId);
+    const selector = `#${safeTargetId}`;
+    const element = (container?.querySelector<HTMLElement>(selector) || document.getElementById(targetId));
     if (!element) return false;
 
     if (!container) {
@@ -1834,6 +2140,10 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     return true;
   }, []);
 
+  const scrollMessageIntoConversation = useCallback((messageIndex: number, block: 'start' | 'center' = 'center') => (
+    scrollElementIntoConversation(`conversation-message-${messageIndex}`, block)
+  ), [scrollElementIntoConversation]);
+
   const handleJumpToMessage = useCallback((messageIndexes: number[]) => {
     for (const messageIndex of messageIndexes) {
       if (scrollMessageIntoConversation(messageIndex, 'center')) return;
@@ -1849,29 +2159,26 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     });
   }, []);
 
-  // Scroll tracking for minimap
-  useEffect(() => {
-    const container = conversationRef.current;
-    if (!container) return;
-    const handleScroll = () => {
-      const maxScroll = container.scrollHeight - container.clientHeight;
-      if (maxScroll <= 0) return;
-      setScrollRatio(container.scrollTop / maxScroll);
-    };
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [session]);
-
   const messages = useMemo(() => session?.messages || [], [session]);
+  const compactionInfo = useMemo(
+    () => session?.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
+    [session?.compaction],
+  );
+  const compactionTimestamps = useMemo(
+    () => compactionInfo.compactionTimestamps || [],
+    [compactionInfo],
+  );
 
   const groupedMessages = useMemo(
     () => {
-      const groups = groupMessages(
+      const baseGroups = groupMessages(
         messages.map((message, index) => ({ message, index })).filter(({ message }) => messagePassesPreset(message, preset)),
       );
+      const groups = insertCompactionMarkers(baseGroups, compactionTimestamps);
       if (!toolFilter) return groups;
       // When a tool filter is active, only show assistant turns that include that tool
       return groups.filter(group => {
+        if (group.type === 'compaction') return true;
         if (group.type === 'user') return true;
         if (group.type === 'system-group') return false;
         if (group.type === 'assistant') {
@@ -1882,8 +2189,71 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
         return true;
       });
     },
-    [messages, preset, toolFilter],
+    [messages, preset, toolFilter, compactionTimestamps],
   );
+  const minimapTargets = useMemo(() => getMinimapTargets(groupedMessages), [groupedMessages]);
+
+  const updateMinimapViewport = useCallback(() => {
+    const container = conversationRef.current;
+    if (!container) return;
+
+    const scrollHeight = Math.max(container.scrollHeight, 1);
+    const maxScroll = Math.max(container.scrollHeight - container.clientHeight, 0);
+    const rawHeightPct = (container.clientHeight / scrollHeight) * 100;
+    const heightPct = Math.min(100, Math.max(rawHeightPct, 6));
+    const topPct = maxScroll > 0
+      ? (container.scrollTop / maxScroll) * (100 - heightPct)
+      : 0;
+
+    setMinimapViewport({ topPct, heightPct });
+  }, []);
+
+  const updateMinimapSegments = useCallback(() => {
+    const container = conversationRef.current;
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const scrollHeight = Math.max(container.scrollHeight, 1);
+    const nextSegments = minimapTargets
+      .map((target): MinimapSegment | null => {
+        const element = container.querySelector<HTMLElement>(`#${CSS.escape(target.targetId)}`);
+        if (!element) return null;
+
+        const rect = element.getBoundingClientRect();
+        const top = rect.top - containerRect.top + container.scrollTop;
+        return {
+          type: target.type,
+          targetId: target.targetId,
+          topPct: Math.max(0, Math.min(100, (top / scrollHeight) * 100)),
+          heightPct: Math.max((rect.height / scrollHeight) * 100, target.type === 'compaction' ? 0.7 : 0.8),
+        };
+      })
+      .filter((segment): segment is MinimapSegment => Boolean(segment))
+      .sort((left, right) => left.topPct - right.topPct);
+
+    setMinimapSegments(nextSegments);
+    updateMinimapViewport();
+  }, [minimapTargets, updateMinimapViewport]);
+
+  // Scroll and layout tracking for minimap. Segment positions are measured from
+  // real DOM geometry so tall outputs occupy proportionally more map space.
+  useEffect(() => {
+    const container = conversationRef.current;
+    if (!container) return;
+
+    updateMinimapSegments();
+    const handleScroll = () => updateMinimapViewport();
+    container.addEventListener('scroll', handleScroll, { passive: true });
+
+    const resizeObserver = new ResizeObserver(() => updateMinimapSegments());
+    resizeObserver.observe(container);
+    Array.from(container.children).forEach(child => resizeObserver.observe(child));
+
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      resizeObserver.disconnect();
+    };
+  }, [groupedMessages, updateMinimapSegments, updateMinimapViewport]);
 
   if (isLoading || !session || !session.id) {
     return (
@@ -1915,7 +2285,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const contextFiles = getContextFileGroups(messages);
-  const compaction = session.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] };
+  const compaction = compactionInfo;
   const compactionCount = compaction.compactions + compaction.microcompactions;
   const sessionRenderContext: SessionRenderContextValue = {
     projectRoot: session.cwd || undefined,
@@ -2024,8 +2394,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
           <CardContent className="pt-0">
             <div className="flex gap-3">
               {/* Conversation column — internal scroll keeps minimap aligned */}
-              <div ref={conversationRef} className="flex-1 min-w-0 max-h-[78vh] overflow-y-auto pr-2 space-y-2">
+              <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="flex-1 min-w-0 max-h-[78vh] overflow-y-auto pr-2 space-y-2">
                 {groupedMessages.map((group, gi) => {
+                  if (group.type === 'compaction') {
+                    return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
+                  }
                   if (group.type === 'user') {
                     return <UserMessage key={`u-${gi}`} msg={group.message} index={group.index} />;
                   }
@@ -2036,6 +2409,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                         msg={group.message}
                         index={group.index}
                         toolPairs={group.toolPairs}
+                        toolTimeline={group.toolTimeline}
                       />
                     );
                   }
@@ -2048,10 +2422,10 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
               {/* Minimap */}
               <Minimap
-                groups={groupedMessages}
-                scrollRatio={scrollRatio}
-                onJump={(idx) => {
-                  scrollMessageIntoConversation(idx, 'start');
+                segments={minimapSegments}
+                viewport={minimapViewport}
+                onJump={(targetId) => {
+                  scrollElementIntoConversation(targetId, 'start');
                 }}
               />
             </div>

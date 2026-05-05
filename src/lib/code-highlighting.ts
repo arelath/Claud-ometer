@@ -393,10 +393,10 @@ function tokenizeLine(line: string, language: CodeLanguage, state: ParserState):
       let kind: HighlightTokenKind = 'plain';
       if (config.keywords.has(lookupValue)) {
         kind = 'keyword';
-      } else if (config.builtins.has(lookupValue) || isLikelyTypeName(language, identifier)) {
-        kind = 'type';
       } else if (nextCharacter === '(') {
         kind = 'function';
+      } else if (config.builtins.has(lookupValue) || isLikelyTypeName(language, identifier)) {
+        kind = 'type';
       }
 
       pushToken(tokens, { text: identifier, kind });

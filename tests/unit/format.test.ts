@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { formatCost, formatDuration, formatTokens, timeAgo } from '@/lib/format';
+import { formatCost, formatDuration, formatNumber, formatTokens, timeAgo } from '@/lib/format';
 
 describe('format helpers', () => {
   it('formats token counts across thresholds', () => {
@@ -12,6 +12,10 @@ describe('format helpers', () => {
     expect(formatCost(16.742)).toBe('$16.74');
     expect(formatCost(0.0456)).toBe('$0.05');
     expect(formatCost(0.0042)).toBe('$0.0042');
+  });
+
+  it('formats plain numbers with locale separators', () => {
+    expect(formatNumber(1234567)).toBe('1,234,567');
   });
 
   it('formats durations into readable strings', () => {
