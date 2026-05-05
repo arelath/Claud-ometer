@@ -49,14 +49,104 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). The dashboard reads from your local `~/.claude/` directory automatically.
 
+## Desktop App
+
+Claud-ometer can also be packaged as a Windows desktop app with Electron. The Electron shell starts the existing Next.js standalone server on a local port, opens it in a desktop window, and shuts the server down when the app exits.
+
+The packaged app still reads live Claude Code data from `~/.claude/`. Imported desktop data is stored in the Electron user data directory instead of the install folder.
+
+### Desktop Development
+
+Run the Next dev server and Electron together:
+
+```bash
+npm run electron:dev
+```
+
+This opens an Electron window backed by `next dev` at `127.0.0.1:3000`.
+
+### Build Desktop Artifacts
+
+Prepare a standalone Next build and copy the static assets needed by Electron:
+
+```bash
+npm run electron:prepare
+```
+
+Create an unpacked app for smoke testing:
+
+```bash
+npm run electron:pack
+```
+
+Create Windows `.exe` artifacts:
+
+```bash
+npm run electron:dist
+```
+
+Release outputs are written to `dist-electron/`:
+
+| Artifact | Purpose |
+|----------|---------|
+| `Claud-ometer-Setup-<version>-x64.exe` | NSIS installer |
+| `Claud-ometer-Portable-<version>-x64.exe` | Portable executable |
+| `win-unpacked/Claud-ometer.exe` | Unpacked app for local smoke testing |
+
+See [docs/electron-exe-packaging-design.md](./docs/electron-exe-packaging-design.md) for the packaging architecture and follow-up work.
+
+## Release Checklist
+
+1. Update the version in `package.json`.
+2. Install dependencies from the lockfile:
+
+   ```bash
+   npm ci
+   ```
+
+3. Run validation:
+
+   ```bash
+   npx tsc --noEmit
+   npm run lint
+   npm run test:unit
+   npm run test:e2e
+   ```
+
+4. Build the desktop release:
+
+   ```bash
+   npm run electron:dist
+   ```
+
+5. Smoke test the unpacked app:
+
+   ```bash
+   .\dist-electron\win-unpacked\Claud-ometer.exe
+   ```
+
+   Verify Overview loads, live/imported data controls render, session detail pages open, and closing the window stops the local server.
+
+6. Smoke test the installer or portable executable from `dist-electron/`.
+7. Publish the `.exe` artifacts and `latest.yml` if using updater metadata.
+8. Create a git tag for the release, for example:
+
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+Current release caveats: the Windows app is unsigned and uses the default Electron icon. Unsigned builds may trigger Windows SmartScreen warnings.
+
 ## Tech Stack
 
-- **Next.js 15** (App Router, Turbopack)
+- **Next.js 16** (App Router, Turbopack)
 - **TypeScript**
 - **Tailwind CSS v4** + **shadcn/ui**
 - **Recharts** for charts
 - **SWR** for data fetching
 - **Lucide** icons
+- **Electron** + **electron-builder** for Windows desktop packaging
 
 No database required. Reads `~/.claude/` files directly via Node.js API routes.
 
@@ -90,6 +180,13 @@ src/
 │   └── format.ts                # Number/date formatters
 └── config/
     └── pricing.ts               # Model pricing + cost calculator
+electron/
+└── main.cjs                     # Desktop shell + local Next server lifecycle
+scripts/
+├── prepare-electron-next.cjs    # Copies Next standalone static assets
+└── electron-after-pack.cjs      # Copies traced server dependencies after packaging
+docs/
+└── electron-exe-packaging-design.md
 ```
 
 ## Data Export/Import
