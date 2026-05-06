@@ -1,4 +1,5 @@
 import type { SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
+import { detailMatchesKey } from '@/lib/string-utils';
 
 const CONTEXT_FILE_DETAIL_KEYS = ['content.file.filePath', 'filePath', 'file_path', 'path', 'displayPath', 'filename'];
 const CONTEXT_LOADED_LINE_DETAIL_KEYS = ['content.file.numLines', 'numLines'];
@@ -29,16 +30,6 @@ export interface ContextFileInfo {
 export interface ContextFileGroups {
   inContext: ContextFileInfo[];
   referenced: ContextFileInfo[];
-}
-
-function getDetailKeyTail(key: string): string {
-  const parts = key.split('.');
-  return parts[parts.length - 1] || key;
-}
-
-function detailMatchesKey(key: string, candidates: string[]): boolean {
-  const keyTail = getDetailKeyTail(key);
-  return candidates.includes(key) || candidates.includes(keyTail);
 }
 
 function findPreferredDetail(

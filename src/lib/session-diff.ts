@@ -1,4 +1,7 @@
 import type { SessionMessageDisplay, SessionToolCallDetail } from '@/lib/claude-data/types';
+import { diffArrays } from 'diff';
+import { normalizeDisplayPath } from '@/lib/path-utils';
+import { detailMatchesKey, parseLineNumber } from '@/lib/string-utils';
 
 export type DiffFileStatus = 'modified' | 'added' | 'deleted';
 export type DiffRowType = 'context' | 'add' | 'remove';
@@ -47,7 +50,6 @@ export interface SessionDiffSummary {
 
 const PATH_DETAIL_KEYS = ['file_path', 'filePath', 'path', 'displayPath', 'filename'];
 const START_LINE_DETAIL_KEYS = ['startLine', 'start_line', 'lineStart', 'line_start', 'offset'];
-const MAX_LCS_CELLS = 40_000;
 
 interface FileSnapshot {
   path: string;
@@ -64,36 +66,18 @@ interface DiffEditRecord {
   hunk: SessionDiffHunk;
 }
 
-function detailKeyTail(key: string): string {
-  const parts = key.split('.');
-  return parts[parts.length - 1] || key;
-}
-
-function detailMatches(key: string, candidates: string[]): boolean {
-  return candidates.includes(key) || candidates.includes(detailKeyTail(key));
-}
-
 function findDetail(details: SessionToolCallDetail[], candidates: string[]): SessionToolCallDetail | undefined {
-  return details.find(detail => detailMatches(detail.key, candidates));
+  return details.find(detail => detailMatchesKey(detail.key, candidates));
 }
 
 function normalizePath(pathValue: string): string {
-  return pathValue.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '');
+  return normalizeDisplayPath(pathValue).replace(/^\.\//, '');
 }
 
 function normalizeTextLines(value: string): string[] {
   const normalized = value.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n?/g, '\n');
   if (!normalized) return [];
   return normalized.split('\n');
-}
-
-function parseLineNumber(value: string | undefined): number | null {
-  if (!value) return null;
-  const direct = value.trim().replace(/,/g, '').match(/^\d+$/);
-  if (direct) return Number.parseInt(direct[0], 10);
-
-  const labeled = value.match(/\bline\s+(\d+)\b/i) || value.match(/^\D*(\d+)/);
-  return labeled ? Number.parseInt(labeled[1], 10) : null;
 }
 
 function getStartLineFromDetails(details: SessionToolCallDetail[]): number | null {
@@ -232,57 +216,10 @@ function inferStartLineFromPreviousEdits(
 }
 
 function buildSimpleLineDiff(oldLines: string[], newLines: string[]): { type: DiffRowType; text: string }[] {
-  if (oldLines.length === 0) return newLines.map(text => ({ type: 'add', text }));
-  if (newLines.length === 0) return oldLines.map(text => ({ type: 'remove', text }));
-
-  if (oldLines.length * newLines.length > MAX_LCS_CELLS) {
-    return [
-      ...oldLines.map(text => ({ type: 'remove' as const, text })),
-      ...newLines.map(text => ({ type: 'add' as const, text })),
-    ];
-  }
-
-  const dp = Array.from({ length: oldLines.length + 1 }, () => Array<number>(newLines.length + 1).fill(0));
-  for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
-    for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
-      dp[oldIndex][newIndex] = oldLines[oldIndex] === newLines[newIndex]
-        ? dp[oldIndex + 1][newIndex + 1] + 1
-        : Math.max(dp[oldIndex + 1][newIndex], dp[oldIndex][newIndex + 1]);
-    }
-  }
-
-  const rows: { type: DiffRowType; text: string }[] = [];
-  let oldIndex = 0;
-  let newIndex = 0;
-
-  while (oldIndex < oldLines.length && newIndex < newLines.length) {
-    if (oldLines[oldIndex] === newLines[newIndex]) {
-      rows.push({ type: 'context', text: oldLines[oldIndex] });
-      oldIndex += 1;
-      newIndex += 1;
-      continue;
-    }
-
-    if (dp[oldIndex + 1][newIndex] >= dp[oldIndex][newIndex + 1]) {
-      rows.push({ type: 'remove', text: oldLines[oldIndex] });
-      oldIndex += 1;
-    } else {
-      rows.push({ type: 'add', text: newLines[newIndex] });
-      newIndex += 1;
-    }
-  }
-
-  while (oldIndex < oldLines.length) {
-    rows.push({ type: 'remove', text: oldLines[oldIndex] });
-    oldIndex += 1;
-  }
-
-  while (newIndex < newLines.length) {
-    rows.push({ type: 'add', text: newLines[newIndex] });
-    newIndex += 1;
-  }
-
-  return rows;
+  return diffArrays(oldLines, newLines).flatMap(part => {
+    const type: DiffRowType = part.added ? 'add' : part.removed ? 'remove' : 'context';
+    return part.value.map(text => ({ type, text }));
+  });
 }
 
 function buildDiffRows(oldText: string, newText: string, startLine: number | null): SessionDiffRow[] {

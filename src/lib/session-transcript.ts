@@ -1,5 +1,6 @@
 import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
 import type { SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
+import { detailMatchesKey } from '@/lib/string-utils';
 
 export type FilterPreset = 'narrative' | 'tools' | 'all';
 
@@ -29,16 +30,6 @@ export type AssistantTimelineItem =
 export interface TranscriptTarget {
   type: 'user' | 'assistant' | 'system-group' | 'compaction';
   targetId: string;
-}
-
-function getDetailKeyTail(key: string): string {
-  const parts = key.split('.');
-  return parts[parts.length - 1] || key;
-}
-
-function detailMatchesKey(key: string, candidates: string[]): boolean {
-  const keyTail = getDetailKeyTail(key);
-  return candidates.includes(key) || candidates.includes(keyTail);
 }
 
 function findDetail(

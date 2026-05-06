@@ -19,20 +19,6 @@ export const metadata: Metadata = {
   description: "Analytics dashboard for Claude Code usage",
 };
 
-const themeInitScript = `
-(() => {
-  try {
-    const stored = localStorage.getItem('claud-ometer-theme');
-    const theme = stored === 'light' || stored === 'dark' ? stored : 'light';
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-    document.documentElement.style.colorScheme = theme;
-  } catch {
-    document.documentElement.classList.remove('dark');
-    document.documentElement.style.colorScheme = 'light';
-  }
-})();
-`;
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -40,9 +26,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
-      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useTheme } from 'next-themes';
 import useSWR from 'swr';
 import {
   LayoutDashboard,
@@ -15,7 +16,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-import { useTheme } from '@/lib/theme-context';
 
 const navItems = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -30,7 +30,8 @@ const fetcher = (url: string) => fetch(url).then(r => r.json());
 export function Sidebar() {
   const pathname = usePathname();
   const { data: sourceInfo } = useSWR('/api/data-source', fetcher, { refreshInterval: 5000 });
-  const { theme, toggleTheme } = useTheme();
+  const { resolvedTheme, setTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
 
   const isImported = sourceInfo?.active === 'imported';
 
@@ -70,11 +71,11 @@ export function Sidebar() {
 
       <div className="border-t border-border px-5 py-3 space-y-2">
         <button
-          onClick={toggleTheme}
+          onClick={() => setTheme(isDark ? 'light' : 'dark')}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
         >
-          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          {isDark ? 'Light Mode' : 'Dark Mode'}
         </button>
         {isImported ? (
           <div className="flex items-center gap-1.5">
