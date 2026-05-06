@@ -194,6 +194,13 @@ export interface SessionArtifactDisplay {
   oldText?: string;
   newText?: string;
   location?: string;
+  includeWhenEmpty?: boolean;
+  edits?: {
+    oldText: string;
+    newText: string;
+    location?: string;
+    includeWhenEmpty?: boolean;
+  }[];
 }
 
 export interface SessionToolCallDisplay {

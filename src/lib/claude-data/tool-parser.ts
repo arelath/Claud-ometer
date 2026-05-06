@@ -23,6 +23,8 @@ const TOOL_DETAIL_LABELS: Record<string, string> = {
   'content.file.totalLines': 'Total lines',
   displayPath: 'Display path',
   endLine: 'End line',
+  edits: 'Edits',
+  edit_mode: 'Edit mode',
   exitCode: 'Exit code',
   filename: 'Filename',
   file_path: 'File',
@@ -42,9 +44,15 @@ const TOOL_DETAIL_LABELS: Record<string, string> = {
   messageId: 'Message ID',
   mode: 'Mode',
   newString: 'New text',
+  new_source: 'New source',
+  newSource: 'New source',
   new_string: 'New text',
   newName: 'New name',
+  notebook_path: 'Notebook',
+  notebookPath: 'Notebook',
   oldString: 'Old text',
+  old_source: 'Old source',
+  oldSource: 'Old source',
   old_string: 'Old text',
   originalFile: 'Original file',
   path: 'Path',
@@ -69,9 +77,21 @@ const TOOL_DETAIL_LABELS: Record<string, string> = {
   toolUseId: 'Tool call',
   durationMs: 'Duration',
   url: 'URL',
+  cell_id: 'Cell',
+  cell_type: 'Cell type',
 };
 
-const LARGE_TEXT_TOOL_KEYS = new Set(['code', 'content', 'file_text', 'new_string', 'old_string']);
+const LARGE_TEXT_TOOL_KEYS = new Set([
+  'code',
+  'content',
+  'file_text',
+  'new_source',
+  'newSource',
+  'new_string',
+  'old_source',
+  'oldSource',
+  'old_string',
+]);
 const FILE_LIKE_TOOL_KEYS = new Set([...ANTHROPIC_FILE_DETAIL_KEYS, 'paths']);
 
 const STRUCTURED_DETAIL_KEYS = [
@@ -80,6 +100,8 @@ const STRUCTURED_DETAIL_KEYS = [
   'permissionMode',
   'filePath',
   'file_path',
+  'notebook_path',
+  'notebookPath',
   'path',
   'displayPath',
   'filename',
@@ -97,6 +119,9 @@ const STRUCTURED_DETAIL_KEYS = [
   'messageCount',
   'exitCode',
   'level',
+  'cell_id',
+  'cell_type',
+  'edit_mode',
   'matches',
   'addedNames',
   'removedNames',
@@ -252,6 +277,25 @@ function toPreviewText(text: string, maxLength = 50_000): string {
   return `${text.slice(0, maxLength).trimEnd()}\n\n[truncated ${text.length.toLocaleString()} chars]`;
 }
 
+function hasAnyKey(record: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some(key => key in record);
+}
+
+function extractDiffText(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'string') return toPreviewText(value);
+  return extractTextPreview(value);
+}
+
+function extractFirstDiffText(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (!(key in record)) continue;
+    const text = extractDiffText(record[key]);
+    if (text !== undefined) return text;
+  }
+  return undefined;
+}
+
 export function flattenStructuredRecord(
   record: Record<string, unknown>,
   prefix = '',
@@ -396,23 +440,81 @@ export function extractTextPreview(value: unknown): string | undefined {
 function buildToolCallArtifact(name: string, input: unknown): SessionArtifactDisplay | undefined {
   if (!isRecord(input)) return undefined;
 
-  const oldText = extractTextPreview(input.old_string ?? input.oldString);
-  const newText = extractTextPreview(input.new_string ?? input.newString);
-
-  if (!oldText || !newText) return undefined;
-
-  const startLine = input.startLine;
-  const location = typeof startLine === 'number' || typeof startLine === 'string'
+  const startLine = input.startLine ?? input.start_line ?? input.lineStart ?? input.line_start ?? input.offset;
+  const lineLocation = typeof startLine === 'number' || typeof startLine === 'string'
     ? `line ${startLine}`
     : undefined;
 
-  return {
-    kind: 'diff',
-    title: `${name} preview`,
-    oldText,
-    newText,
-    location,
-  };
+  if (hasAnyKey(input, ['old_string', 'oldString', 'old_text', 'oldText'])
+    && hasAnyKey(input, ['new_string', 'newString', 'new_text', 'newText'])) {
+    const oldText = extractFirstDiffText(input, ['old_string', 'oldString', 'old_text', 'oldText']);
+    const newText = extractFirstDiffText(input, ['new_string', 'newString', 'new_text', 'newText']);
+
+    if (oldText !== undefined && newText !== undefined) {
+      return {
+        kind: 'diff',
+        title: `${name} preview`,
+        oldText,
+        newText,
+        location: lineLocation,
+      };
+    }
+  }
+
+  if (Array.isArray(input.edits)) {
+    const edits = input.edits
+      .map((edit, index) => {
+        if (!isRecord(edit)) return null;
+        const oldText = extractFirstDiffText(edit, ['old_string', 'oldString', 'old_text', 'oldText']);
+        const newText = extractFirstDiffText(edit, ['new_string', 'newString', 'new_text', 'newText']);
+        if (oldText === undefined || newText === undefined) return null;
+        return {
+          oldText,
+          newText,
+          location: `edit ${index + 1}`,
+        };
+      })
+      .filter((edit): edit is { oldText: string; newText: string; location: string } => Boolean(edit));
+
+    if (edits.length > 0) {
+      return {
+        kind: 'diff',
+        title: `${name} preview`,
+        oldText: edits.map(edit => edit.oldText).join('\n'),
+        newText: edits.map(edit => edit.newText).join('\n'),
+        location: edits.length === 1 ? edits[0].location : `${edits.length} edits`,
+        edits,
+      };
+    }
+  }
+
+  const writeText = extractFirstDiffText(input, ['content', 'file_text', 'fileText', 'code']);
+  if (name === ANTHROPIC_TOOL_NAMES.write && writeText !== undefined) {
+    return {
+      kind: 'diff',
+      title: `${name} preview`,
+      oldText: '',
+      newText: writeText,
+      location: 'line 1',
+      includeWhenEmpty: true,
+    };
+  }
+
+  const notebookText = extractFirstDiffText(input, ['new_source', 'newSource']);
+  if (name === ANTHROPIC_TOOL_NAMES.notebookEdit && (notebookText !== undefined || input.edit_mode === 'delete')) {
+    const editMode = typeof input.edit_mode === 'string' ? input.edit_mode : undefined;
+    const cellId = typeof input.cell_id === 'string' && input.cell_id.trim() ? input.cell_id.trim() : undefined;
+    return {
+      kind: 'diff',
+      title: `${name} preview`,
+      oldText: extractFirstDiffText(input, ['old_source', 'oldSource']) ?? '',
+      newText: editMode === 'delete' ? '' : (notebookText ?? ''),
+      location: [editMode, cellId ? `cell ${cellId}` : undefined].filter(Boolean).join(' - ') || undefined,
+      includeWhenEmpty: true,
+    };
+  }
+
+  return undefined;
 }
 
 function buildStructuredContent(value: unknown): string | undefined {

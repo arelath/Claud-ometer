@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getFilePatchText, getSessionDiffSummary, getSessionPatchText } from '@/lib/session-diff';
+import { buildToolCallDisplay } from '@/lib/claude-data/tool-parser';
 import type { SessionMessageDisplay, SessionToolCallDetail } from '@/lib/claude-data/types';
 
 function detail(key: string, value: string): SessionToolCallDetail {
@@ -76,6 +77,22 @@ function readMessages(filePath: string, startLine: string, content: string): Ses
       ],
     },
   ];
+}
+
+function assistantWithTool(
+  messageIndex: number,
+  name: string,
+  id: string,
+  input: Record<string, unknown>,
+): SessionMessageDisplay {
+  return {
+    role: 'assistant',
+    content: '',
+    timestamp: `2026-05-04T12:01:${String(messageIndex).padStart(2, '0')}.000Z`,
+    toolCalls: [
+      buildToolCallDisplay(name, id, input),
+    ],
+  };
 }
 
 describe('session diff helpers', () => {
@@ -327,5 +344,92 @@ describe('session diff helpers', () => {
     expect(file.editHunks[1].oldStartLine).toBe(20);
     expect(file.editHunks[1].rows[0].oldLineNumber).toBe(20);
     expect(file.editHunks[1].rows[1].newLineNumber).toBe(20);
+  });
+
+  it('includes newly written files from Write tool artifacts', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithTool(1, 'Write', 'write-1', {
+        file_path: 'src/new-file.ts',
+        content: ['export const created = true;', 'created;'].join('\n'),
+      }),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.editCount).toBe(1);
+    expect(summary.addedLines).toBe(2);
+    expect(summary.removedLines).toBe(0);
+    expect(summary.files[0]).toMatchObject({
+      path: 'src/new-file.ts',
+      status: 'added',
+      addedLines: 2,
+      removedLines: 0,
+    });
+    expect(summary.files[0].hunks[0].rows).toEqual([
+      {
+        type: 'add',
+        oldLineNumber: null,
+        newLineNumber: 1,
+        text: 'export const created = true;',
+      },
+      {
+        type: 'add',
+        oldLineNumber: null,
+        newLineNumber: 2,
+        text: 'created;',
+      },
+    ]);
+  });
+
+  it('includes delete edits where new_string is empty', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithTool(1, 'Edit', 'edit-delete-1', {
+        file_path: 'src/cleanup.ts',
+        startLine: 12,
+        old_string: ['obsolete();', 'cleanup();'].join('\n'),
+        new_string: '',
+      }),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.addedLines).toBe(0);
+    expect(summary.removedLines).toBe(2);
+    expect(summary.files[0].status).toBe('deleted');
+    expect(summary.files[0].hunks[0].rows.map(row => row.type)).toEqual(['remove', 'remove']);
+  });
+
+  it('expands MultiEdit tool calls into separate per-edit hunks', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithTool(1, 'MultiEdit', 'multi-1', {
+        file_path: 'src/multi.ts',
+        edits: [
+          { old_string: 'const one = false;', new_string: 'const one = true;' },
+          { old_string: 'const two = false;', new_string: 'const two = true;' },
+        ],
+      }),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.editCount).toBe(2);
+    expect(summary.files[0].editHunks).toHaveLength(2);
+    expect(summary.files[0].editHunks.map(hunk => hunk.toolId)).toEqual(['multi-1:1', 'multi-1:2']);
+  });
+
+  it('uses notebook_path for NotebookEdit changed files', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithTool(1, 'NotebookEdit', 'notebook-1', {
+        notebook_path: 'notebooks/analysis.ipynb',
+        edit_mode: 'insert',
+        cell_id: 'abc123',
+        cell_type: 'code',
+        new_source: 'print("hello")',
+      }),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.files[0].path).toBe('notebooks/analysis.ipynb');
+    expect(summary.files[0].editHunks[0]).toMatchObject({
+      toolName: 'NotebookEdit',
+      location: 'insert - cell abc123',
+    });
   });
 });

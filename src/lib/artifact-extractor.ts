@@ -14,6 +14,7 @@ export interface SessionDiffArtifact {
   path: string;
   toolName: string;
   toolId: string;
+  artifactIndex: number;
   messageIndex: number;
   timestamp: string;
   location?: string;
@@ -194,27 +195,41 @@ export function getSessionDiffArtifacts(messages: SessionMessageDisplay[]): Sess
       if (tool.artifact?.kind !== 'diff') continue;
 
       const filePath = getToolPath(tool.details);
-      const oldText = tool.artifact.oldText || '';
-      const newText = tool.artifact.newText || '';
-      if (!filePath || (!oldText && !newText)) continue;
+      if (!filePath) continue;
 
-      const explicitStartLine = getStartLineFromDetails(tool.details)
-        ?? parseLineNumber(tool.artifact.location)
-        ?? null;
-      const startLine = explicitStartLine
-        ?? inferStartLineFromPreviousEdits(filePath, oldText, artifacts)
-        ?? inferStartLineFromSnapshots(filePath, oldText, messageIndex, snapshots);
+      const diffItems = tool.artifact.edits?.length
+        ? tool.artifact.edits
+        : [{
+            oldText: tool.artifact.oldText || '',
+            newText: tool.artifact.newText || '',
+            location: tool.artifact.location,
+            includeWhenEmpty: tool.artifact.includeWhenEmpty,
+          }];
 
-      artifacts.push({
-        path: filePath,
-        toolName: tool.name,
-        toolId: tool.id,
-        messageIndex,
-        timestamp: message.timestamp,
-        location: tool.artifact.location || (startLine != null ? `line ${startLine}` : undefined),
-        oldText,
-        newText,
-        startLine,
+      diffItems.forEach((diffItem, artifactIndex) => {
+        const oldText = diffItem.oldText;
+        const newText = diffItem.newText;
+        if (!diffItem.includeWhenEmpty && !oldText && !newText) return;
+
+        const explicitStartLine = getStartLineFromDetails(tool.details)
+          ?? parseLineNumber(diffItem.location)
+          ?? null;
+        const startLine = explicitStartLine
+          ?? inferStartLineFromPreviousEdits(filePath, oldText, artifacts)
+          ?? inferStartLineFromSnapshots(filePath, oldText, messageIndex, snapshots);
+
+        artifacts.push({
+          path: filePath,
+          toolName: tool.name,
+          toolId: diffItems.length > 1 && tool.id ? `${tool.id}:${artifactIndex + 1}` : tool.id,
+          artifactIndex,
+          messageIndex,
+          timestamp: message.timestamp,
+          location: diffItem.location || (startLine != null ? `line ${startLine}` : undefined),
+          oldText,
+          newText,
+          startLine,
+        });
       });
     }
   });

@@ -204,7 +204,7 @@ export function getSessionDiffSummary(messages: SessionMessageDisplay[]): Sessio
     const newLineCount = rows.filter(row => row.type !== 'remove').length;
 
     const hunk: SessionDiffHunk = {
-      id: `${artifact.messageIndex}-${artifact.toolId || artifact.toolName}-${artifact.path}`,
+      id: `${artifact.messageIndex}-${artifact.toolId || artifact.toolName}-${artifact.artifactIndex}-${artifact.path}`,
       filePath: artifact.path,
       toolName: artifact.toolName,
       toolId: artifact.toolId,

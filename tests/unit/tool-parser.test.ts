@@ -61,6 +61,84 @@ describe('tool parser helpers', () => {
     });
   });
 
+  it('builds diff artifacts for write tool calls', () => {
+    const display = buildToolCallDisplay('Write', 'tool-1', {
+      file_path: 'src/new-file.ts',
+      content: 'export const created = true;\ncreated;',
+    });
+
+    expect(display.summary).toBe('src/new-file.ts');
+    expect(display.artifact).toEqual({
+      kind: 'diff',
+      title: 'Write preview',
+      oldText: '',
+      newText: 'export const created = true;\ncreated;',
+      location: 'line 1',
+      includeWhenEmpty: true,
+    });
+  });
+
+  it('preserves empty sides in diff artifacts', () => {
+    const display = buildToolCallDisplay('Edit', 'tool-1', {
+      file_path: 'src/app.ts',
+      old_string: 'obsolete();',
+      new_string: '',
+    });
+
+    expect(display.artifact).toMatchObject({
+      kind: 'diff',
+      oldText: 'obsolete();',
+      newText: '',
+    });
+  });
+
+  it('builds sub-edit artifacts for multi-edit tool calls', () => {
+    const display = buildToolCallDisplay('MultiEdit', 'tool-1', {
+      file_path: 'src/app.ts',
+      edits: [
+        { old_string: 'const one = false;', new_string: 'const one = true;' },
+        { old_string: 'const two = false;', new_string: 'const two = true;' },
+      ],
+    });
+
+    expect(display.details).toEqual([
+      { key: 'file_path', label: 'File', value: 'src/app.ts' },
+      { key: 'edits', label: 'Edits', value: '2 items' },
+    ]);
+    expect(display.artifact?.edits).toEqual([
+      {
+        oldText: 'const one = false;',
+        newText: 'const one = true;',
+        location: 'edit 1',
+      },
+      {
+        oldText: 'const two = false;',
+        newText: 'const two = true;',
+        location: 'edit 2',
+      },
+    ]);
+  });
+
+  it('builds diff artifacts for notebook edit tool calls', () => {
+    const display = buildToolCallDisplay('NotebookEdit', 'tool-1', {
+      notebook_path: 'notebooks/analysis.ipynb',
+      edit_mode: 'insert',
+      cell_id: 'abc123',
+      cell_type: 'code',
+      new_source: 'print("hello")',
+    });
+
+    expect(display.summary).toBe('notebooks/analysis.ipynb');
+    expect(display.artifact).toEqual({
+      kind: 'diff',
+      title: 'NotebookEdit preview',
+      oldText: '',
+      newText: 'print("hello")',
+      location: 'insert - cell abc123',
+      includeWhenEmpty: true,
+    });
+  });
+
   it('flattens nested structured records up to the supported depth', () => {
     expect(flattenStructuredRecord({
       content: { file: { filePath: 'src/app.ts', totalLines: 9 } },

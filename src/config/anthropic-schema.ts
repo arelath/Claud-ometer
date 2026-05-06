@@ -2,6 +2,8 @@ export const ANTHROPIC_TOOL_NAMES = {
   bash: 'Bash',
   edit: 'Edit',
   grep: 'Grep',
+  multiEdit: 'MultiEdit',
+  notebookEdit: 'NotebookEdit',
   read: 'Read',
   toolSearch: 'ToolSearch',
   write: 'Write',
@@ -10,6 +12,8 @@ export const ANTHROPIC_TOOL_NAMES = {
 export const ANTHROPIC_FILE_DETAIL_KEYS = [
   'file_path',
   'filePath',
+  'notebook_path',
+  'notebookPath',
   'path',
   'displayPath',
   'filename',
@@ -38,6 +42,8 @@ export const ANTHROPIC_CODE_PATH_DETAIL_KEYS = [
   'filePath',
   'file_path',
   'filename',
+  'notebook_path',
+  'notebookPath',
   'path',
 ] as const;
 
@@ -48,6 +54,8 @@ export const ANTHROPIC_MONOSPACE_DETAIL_KEYS = [
   'file_path',
   'filePath',
   'filename',
+  'notebook_path',
+  'notebookPath',
   'includePattern',
   'leafUuid',
   'lineContent',
@@ -69,6 +77,8 @@ export const ANTHROPIC_MONOSPACE_DETAIL_KEYS = [
 export const ANTHROPIC_TOOL_DETAIL_PRIORITY: Record<string, string[]> = {
   [ANTHROPIC_TOOL_NAMES.bash]: ['command', 'goal', 'mode', 'timeout'],
   [ANTHROPIC_TOOL_NAMES.edit]: ['file_path', 'replace_all', 'old_string', 'new_string'],
+  [ANTHROPIC_TOOL_NAMES.multiEdit]: ['file_path', 'edits'],
+  [ANTHROPIC_TOOL_NAMES.notebookEdit]: ['notebook_path', 'edit_mode', 'cell_id', 'cell_type', 'new_source'],
   [ANTHROPIC_TOOL_NAMES.read]: ['file_path', 'startLine', 'endLine'],
   [ANTHROPIC_TOOL_NAMES.toolSearch]: ['query', 'max_results'],
   [ANTHROPIC_TOOL_NAMES.write]: ['file_path', 'content'],
@@ -77,6 +87,8 @@ export const ANTHROPIC_TOOL_DETAIL_PRIORITY: Record<string, string[]> = {
 export const ANTHROPIC_COMMON_TOOL_DETAIL_KEYS = [
   'file_path',
   'filePath',
+  'notebook_path',
+  'notebookPath',
   'path',
   'paths',
   'command',
@@ -90,6 +102,9 @@ export const ANTHROPIC_COMMON_TOOL_DETAIL_KEYS = [
   'scope',
   'includePattern',
   'lineContent',
+  'cell_id',
+  'cell_type',
+  'edit_mode',
   'args',
   'startLine',
   'endLine',
