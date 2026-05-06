@@ -167,6 +167,37 @@ export interface SessionInfo {
   compaction: CompactionInfo;
 }
 
+export type LiveSessionStatus = 'busy' | 'idle' | 'unknown';
+
+export interface LiveSessionInfo {
+  id: string;
+  sessionId: string;
+  metadataFilePath: string;
+  transcriptFilePath?: string;
+  pid?: number;
+  cwd: string;
+  projectName: string;
+  version?: string;
+  kind?: string;
+  entrypoint?: string;
+  startedAt: string;
+  lastActivityAt: string;
+  updatedAtMs: number;
+  cacheLastActivityAt: string;
+  cacheLastActivityAtMs: number;
+  cacheExpiresAt: string;
+  cacheExpiresAtMs: number;
+  status: LiveSessionStatus;
+  rawStatus?: string;
+  statusReason: string;
+  messageCount: number;
+  toolCallCount: number;
+  lastPreview: string;
+  activeToolName?: string;
+  revision: string;
+  transcriptRevision?: string;
+}
+
 export interface SessionPromptTokenBreakdown {
   totalTokens: number;
   systemTokens: number;
@@ -179,6 +210,13 @@ export interface SessionPromptTokenBreakdown {
 
 export interface SessionDetail extends SessionInfo {
   messages: SessionMessageDisplay[];
+  isLive?: boolean;
+  liveStatus?: LiveSessionStatus;
+  liveStatusReason?: string;
+  liveMetadataRevision?: string;
+  liveTranscriptRevision?: string;
+  liveMetadataFilePath?: string;
+  liveTranscriptFilePath?: string;
 }
 
 export interface SessionToolCallDetail {

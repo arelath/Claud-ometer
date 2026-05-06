@@ -1,9 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import type { FullConfig } from '@playwright/test';
 import { seedImportedData } from '../shared/seed-imported-data';
 
-export default async function globalSetup(_config: FullConfig) {
+export default async function globalSetup() {
   const importDir = path.join(process.cwd(), '.test-artifacts', 'e2e-import');
   seedImportedData(importDir);
 

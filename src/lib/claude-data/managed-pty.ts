@@ -1,0 +1,166 @@
+type PtyProcess = {
+  pid: number;
+  write: (data: string) => void;
+  resize?: (cols: number, rows: number) => void;
+  onData: (callback: (data: string) => void) => void;
+  onExit: (callback: (event: { exitCode: number; signal?: number }) => void) => void;
+  kill: () => void;
+};
+
+export interface ManagedClaudeSessionSnapshot {
+  sessionId: string;
+  cwd: string;
+  pid?: number;
+  startedAt: string;
+  updatedAt: string;
+  exitedAt?: string;
+  exitCode?: number;
+  output: string;
+  sequence: number;
+  isRunning: boolean;
+}
+
+interface ManagedClaudeSessionEntry {
+  sessionId: string;
+  cwd: string;
+  pty: PtyProcess;
+  startedAtMs: number;
+  updatedAtMs: number;
+  exitedAtMs?: number;
+  exitCode?: number;
+  output: string;
+  sequence: number;
+}
+
+interface ManagedClaudeStore {
+  sessions: Map<string, ManagedClaudeSessionEntry>;
+}
+
+const OUTPUT_LIMIT = 200_000;
+const globalStoreKey = Symbol.for('claudometer.managedClaudePtys');
+
+function getStore(): ManagedClaudeStore {
+  const globalValue = globalThis as typeof globalThis & { [globalStoreKey]?: ManagedClaudeStore };
+  if (!globalValue[globalStoreKey]) {
+    globalValue[globalStoreKey] = { sessions: new Map() };
+  }
+  return globalValue[globalStoreKey];
+}
+
+function appendOutput(entry: ManagedClaudeSessionEntry, chunk: string): void {
+  entry.output += chunk;
+  if (entry.output.length > OUTPUT_LIMIT) {
+    entry.output = entry.output.slice(entry.output.length - OUTPUT_LIMIT);
+  }
+  entry.updatedAtMs = Date.now();
+  entry.sequence += 1;
+}
+
+function toSnapshot(entry: ManagedClaudeSessionEntry): ManagedClaudeSessionSnapshot {
+  return {
+    sessionId: entry.sessionId,
+    cwd: entry.cwd,
+    pid: entry.pty.pid,
+    startedAt: new Date(entry.startedAtMs).toISOString(),
+    updatedAt: new Date(entry.updatedAtMs).toISOString(),
+    exitedAt: entry.exitedAtMs ? new Date(entry.exitedAtMs).toISOString() : undefined,
+    exitCode: entry.exitCode,
+    output: entry.output,
+    sequence: entry.sequence,
+    isRunning: entry.exitedAtMs == null,
+  };
+}
+
+function getShellCommand(sessionId: string): { command: string; args: string[] } {
+  if (process.platform === 'win32') {
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', `claude --resume ${sessionId}`],
+    };
+  }
+
+  const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
+  return {
+    command: shell,
+    args: ['-lc', `claude --resume ${sessionId}`],
+  };
+}
+
+async function loadNodePty(): Promise<{ spawn: (file: string, args: string[], options: Record<string, unknown>) => PtyProcess }> {
+  try {
+    return await import('node-pty');
+  } catch (error) {
+    throw new Error(error instanceof Error
+      ? `Managed terminal support is unavailable: ${error.message}`
+      : 'Managed terminal support is unavailable.');
+  }
+}
+
+export function getManagedClaudeSession(sessionId: string): ManagedClaudeSessionSnapshot | null {
+  const entry = getStore().sessions.get(sessionId);
+  return entry ? toSnapshot(entry) : null;
+}
+
+export async function startManagedClaudeResume(sessionId: string, cwd: string): Promise<ManagedClaudeSessionSnapshot> {
+  const store = getStore();
+  const existing = store.sessions.get(sessionId);
+  if (existing && existing.exitedAtMs == null) return toSnapshot(existing);
+
+  const pty = await loadNodePty();
+  const { command, args } = getShellCommand(sessionId);
+  const now = Date.now();
+  const terminal = pty.spawn(command, args, {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 32,
+    cwd,
+    env: process.env,
+  });
+
+  const entry: ManagedClaudeSessionEntry = {
+    sessionId,
+    cwd,
+    pty: terminal,
+    startedAtMs: now,
+    updatedAtMs: now,
+    output: '',
+    sequence: 0,
+  };
+  store.sessions.set(sessionId, entry);
+
+  terminal.onData((data) => {
+    appendOutput(entry, data);
+  });
+  terminal.onExit((event) => {
+    entry.exitedAtMs = Date.now();
+    entry.updatedAtMs = entry.exitedAtMs;
+    entry.exitCode = event.exitCode;
+    entry.sequence += 1;
+  });
+
+  return toSnapshot(entry);
+}
+
+export function sendTextToManagedClaudeSession(sessionId: string, text: string): ManagedClaudeSessionSnapshot | null {
+  const entry = getStore().sessions.get(sessionId);
+  if (!entry || entry.exitedAtMs != null) return null;
+
+  entry.pty.write(text);
+  entry.pty.write('\r');
+  entry.updatedAtMs = Date.now();
+  entry.sequence += 1;
+  return toSnapshot(entry);
+}
+
+export function resetManagedClaudeSessionsForTests(): void {
+  for (const entry of getStore().sessions.values()) {
+    if (entry.exitedAtMs == null) {
+      try {
+        entry.pty.kill();
+      } catch {
+        // Best-effort cleanup for mocked and real PTYs in tests.
+      }
+    }
+  }
+  getStore().sessions.clear();
+}

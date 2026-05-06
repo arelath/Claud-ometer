@@ -1,9 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import type { FullConfig } from '@playwright/test';
 import { CoverageReport } from 'monocart-coverage-reports';
 
-export default async function globalTeardown(_config: FullConfig) {
+export default async function globalTeardown() {
   const rawDir = path.join(process.cwd(), '.test-artifacts', 'e2e-coverage', 'raw');
   if (!fs.existsSync(rawDir)) return;
 

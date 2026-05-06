@@ -531,4 +531,85 @@ describe('reader imported-data fixtures', () => {
       vi.resetModules();
     }
   });
+
+  it('builds peak-hour usage from session timestamps in local time', async () => {
+    const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-local-hours-import');
+    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const previousTimezone = process.env.TZ;
+    const sessionId = '00000000-0000-4000-8000-000000000003';
+    const projectId = 'local-hours-project';
+    const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
+
+    fs.rmSync(importDir, { recursive: true, force: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    const sessionLines = [
+      {
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-03T12:00:00.000Z',
+        uuid: 'assistant-local-hour',
+        message: {
+          id: 'assistant-local-hour',
+          role: 'assistant',
+          model: 'claude-opus-4-7',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'Local hour check.' }],
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join('\n');
+
+    fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), sessionLines);
+    fs.writeFileSync(
+      path.join(importDir, 'claude-data', 'stats-cache.json'),
+      JSON.stringify({
+        version: 3,
+        lastComputedDate: '2026-05-04',
+        dailyActivity: [],
+        dailyModelTokens: [],
+        modelUsage: {},
+        totalSessions: 0,
+        totalMessages: 0,
+        longestSession: { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
+        firstSessionDate: '',
+        hourCounts: { '12': 99 },
+        totalSpeculationTimeSavedMs: 0,
+      }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(importDir, 'meta.json'),
+      JSON.stringify({
+        importedAt: '2026-05-03T00:00:00.000Z',
+        exportedAt: '2026-05-03T00:00:00.000Z',
+        exportedFrom: 'Unit test',
+        projectCount: 1,
+        sessionCount: 1,
+      }, null, 2),
+    );
+    fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
+
+    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.TZ = 'America/Los_Angeles';
+    vi.resetModules();
+
+    try {
+      const { getDashboardStats } = await import('@/lib/claude-data/reader');
+      const dashboard = await getDashboardStats();
+
+      expect(dashboard.hourCounts).toEqual({ '5': 1 });
+    } finally {
+      if (previousImportDir == null) delete process.env.CLAUD_OMETER_IMPORT_DIR;
+      else process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      if (previousTimezone == null) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+      fs.rmSync(importDir, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
 });

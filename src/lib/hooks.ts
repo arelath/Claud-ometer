@@ -1,5 +1,19 @@
 import useSWR from 'swr';
-import type { DashboardStats, ProjectInfo, SessionInfo, SessionDetail } from '@/lib/claude-data/types';
+import type { DashboardStats, LiveSessionInfo, ProjectInfo, SessionInfo, SessionDetail } from '@/lib/claude-data/types';
+
+export interface DataSourceInfo {
+  active: 'live' | 'imported';
+  hasImportedData: boolean;
+  importMeta: {
+    importedAt: string;
+    exportedAt: string;
+    exportedFrom: string;
+    projectCount: number;
+    sessionCount: number;
+    fileCount?: number;
+    totalSize?: number;
+  } | null;
+}
 
 const fetcher = (url: string) => fetch(url).then(r => {
   if (!r.ok) throw new Error(`API error: ${r.status}`);
@@ -26,5 +40,19 @@ export function useProjectSessions(projectId: string, fallbackData?: SessionInfo
 }
 
 export function useSessionDetail(sessionId: string) {
-  return useSWR<SessionDetail>(`/api/sessions/${sessionId}`, fetcher);
+  return useSWR<SessionDetail>(`/api/sessions/${sessionId}`, fetcher, {
+    refreshInterval: (latestData) => latestData?.isLive ? 1000 : 0,
+  });
+}
+
+export function useDataSourceInfo() {
+  return useSWR<DataSourceInfo>('/api/data-source', fetcher, { refreshInterval: 5000 });
+}
+
+export function useLiveSessions() {
+  return useSWR<LiveSessionInfo[]>('/api/live-sessions', fetcher, { refreshInterval: 1000 });
+}
+
+export function useLiveSessionBinding(sessionId: string) {
+  return useSWR<LiveSessionInfo | null>(`/api/live-sessions/by-session/${sessionId}`, fetcher, { refreshInterval: 1000 });
 }

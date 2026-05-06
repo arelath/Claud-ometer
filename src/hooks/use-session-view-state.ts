@@ -32,6 +32,8 @@ interface UseSessionViewStateInput {
   messages: SessionMessageDisplay[];
   compactionTimestamps: string[];
   diffSummary: SessionDiffSummary;
+  isLive?: boolean;
+  liveRevision?: string;
 }
 
 export function useSessionViewState({
@@ -39,6 +41,8 @@ export function useSessionViewState({
   messages,
   compactionTimestamps,
   diffSummary,
+  isLive = false,
+  liveRevision,
 }: UseSessionViewStateInput) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -50,7 +54,13 @@ export function useSessionViewState({
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null);
   const [copiedPatchKey, setCopiedPatchKey] = useState<string | null>(null);
   const [pendingConversationJump, setPendingConversationJump] = useState<number | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [unseenMessageCount, setUnseenMessageCount] = useState(0);
   const conversationRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const wasAtBottomRef = useRef(true);
+  const previousMessageCountRef = useRef(messages.length);
+  const initialLiveScrollSessionRef = useRef<string | null>(null);
 
   const mainView: MainSessionView = searchParams.get('view') === 'changes' ? 'changes' : 'conversation';
   const diffMode: DiffDisplayMode = searchParams.get('diff') === 'edits' ? 'edits' : 'net';
@@ -116,6 +126,37 @@ export function useSessionViewState({
     scrollElementIntoConversation(`conversation-message-${messageIndex}`, block)
   ), [scrollElementIntoConversation]);
 
+  const isConversationAtBottom = useCallback(() => {
+    const container = conversationRef.current;
+    if (!container) return true;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distanceFromBottom <= 80;
+  }, []);
+
+  const updateConversationBottomState = useCallback(() => {
+    const atBottom = isConversationAtBottom();
+    wasAtBottomRef.current = atBottom;
+    if (atBottom) {
+      setShowScrollToBottom(false);
+      setUnseenMessageCount(0);
+    }
+  }, [isConversationAtBottom]);
+
+  const scrollToConversationBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const bottom = bottomRef.current;
+    const container = conversationRef.current;
+
+    if (bottom) {
+      bottom.scrollIntoView({ behavior, block: 'end' });
+    } else if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior });
+    }
+
+    wasAtBottomRef.current = true;
+    setShowScrollToBottom(false);
+    setUnseenMessageCount(0);
+  }, []);
+
   const handleJumpToMessage = useCallback((messageIndexes: number[]) => {
     for (const messageIndex of messageIndexes) {
       if (mainView === 'conversation' && scrollMessageIntoConversation(messageIndex, 'center')) return;
@@ -180,6 +221,51 @@ export function useSessionViewState({
     return () => window.cancelAnimationFrame(frame);
   }, [mainView, pendingConversationJump, scrollMessageIntoConversation]);
 
+  useEffect(() => {
+    if (initialLiveScrollSessionRef.current !== sessionId) {
+      initialLiveScrollSessionRef.current = null;
+      previousMessageCountRef.current = messages.length;
+      const frame = window.requestAnimationFrame(() => {
+        setShowScrollToBottom(false);
+        setUnseenMessageCount(0);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [messages.length, sessionId]);
+
+  useEffect(() => {
+    if (!isLive || mainView !== 'conversation') {
+      previousMessageCountRef.current = messages.length;
+      return;
+    }
+
+    const previousCount = previousMessageCountRef.current;
+    const nextCount = messages.length;
+    const addedCount = Math.max(nextCount - previousCount, 0);
+    previousMessageCountRef.current = nextCount;
+
+    if (initialLiveScrollSessionRef.current !== sessionId) {
+      initialLiveScrollSessionRef.current = sessionId;
+      const frame = window.requestAnimationFrame(() => scrollToConversationBottom('auto'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    if (addedCount === 0 && !liveRevision) return;
+
+    if (wasAtBottomRef.current) {
+      const frame = window.requestAnimationFrame(() => scrollToConversationBottom('smooth'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    if (addedCount > 0) {
+      const frame = window.requestAnimationFrame(() => {
+        setShowScrollToBottom(true);
+        setUnseenMessageCount(count => count + addedCount);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [isLive, liveRevision, mainView, messages.length, scrollToConversationBottom, sessionId]);
+
   const hasDiffForPath = useCallback((filePath: string) => (
     diffPathMap.has(normalizeDiffPathKey(filePath))
   ), [diffPathMap]);
@@ -239,18 +325,21 @@ export function useSessionViewState({
     if (!container) return;
 
     updateMinimapSegments();
-    const handleScroll = () => updateMinimapViewport();
-    container.addEventListener('scroll', handleScroll, { passive: true });
+    const handleScrollWithBottomState = () => {
+      updateMinimapViewport();
+      updateConversationBottomState();
+    };
+    container.addEventListener('scroll', handleScrollWithBottomState, { passive: true });
 
     const resizeObserver = new ResizeObserver(() => updateMinimapSegments());
     resizeObserver.observe(container);
     Array.from(container.children).forEach(child => resizeObserver.observe(child));
 
     return () => {
-      container.removeEventListener('scroll', handleScroll);
+      container.removeEventListener('scroll', handleScrollWithBottomState);
       resizeObserver.disconnect();
     };
-  }, [groupedMessages, mainView, updateMinimapSegments, updateMinimapViewport]);
+  }, [groupedMessages, mainView, updateConversationBottomState, updateMinimapSegments, updateMinimapViewport]);
 
   return {
     state: {
@@ -265,9 +354,12 @@ export function useSessionViewState({
       minimapViewport,
       preset,
       presetCounts,
+      showScrollToBottom,
       toolFilter,
+      unseenMessageCount,
     },
     refs: {
+      bottomRef,
       conversationRef,
     },
     actions: {
@@ -279,6 +371,7 @@ export function useSessionViewState({
       handlePresetChange,
       hasDiffForPath,
       scrollElementIntoConversation,
+      scrollToConversationBottom,
       setArtifactViewer,
       setDiffMode,
       setMainView,

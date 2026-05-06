@@ -1,9 +1,11 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import useSWR from 'swr';
+import { formatDistanceToNowStrict } from 'date-fns';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -13,9 +15,14 @@ import {
   Database,
   Sun,
   Moon,
+  Circle,
+  LoaderCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useLiveSessions } from '@/lib/hooks';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { LiveSessionInfo } from '@/lib/claude-data/types';
 
 const navItems = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -26,6 +33,145 @@ const navItems = [
 ];
 
 const fetcher = (url: string) => fetch(url).then(r => r.json());
+
+function formatLiveRelativeTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'recently';
+  try {
+    return formatDistanceToNowStrict(date, { addSuffix: true });
+  } catch {
+    return 'recently';
+  }
+}
+
+function formatCacheCountdown(session: LiveSessionInfo, nowMs: number): string {
+  const remainingMs = session.cacheExpiresAtMs - nowMs;
+  if (remainingMs <= 0) return 'Cache expired';
+
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `Cache ${seconds}s`;
+  return `Cache ${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+}
+
+function formatCacheExpiryTooltip(session: LiveSessionInfo, nowMs: number): string {
+  const expiresAt = new Date(session.cacheExpiresAtMs);
+  const lastActivityAt = new Date(session.cacheLastActivityAtMs);
+  const time = Number.isNaN(expiresAt.getTime())
+    ? 'the cache expiry time'
+    : new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(expiresAt);
+  const lastActivityTime = Number.isNaN(lastActivityAt.getTime())
+    ? 'the last Claude message'
+    : new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(lastActivityAt);
+
+  if (session.cacheExpiresAtMs <= nowMs) {
+    return `Cache expired at ${time}, based on the last user or Claude message at ${lastActivityTime}. Sending now may resend the whole prompt at a much higher price.`;
+  }
+
+  return `Cache expires at ${time}, based on the last user or Claude message at ${lastActivityTime}. After that, sending may resend the whole prompt at a much higher price.`;
+}
+
+function LiveStatusIcon({ session }: { session: LiveSessionInfo }) {
+  if (session.status === 'busy') {
+    return <LoaderCircle className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-blue-500" aria-label="Busy" />;
+  }
+
+  const className = session.status === 'idle'
+      ? 'text-green-600 dark:text-green-400'
+      : 'text-amber-600 dark:text-amber-400';
+
+  return <Circle className={`mt-0.5 h-3 w-3 shrink-0 fill-current ${className}`} aria-label={session.status} />;
+}
+
+function LiveSessionsNav({ pathname }: { pathname: string }) {
+  const { data: liveSessions } = useLiveSessions();
+  const sessions = liveSessions || [];
+  const [nowMs, setNowMs] = useState(0);
+
+  useEffect(() => {
+    const updateNow = () => setNowMs(Date.now());
+    updateNow();
+    const interval = window.setInterval(updateNow, 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="mt-4 border-t border-border/60 pt-3">
+      <div className="mb-1.5 flex items-center justify-between px-3">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Live Sessions</span>
+        {sessions.length > 0 && (
+          <span className="font-mono text-[10px] text-muted-foreground">{sessions.length}</span>
+        )}
+      </div>
+      {sessions.length === 0 ? (
+        <p className="px-3 py-2 text-[11px] text-muted-foreground">No live sessions</p>
+      ) : (
+        <div className="max-h-[34vh] space-y-1 overflow-y-auto pr-1">
+          {sessions.map(session => {
+            const href = `/sessions/${session.sessionId}`;
+            const isActive = pathname === href;
+            const preview = session.lastPreview || session.statusReason;
+            const effectiveNowMs = nowMs || session.updatedAtMs;
+            return (
+              <Link
+                key={`${session.metadataFilePath}-${session.sessionId}`}
+                href={href}
+                title={`${session.projectName} - ${session.statusReason}`}
+                className={cn(
+                  'group flex gap-2 rounded-lg px-3 py-2 text-left transition-colors',
+                  isActive
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <LiveStatusIcon session={session} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-xs font-medium">{session.projectName}</span>
+                    <span className="shrink-0 rounded-full border border-border/50 px-1 py-0 text-[8px] uppercase leading-3 text-muted-foreground">
+                      {session.status}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block truncate text-[10px] leading-3 text-muted-foreground">
+                    {preview}
+                  </span>
+                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[9px] leading-3 text-muted-foreground/80">
+                    <span className="truncate">{formatLiveRelativeTime(session.lastActivityAt)}</span>
+                    <span className="shrink-0 opacity-50">·</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className={cn(
+                          'shrink-0 rounded-full border px-1 py-0 leading-3',
+                          session.cacheExpiresAtMs <= effectiveNowMs
+                            ? 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300'
+                            : 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300',
+                        )}>
+                          {formatCacheCountdown(session, effectiveNowMs)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-[240px]">
+                        {formatCacheExpiryTooltip(session, effectiveNowMs)}
+                      </TooltipContent>
+                    </Tooltip>
+                  </span>
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -67,6 +213,7 @@ export function Sidebar() {
             </Link>
           );
         })}
+        <LiveSessionsNav pathname={pathname} />
       </nav>
 
       <div className="border-t border-border px-5 py-3 space-y-2">

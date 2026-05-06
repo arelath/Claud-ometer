@@ -1,16 +1,35 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useSessions } from '@/lib/hooks';
+import { useDataSourceInfo, useLiveSessions, useSessions } from '@/lib/hooks';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useCostMode } from '@/lib/cost-mode-context';
-import type { SessionInfo } from '@/lib/claude-data/types';
+import type { LiveSessionInfo, SessionInfo } from '@/lib/claude-data/types';
 import { formatCost, formatDuration, timeAgo, formatTokens } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Search, X } from 'lucide-react';
+import { ResumeSessionButton } from '@/components/session/resume-session-button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Radio, Search, X } from 'lucide-react';
 import Link from 'next/link';
+
+function LiveSessionStatus({ session }: { session: LiveSessionInfo }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          aria-label="Live session"
+          className="inline-flex min-w-[78px] shrink-0 items-center justify-center gap-1.5 rounded-md border border-green-500/30 bg-green-500/10 px-2 py-1 text-xs font-medium text-green-700 dark:text-green-300"
+        >
+          <Radio className="h-3.5 w-3.5" />
+          <span>Live</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{session.statusReason}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function SessionsClient({ initialSessions, initialQuery }: {
   initialSessions: SessionInfo[];
@@ -22,7 +41,13 @@ export function SessionsClient({ initialSessions, initialQuery }: {
   const debouncedQuery = useDebounce(searchQuery, 300);
   const fallbackData = debouncedQuery === initialQuery ? initialSessions : undefined;
   const { data: sessions, isLoading } = useSessions(100, 0, debouncedQuery, fallbackData);
+  const { data: liveSessions } = useLiveSessions();
+  const { data: sourceInfo } = useDataSourceInfo();
   const { pickCost } = useCostMode();
+  const liveSessionsById = useMemo(() => {
+    const map = new Map((liveSessions || []).map(session => [session.sessionId, session]));
+    return map;
+  }, [liveSessions]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -85,55 +110,74 @@ export function SessionsClient({ initialSessions, initialQuery }: {
                 <Search className="mx-auto h-8 w-8 text-muted-foreground/50" />
                 <p className="mt-3 text-sm text-muted-foreground">No sessions found matching &quot;{debouncedQuery}&quot;</p>
               </div>
-            ) : sessions.map(session => (
-              <Link
-                key={session.id}
-                href={`/sessions/${session.id}`}
-                className="flex items-center justify-between px-5 py-3.5 transition-colors hover:bg-accent/50"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="flex items-center gap-1.5 text-sm font-medium">
-                      <FolderKanban className="h-3.5 w-3.5 text-muted-foreground" />
-                      {session.projectName}
-                    </span>
-                    {[...new Set(session.models)].map(model => (
-                      <Badge key={model} variant="secondary" className="text-[10px] px-1.5 py-0">
-                        {model}
-                      </Badge>
-                    ))}
+            ) : sessions.map(session => {
+              const liveSession = liveSessionsById.get(session.id);
+              const canResume = sourceInfo?.active === 'live' && !liveSession;
+              return (
+                <div
+                  key={session.id}
+                  className="group flex items-center justify-between gap-3 px-5 py-3.5 transition-colors hover:bg-accent/50"
+                >
+                  <Link
+                    href={`/sessions/${session.id}`}
+                    className="min-w-0 flex-1"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="flex items-center gap-1.5 text-sm font-medium">
+                          <FolderKanban className="h-3.5 w-3.5 text-muted-foreground" />
+                          {session.projectName}
+                        </span>
+                        {[...new Set(session.models)].map(model => (
+                          <Badge key={model} variant="secondary" className="text-[10px] px-1.5 py-0">
+                            {model}
+                          </Badge>
+                        ))}
+                      </div>
+                      <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                        {session.gitBranch && (
+                          <span className="flex items-center gap-1 truncate max-w-[200px]">
+                            <GitBranch className="h-3 w-3 flex-shrink-0" />
+                            {session.gitBranch}
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          {formatDuration(session.duration)}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <MessageSquare className="h-3 w-3" />
+                          {session.messageCount} msgs
+                        </span>
+                        <span>{session.toolCallCount} tools</span>
+                        <span>{formatTokens(session.totalInputTokens + session.totalOutputTokens)} tokens</span>
+                        {(session.compaction.compactions + session.compaction.microcompactions) > 0 && (
+                          <span className="flex items-center gap-1 text-amber-600">
+                            <Minimize2 className="h-3 w-3" />
+                            {session.compaction.compactions + session.compaction.microcompactions} compactions
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </Link>
+                  <div className="flex min-w-[96px] shrink-0 justify-end">
+                    {liveSession ? (
+                      <LiveSessionStatus session={liveSession} />
+                    ) : canResume ? (
+                      <ResumeSessionButton
+                        sessionId={session.id}
+                        showLabel
+                        className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100"
+                      />
+                    ) : null}
                   </div>
-                  <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-                    {session.gitBranch && (
-                      <span className="flex items-center gap-1 truncate max-w-[200px]">
-                        <GitBranch className="h-3 w-3 flex-shrink-0" />
-                        {session.gitBranch}
-                      </span>
-                    )}
-                    <span className="flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
-                      {formatDuration(session.duration)}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <MessageSquare className="h-3 w-3" />
-                      {session.messageCount} msgs
-                    </span>
-                    <span>{session.toolCallCount} tools</span>
-                    <span>{formatTokens(session.totalInputTokens + session.totalOutputTokens)} tokens</span>
-                    {(session.compaction.compactions + session.compaction.microcompactions) > 0 && (
-                      <span className="flex items-center gap-1 text-amber-600">
-                        <Minimize2 className="h-3 w-3" />
-                        {session.compaction.compactions + session.compaction.microcompactions} compactions
-                      </span>
-                    )}
-                  </div>
+                  <Link href={`/sessions/${session.id}`} className="ml-1 flex-shrink-0 text-right">
+                    <p className="text-sm font-semibold">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
+                    <p className="text-[10px] text-muted-foreground">{timeAgo(session.timestamp)}</p>
+                  </Link>
                 </div>
-                <div className="text-right flex-shrink-0 ml-4">
-                  <p className="text-sm font-semibold">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
-                  <p className="text-[10px] text-muted-foreground">{timeAgo(session.timestamp)}</p>
-                </div>
-              </Link>
-            ))}
+              );
+            })}
           </div>
         </CardContent>
       </Card>

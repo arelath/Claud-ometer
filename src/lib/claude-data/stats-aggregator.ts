@@ -27,7 +27,31 @@ export interface SupplementalStats {
 }
 
 let supplementalCache: { key: string; data: SupplementalStats; ts: number } | null = null;
+let localHourCountsCache: { key: string; data: Record<string, number>; ts: number } | null = null;
 const SUPPLEMENTAL_TTL_MS = 30_000;
+
+function getLocalHourKey(timestamp: string): string | null {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.getHours().toString();
+}
+
+function getAllSessionFiles(): string[] {
+  const projectsDir = getProjectsDir();
+  if (!fs.existsSync(projectsDir)) return [];
+
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(projectsDir)) {
+    const projectPath = path.join(projectsDir, entry);
+    if (!fs.statSync(projectPath).isDirectory()) continue;
+
+    for (const file of getTopLevelSessionFiles(projectPath)) {
+      files.push(path.join(projectPath, file));
+    }
+  }
+
+  return files;
+}
 
 function getRecentSessionFiles(afterDate: string): string[] {
   const projectsDir = getProjectsDir();
@@ -50,6 +74,38 @@ function getRecentSessionFiles(afterDate: string): string[] {
   }
 
   return files;
+}
+
+export async function computeLocalHourCounts(): Promise<Record<string, number>> {
+  const cacheKey = getActiveDataSource();
+  if (localHourCountsCache && localHourCountsCache.key === cacheKey && Date.now() - localHourCountsCache.ts < SUPPLEMENTAL_TTL_MS) {
+    return localHourCountsCache.data;
+  }
+
+  const hourCounts: Record<string, number> = {};
+
+  for (const filePath of getAllSessionFiles()) {
+    const assistantTurns = new Map<string, AssistantTurnAggregate>();
+    const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
+
+    for (const aggregateFilePath of aggregateFilePaths) {
+      await forEachJsonlLine(aggregateFilePath, (msg) => {
+        if (msg.type === 'assistant') {
+          recordAssistantTurn(assistantTurns, aggregateFilePath, msg, aggregateFilePath === filePath);
+        }
+      });
+    }
+
+    for (const assistantTurn of assistantTurns.values()) {
+      if (!assistantTurn.usage || !assistantTurn.timestamp) continue;
+      const hour = getLocalHourKey(assistantTurn.timestamp);
+      if (!hour) continue;
+      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+    }
+  }
+
+  localHourCountsCache = { key: cacheKey, data: hourCounts, ts: Date.now() };
+  return hourCounts;
 }
 
 export async function computeSupplementalStats(afterDate: string): Promise<SupplementalStats> {
@@ -114,7 +170,7 @@ export async function computeSupplementalStats(afterDate: string): Promise<Suppl
 
     for (const assistantTurn of qualifyingAssistantTurns) {
       const msgDate = assistantTurn.timestamp.slice(0, 10);
-      const hour = assistantTurn.timestamp.slice(11, 13);
+      const hour = getLocalHourKey(assistantTurn.timestamp);
 
       if (!sessionCounted) {
         totalSessions++;
@@ -145,7 +201,7 @@ export async function computeSupplementalStats(afterDate: string): Promise<Suppl
 
       totalTokens += tokens;
       estimatedCosts = addCosts(estimatedCosts, costs);
-      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+      if (hour) hourCounts[hour] = (hourCounts[hour] || 0) + 1;
 
       if (model) {
         if (!modelUsage[model]) {

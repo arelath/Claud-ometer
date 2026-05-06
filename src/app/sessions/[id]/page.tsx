@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { format } from 'date-fns';
 import {
   Activity,
+  ArrowDown,
   ArrowLeft,
   Clock,
   Coins,
@@ -14,7 +15,7 @@ import {
   Minimize2,
   Wrench,
 } from 'lucide-react';
-import { useSessionDetail } from '@/lib/hooks';
+import { useDataSourceInfo, useSessionDetail } from '@/lib/hooks';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { getContextFileGroups } from '@/lib/context-files';
 import type { FilterPreset } from '@/lib/session-transcript';
@@ -30,8 +31,11 @@ import {
   ChangesView,
   SessionViewTabs,
 } from '@/components/session/diff-viewer';
+import { ManagedTerminalPanel } from '@/components/session/managed-terminal-panel';
 import { Minimap } from '@/components/session/minimap';
+import { LiveSessionSendBox } from '@/components/session/live-session-send-box';
 import { SessionPill } from '@/components/session/session-pill';
+import { ResumeSessionButton } from '@/components/session/resume-session-button';
 import {
   SessionRenderContext,
   type SessionRenderContextValue,
@@ -77,8 +81,12 @@ function FilterPresets({ preset, onChange, counts }: {
 export default function SessionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: session, isLoading, error } = useSessionDetail(id);
+  const { data: sourceInfo } = useDataSourceInfo();
   const { pickCost } = useCostMode();
   const messages = useMemo(() => session?.messages || [], [session]);
+  const liveRevision = session?.isLive
+    ? `${session.liveMetadataRevision || ''}:${session.liveTranscriptRevision || ''}:${messages.length}`
+    : undefined;
   const compactionInfo = useMemo(
     () => session?.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
     [session?.compaction],
@@ -101,9 +109,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       minimapViewport,
       preset,
       presetCounts,
+      showScrollToBottom,
       toolFilter,
+      unseenMessageCount,
     },
-    refs: { conversationRef },
+    refs: { bottomRef, conversationRef },
     actions: {
       handleCopyContextPath,
       handleCopyPatch,
@@ -113,6 +123,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       handlePresetChange,
       hasDiffForPath,
       scrollElementIntoConversation,
+      scrollToConversationBottom,
       setArtifactViewer,
       setDiffMode,
       setMainView,
@@ -124,6 +135,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     messages,
     compactionTimestamps,
     diffSummary,
+    isLive: Boolean(session?.isLive),
+    liveRevision,
   });
 
   if (isLoading || !session || !session.id) {
@@ -169,10 +182,26 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <h1 className="min-w-0 truncate text-xl font-bold tracking-tight">{session.projectName}</h1>
                 {models.map(model => <Badge key={model} variant="secondary" className="text-xs">{model}</Badge>)}
-                <SessionPill
-                  value={compactionCount > 0 ? 'compacted' : 'completed'}
-                  tone={compactionCount > 0 ? 'warn' : 'good'}
-                />
+                {session.isLive && (
+                  <Badge className="border-green-500/30 bg-green-500/10 text-green-700 hover:bg-green-500/10 dark:text-green-300">
+                    Live
+                  </Badge>
+                )}
+                {session.isLive && session.liveStatus && (
+                  <SessionPill
+                    value={session.liveStatus}
+                    tone={session.liveStatus === 'busy' ? 'warn' : session.liveStatus === 'idle' ? 'good' : 'neutral'}
+                  />
+                )}
+                {(!session.isLive || compactionCount > 0) && (
+                  <SessionPill
+                    value={compactionCount > 0 ? 'compacted' : 'completed'}
+                    tone={compactionCount > 0 ? 'warn' : 'good'}
+                  />
+                )}
+                {sourceInfo?.active === 'live' && !session.isLive && (
+                  <ResumeSessionButton sessionId={session.id} showLabel />
+                )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-mono">{session.id.slice(0, 8)}</span>
@@ -285,30 +314,44 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             <CardContent className="pt-0">
               {mainView === 'conversation' ? (
                 <div className="flex gap-3">
-                  <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="flex-1 min-w-0 max-h-[78vh] overflow-y-auto pr-2 space-y-2">
-                    {groupedMessages.map((group, groupIndex) => {
-                      if (group.type === 'compaction') {
-                        return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
-                      }
-                      if (group.type === 'user') {
-                        return <UserMessage key={`u-${groupIndex}`} msg={group.message} index={group.index} />;
-                      }
-                      if (group.type === 'assistant') {
-                        return (
-                          <AssistantCard
-                            key={`a-${groupIndex}`}
-                            msg={group.message}
-                            index={group.index}
-                            toolPairs={group.toolPairs}
-                            toolTimeline={group.toolTimeline}
-                          />
-                        );
-                      }
-                      if (group.type === 'system-group') {
-                        return <SystemGroup key={`s-${groupIndex}`} messages={group.messages} />;
-                      }
-                      return null;
-                    })}
+                  <div className="relative flex-1 min-w-0">
+                    <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="max-h-[78vh] overflow-y-auto pr-2 space-y-2">
+                      {groupedMessages.map((group, groupIndex) => {
+                        if (group.type === 'compaction') {
+                          return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
+                        }
+                        if (group.type === 'user') {
+                          return <UserMessage key={`u-${groupIndex}`} msg={group.message} index={group.index} />;
+                        }
+                        if (group.type === 'assistant') {
+                          return (
+                            <AssistantCard
+                              key={`a-${groupIndex}`}
+                              msg={group.message}
+                              index={group.index}
+                              toolPairs={group.toolPairs}
+                              toolTimeline={group.toolTimeline}
+                            />
+                          );
+                        }
+                        if (group.type === 'system-group') {
+                          return <SystemGroup key={`s-${groupIndex}`} messages={group.messages} />;
+                        }
+                        return null;
+                      })}
+                      <div ref={bottomRef} data-testid="conversation-bottom-sentinel" className="h-px" />
+                    </div>
+                    {session.isLive && showScrollToBottom && (
+                      <button
+                        type="button"
+                        onClick={() => scrollToConversationBottom('smooth')}
+                        aria-label="Scroll to latest message"
+                        className="absolute bottom-3 right-5 inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/95 px-3 py-1.5 text-xs font-medium text-foreground shadow-lg backdrop-blur transition-colors hover:bg-muted"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                        {unseenMessageCount > 0 ? `${unseenMessageCount} new` : 'Latest'}
+                      </button>
+                    )}
                   </div>
 
                   <Minimap
@@ -448,6 +491,12 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             </Card>
           </div>
         </div>
+        {session.isLive && (
+          <>
+            <ManagedTerminalPanel sessionId={session.id} />
+            <LiveSessionSendBox sessionId={session.id} liveStatus={session.liveStatus} />
+          </>
+        )}
       </div>
       <ArtifactFullscreenViewer artifact={artifactViewer} onClose={() => setArtifactViewer(null)} />
     </SessionRenderContext.Provider>

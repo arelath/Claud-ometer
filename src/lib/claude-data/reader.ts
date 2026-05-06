@@ -31,7 +31,7 @@ import {
   zeroPromptTokenTotals,
 } from './prompt-metrics';
 import { buildEventBlock, buildThinkingBlock, buildToolCallDisplay, buildToolResultBlock } from './tool-parser';
-import { computeSupplementalStats } from './stats-aggregator';
+import { computeLocalHourCounts, computeSupplementalStats } from './stats-aggregator';
 
 interface SessionFileCacheEntry {
   signature: string;
@@ -366,6 +366,194 @@ async function parseSessionFile(filePath: string, projectId: string, projectName
   return value;
 }
 
+export async function getSessionDetailFromFile(filePath: string, projectId: string, projectName: string): Promise<SessionDetail> {
+  const sessionInfo = await parseSessionFile(filePath, projectId, projectName);
+  const sessionId = sessionInfo.id;
+  const messages: SessionMessageDisplay[] = [];
+  const contextTotals = zeroPromptTokenTotals();
+  let pendingAssistantTotals = zeroPromptTokenTotals();
+
+  const flushPendingAssistantTotals = () => {
+    if (!hasPromptTokens(pendingAssistantTotals)) return;
+    addPromptTokenTotals(contextTotals, pendingAssistantTotals);
+    pendingAssistantTotals = zeroPromptTokenTotals();
+  };
+
+  await forEachJsonlLine(filePath, (msg) => {
+    try {
+      if (msg.type !== 'assistant') flushPendingAssistantTotals();
+
+      if (msg.type === 'user' && msg.message?.role === 'user') {
+        const content = msg.message.content;
+        const textParts: string[] = [];
+        const blocks: SessionMessageBlockDisplay[] = [];
+
+        // Detect command XML patterns
+        const rawText = typeof content === 'string' ? content : '';
+        const commandNameMatch = rawText.match(/<command-name>([\s\S]*?)<\/command-name>/);
+        const commandStdoutMatch = rawText.match(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/);
+        const commandCaveatMatch = rawText.match(/<local-command-caveat>([\s\S]*?)<\/local-command-caveat>/);
+
+        if (commandNameMatch || commandStdoutMatch || commandCaveatMatch) {
+          // This is a command message
+          let commandContent = '';
+          if (commandCaveatMatch) {
+            commandContent = commandCaveatMatch[1].trim();
+          } else if (commandNameMatch) {
+            const name = commandNameMatch[1].trim();
+            const argsMatch = rawText.match(/<command-args>([\s\S]*?)<\/command-args>/);
+            const args = argsMatch ? argsMatch[1].trim() : '';
+            commandContent = args ? `${name} ${args}` : name;
+          } else if (commandStdoutMatch) {
+            // Strip ANSI escape codes
+            commandContent = commandStdoutMatch[1].replace(/\x1b\[[0-9;]*m/g, '').trim();
+          }
+          messages.push({
+            role: 'command',
+            content: commandContent,
+            timestamp: msg.timestamp,
+            isMeta: msg.isMeta || Boolean(commandCaveatMatch),
+          });
+          addPromptTokenTotals(contextTotals, getUserPromptContribution(msg));
+          return;
+        }
+
+        if (typeof content === 'string') {
+          textParts.push(content);
+        } else if (Array.isArray(content)) {
+          let structuredResultUsed = false;
+
+          for (const contentBlock of content) {
+            if (!isRecord(contentBlock)) continue;
+
+            if (contentBlock.type === 'text' && typeof contentBlock.text === 'string') {
+              textParts.push(contentBlock.text);
+              continue;
+            }
+
+            if (contentBlock.type === 'tool_result') {
+              const structuredToolUseResult: Record<string, unknown> | undefined =
+                !structuredResultUsed && isRecord(msg.toolUseResult)
+                ? msg.toolUseResult
+                : undefined;
+
+              blocks.push(
+                buildToolResultBlock(
+                  contentBlock,
+                  structuredToolUseResult,
+                  typeof msg.sourceToolAssistantUUID === 'string' ? msg.sourceToolAssistantUUID : undefined,
+                ),
+              );
+              structuredResultUsed = structuredResultUsed || Boolean(structuredToolUseResult);
+            }
+          }
+        }
+
+        if (blocks.length === 0 && isRecord(msg.toolUseResult)) {
+          blocks.push(
+            buildToolResultBlock(
+              undefined,
+              msg.toolUseResult,
+              typeof msg.sourceToolAssistantUUID === 'string' ? msg.sourceToolAssistantUUID : undefined,
+            ),
+          );
+        }
+
+        const text = textParts.join('\n').trim();
+        if (text || blocks.length > 0) {
+          const isToolResultOnly = !text && blocks.length > 0;
+          messages.push({
+            role: isToolResultOnly ? 'tool-result' : 'user',
+            content: text,
+            timestamp: msg.timestamp,
+            blocks: blocks.length > 0 ? blocks : undefined,
+            isMeta: msg.isMeta,
+          });
+        }
+        addPromptTokenTotals(contextTotals, getUserPromptContribution(msg));
+        return;
+      }
+
+      if (msg.type === 'assistant' && msg.message?.content) {
+        const promptBreakdown = buildPromptBreakdown(
+          contextTotals,
+          msg.message.usage as TokenUsage | undefined,
+          sessionId,
+          msg.timestamp,
+        );
+        const content = msg.message.content;
+        const toolCalls: SessionToolCallDisplay[] = [];
+        const blocks: SessionMessageBlockDisplay[] = [];
+        let text = '';
+
+        if (typeof content === 'string') {
+          text = content;
+        } else if (Array.isArray(content)) {
+          for (const c of content) {
+            if (isRecord(c)) {
+              if ('type' in c && c.type === 'text' && 'text' in c) {
+                text += (c.text as string) + '\n';
+                continue;
+              }
+
+              if ('type' in c && c.type === 'thinking') {
+                const thinkingBlock = buildThinkingBlock(c);
+                if (thinkingBlock) blocks.push(thinkingBlock);
+                continue;
+              }
+
+              if ('type' in c && c.type === 'tool_use' && 'name' in c) {
+                toolCalls.push(
+                  buildToolCallDisplay(
+                    c.name as string,
+                    (c.id as string) || '',
+                    'input' in c ? c.input : undefined,
+                  ),
+                );
+              }
+            }
+          }
+        }
+
+        if (text.trim() || toolCalls.length > 0 || blocks.length > 0) {
+          const isToolUseOnly = !text.trim() && toolCalls.length > 0;
+          messages.push({
+            role: isToolUseOnly ? 'tool-use' : 'assistant',
+            content: text.trim(),
+            timestamp: msg.timestamp,
+            messageId: msg.message.id,
+            model: msg.message.model,
+            usage: msg.message.usage as TokenUsage | undefined,
+            promptBreakdown,
+            stopReason: msg.message.stop_reason,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            blocks: blocks.length > 0 ? blocks : undefined,
+            isMeta: msg.isMeta,
+          });
+        }
+        addPromptTokenTotals(pendingAssistantTotals, getAssistantPromptContribution(msg));
+        return;
+      }
+
+      const eventBlock = buildEventBlock(msg);
+      if (eventBlock) {
+        messages.push({
+          role: 'system',
+          content: eventBlock.summary,
+          timestamp: msg.timestamp,
+          blocks: [eventBlock],
+          isMeta: msg.isMeta,
+        });
+      }
+      addPromptTokenTotals(contextTotals, getAttachmentPromptContribution(msg));
+    } catch {
+      // skip malformed or internally inconsistent messages
+    }
+  });
+
+  return { ...sessionInfo, messages };
+}
+
 export async function getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
   if (!fs.existsSync(getProjectsDir())) return null;
   const projectEntries = fs.readdirSync(getProjectsDir());
@@ -378,190 +566,7 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
     if (!fs.existsSync(filePath)) continue;
 
     const { name: projectName } = getProjectNameFromDir(projectPath, entry);
-    const sessionInfo = await parseSessionFile(filePath, entry, projectName);
-    const messages: SessionMessageDisplay[] = [];
-    const contextTotals = zeroPromptTokenTotals();
-    let pendingAssistantTotals = zeroPromptTokenTotals();
-
-    const flushPendingAssistantTotals = () => {
-      if (!hasPromptTokens(pendingAssistantTotals)) return;
-      addPromptTokenTotals(contextTotals, pendingAssistantTotals);
-      pendingAssistantTotals = zeroPromptTokenTotals();
-    };
-
-    await forEachJsonlLine(filePath, (msg) => {
-      try {
-        if (msg.type !== 'assistant') flushPendingAssistantTotals();
-
-        if (msg.type === 'user' && msg.message?.role === 'user') {
-          const content = msg.message.content;
-          const textParts: string[] = [];
-          const blocks: SessionMessageBlockDisplay[] = [];
-
-          // Detect command XML patterns
-          const rawText = typeof content === 'string' ? content : '';
-          const commandNameMatch = rawText.match(/<command-name>([\s\S]*?)<\/command-name>/);
-          const commandStdoutMatch = rawText.match(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/);
-          const commandCaveatMatch = rawText.match(/<local-command-caveat>([\s\S]*?)<\/local-command-caveat>/);
-
-          if (commandNameMatch || commandStdoutMatch || commandCaveatMatch) {
-            // This is a command message
-            let commandContent = '';
-            if (commandCaveatMatch) {
-              commandContent = commandCaveatMatch[1].trim();
-            } else if (commandNameMatch) {
-              const name = commandNameMatch[1].trim();
-              const argsMatch = rawText.match(/<command-args>([\s\S]*?)<\/command-args>/);
-              const args = argsMatch ? argsMatch[1].trim() : '';
-              commandContent = args ? `${name} ${args}` : name;
-            } else if (commandStdoutMatch) {
-              // Strip ANSI escape codes
-              commandContent = commandStdoutMatch[1].replace(/\x1b\[[0-9;]*m/g, '').trim();
-            }
-            messages.push({
-              role: 'command',
-              content: commandContent,
-              timestamp: msg.timestamp,
-              isMeta: msg.isMeta || Boolean(commandCaveatMatch),
-            });
-            addPromptTokenTotals(contextTotals, getUserPromptContribution(msg));
-            return;
-          }
-
-          if (typeof content === 'string') {
-            textParts.push(content);
-          } else if (Array.isArray(content)) {
-            let structuredResultUsed = false;
-
-            for (const contentBlock of content) {
-              if (!isRecord(contentBlock)) continue;
-
-              if (contentBlock.type === 'text' && typeof contentBlock.text === 'string') {
-                textParts.push(contentBlock.text);
-                continue;
-              }
-
-              if (contentBlock.type === 'tool_result') {
-                const structuredToolUseResult: Record<string, unknown> | undefined =
-                  !structuredResultUsed && isRecord(msg.toolUseResult)
-                  ? msg.toolUseResult
-                  : undefined;
-
-                blocks.push(
-                  buildToolResultBlock(
-                    contentBlock,
-                    structuredToolUseResult,
-                    typeof msg.sourceToolAssistantUUID === 'string' ? msg.sourceToolAssistantUUID : undefined,
-                  ),
-                );
-                structuredResultUsed = structuredResultUsed || Boolean(structuredToolUseResult);
-              }
-            }
-          }
-
-          if (blocks.length === 0 && isRecord(msg.toolUseResult)) {
-            blocks.push(
-              buildToolResultBlock(
-                undefined,
-                msg.toolUseResult,
-                typeof msg.sourceToolAssistantUUID === 'string' ? msg.sourceToolAssistantUUID : undefined,
-              ),
-            );
-          }
-
-          const text = textParts.join('\n').trim();
-          if (text || blocks.length > 0) {
-            const isToolResultOnly = !text && blocks.length > 0;
-            messages.push({
-              role: isToolResultOnly ? 'tool-result' : 'user',
-              content: text,
-              timestamp: msg.timestamp,
-              blocks: blocks.length > 0 ? blocks : undefined,
-              isMeta: msg.isMeta,
-            });
-          }
-          addPromptTokenTotals(contextTotals, getUserPromptContribution(msg));
-          return;
-        }
-
-        if (msg.type === 'assistant' && msg.message?.content) {
-          const promptBreakdown = buildPromptBreakdown(
-            contextTotals,
-            msg.message.usage as TokenUsage | undefined,
-            sessionId,
-            msg.timestamp,
-          );
-          const content = msg.message.content;
-          const toolCalls: SessionToolCallDisplay[] = [];
-          const blocks: SessionMessageBlockDisplay[] = [];
-          let text = '';
-
-          if (typeof content === 'string') {
-            text = content;
-          } else if (Array.isArray(content)) {
-            for (const c of content) {
-              if (isRecord(c)) {
-                if ('type' in c && c.type === 'text' && 'text' in c) {
-                  text += (c.text as string) + '\n';
-                  continue;
-                }
-
-                if ('type' in c && c.type === 'thinking') {
-                  const thinkingBlock = buildThinkingBlock(c);
-                  if (thinkingBlock) blocks.push(thinkingBlock);
-                  continue;
-                }
-
-                if ('type' in c && c.type === 'tool_use' && 'name' in c) {
-                  toolCalls.push(
-                    buildToolCallDisplay(
-                      c.name as string,
-                      (c.id as string) || '',
-                      'input' in c ? c.input : undefined,
-                    ),
-                  );
-                }
-              }
-            }
-          }
-
-          if (text.trim() || toolCalls.length > 0 || blocks.length > 0) {
-            const isToolUseOnly = !text.trim() && toolCalls.length > 0;
-            messages.push({
-              role: isToolUseOnly ? 'tool-use' : 'assistant',
-              content: text.trim(),
-              timestamp: msg.timestamp,
-              messageId: msg.message.id,
-              model: msg.message.model,
-              usage: msg.message.usage as TokenUsage | undefined,
-              promptBreakdown,
-              stopReason: msg.message.stop_reason,
-              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-              blocks: blocks.length > 0 ? blocks : undefined,
-              isMeta: msg.isMeta,
-            });
-          }
-          addPromptTokenTotals(pendingAssistantTotals, getAssistantPromptContribution(msg));
-          return;
-        }
-
-        const eventBlock = buildEventBlock(msg);
-        if (eventBlock) {
-          messages.push({
-            role: 'system',
-            content: eventBlock.summary,
-            timestamp: msg.timestamp,
-            blocks: [eventBlock],
-            isMeta: msg.isMeta,
-          });
-        }
-        addPromptTokenTotals(contextTotals, getAttachmentPromptContribution(msg));
-      } catch {
-        // skip malformed or internally inconsistent messages
-      }
-    });
-
-    return { ...sessionInfo, messages };
+    return getSessionDetailFromFile(filePath, entry, projectName);
   }
 
   return null;
@@ -637,6 +642,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
   // Compute supplemental stats from JSONL files modified after the cache date
   const supplemental = await computeSupplementalStats(afterDate);
+  const localHourCounts = await computeLocalHourCounts();
 
   // --- Base stats from cache ---
   let totalTokens = 0;
@@ -761,9 +767,14 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     .sort((a, b) => a.date.localeCompare(b.date));
 
   // --- Merge hourCounts ---
-  const mergedHourCounts = { ...(stats?.hourCounts || {}) };
-  for (const [hour, count] of Object.entries(supplemental.hourCounts)) {
-    mergedHourCounts[hour] = (mergedHourCounts[hour] || 0) + count;
+  const hasLocalHourCounts = Object.keys(localHourCounts).length > 0;
+  const mergedHourCounts = hasLocalHourCounts
+    ? localHourCounts
+    : { ...(stats?.hourCounts || {}) };
+  if (!hasLocalHourCounts) {
+    for (const [hour, count] of Object.entries(supplemental.hourCounts)) {
+      mergedHourCounts[hour] = (mergedHourCounts[hour] || 0) + count;
+    }
   }
 
   const recentSessions = await getSessions(10);
