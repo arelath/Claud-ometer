@@ -1,7 +1,6 @@
-import type { SessionMessageDisplay, SessionToolCallDetail } from '@/lib/claude-data/types';
+import type { SessionMessageDisplay } from '@/lib/claude-data/types';
 import { diffArrays } from 'diff';
-import { normalizeDisplayPath } from '@/lib/path-utils';
-import { detailMatchesKey, parseLineNumber } from '@/lib/string-utils';
+import { getSessionDiffArtifacts } from '@/lib/artifact-extractor';
 
 export type DiffFileStatus = 'modified' | 'added' | 'deleted';
 export type DiffRowType = 'context' | 'add' | 'remove';
@@ -48,97 +47,52 @@ export interface SessionDiffSummary {
   editCount: number;
 }
 
-const PATH_DETAIL_KEYS = ['file_path', 'filePath', 'path', 'displayPath', 'filename'];
-const START_LINE_DETAIL_KEYS = ['startLine', 'start_line', 'lineStart', 'line_start', 'offset'];
-
-interface FileSnapshot {
-  path: string;
-  startLine: number;
-  content: string;
-  messageIndex: number;
-}
-
 interface DiffEditRecord {
   path: string;
   oldText: string;
   newText: string;
   startLine: number | null;
+  originalStartLine: number | null;
   hunk: SessionDiffHunk;
 }
 
-function findDetail(details: SessionToolCallDetail[], candidates: string[]): SessionToolCallDetail | undefined {
-  return details.find(detail => detailMatchesKey(detail.key, candidates));
-}
+class FileOffsetTracker {
+  private offsets: { line: number; delta: number }[] = [];
 
-function normalizePath(pathValue: string): string {
-  return normalizeDisplayPath(pathValue).replace(/^\.\//, '');
+  recordEdit(startLine: number | null, addedLines: number, removedLines: number): void {
+    if (startLine == null) return;
+    const delta = addedLines - removedLines;
+    if (delta === 0) return;
+    this.offsets.push({ line: startLine, delta });
+    this.offsets.sort((left, right) => left.line - right.line);
+  }
+
+  toOriginal(currentLine: number): number {
+    let original = currentLine;
+    for (let index = this.offsets.length - 1; index >= 0; index -= 1) {
+      const offset = this.offsets[index];
+      if (original > offset.line) {
+        original -= offset.delta;
+      }
+    }
+    return Math.max(1, original);
+  }
+
+  toCurrent(originalLine: number): number {
+    let current = originalLine;
+    for (const offset of this.offsets) {
+      if (current > offset.line) {
+        current += offset.delta;
+      }
+    }
+    return Math.max(1, current);
+  }
 }
 
 function normalizeTextLines(value: string): string[] {
   const normalized = value.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n?/g, '\n');
   if (!normalized) return [];
   return normalized.split('\n');
-}
-
-function getStartLineFromDetails(details: SessionToolCallDetail[]): number | null {
-  for (const key of START_LINE_DETAIL_KEYS) {
-    const detail = findDetail(details, [key]);
-    const lineNumber = parseLineNumber(detail?.value);
-    if (lineNumber == null) continue;
-    return Math.max(1, lineNumber);
-  }
-  return null;
-}
-
-function getToolPath(details: SessionToolCallDetail[]): string | null {
-  const value = findDetail(details, PATH_DETAIL_KEYS)?.value;
-  if (!value) return null;
-  const firstLine = value.split(/\r\n?|\n/).find(line => line.trim());
-  return firstLine ? normalizePath(firstLine.trim()) : null;
-}
-
-function getReadToolRanges(messages: SessionMessageDisplay[]): Map<string, { path: string; startLine: number | null }> {
-  const ranges = new Map<string, { path: string; startLine: number | null }>();
-
-  for (const message of messages) {
-    for (const tool of message.toolCalls || []) {
-      if (!tool.id || tool.name !== 'Read') continue;
-      const path = getToolPath(tool.details);
-      if (!path) continue;
-      ranges.set(tool.id, {
-        path,
-        startLine: getStartLineFromDetails(tool.details) ?? 1,
-      });
-    }
-  }
-
-  return ranges;
-}
-
-function getFileSnapshots(messages: SessionMessageDisplay[]): FileSnapshot[] {
-  const readToolRanges = getReadToolRanges(messages);
-  const snapshots: FileSnapshot[] = [];
-
-  messages.forEach((message, messageIndex) => {
-    for (const block of message.blocks || []) {
-      if (block.type !== 'tool-result' || !block.content) continue;
-
-      const toolUseId = findDetail(block.details, ['tool_use_id', 'toolUseId'])?.value;
-      const readRange = toolUseId ? readToolRanges.get(toolUseId) : undefined;
-      const path = getToolPath(block.details) || readRange?.path;
-      const startLine = getStartLineFromDetails(block.details) ?? readRange?.startLine ?? 1;
-
-      if (!path || startLine == null) continue;
-      snapshots.push({
-        path,
-        startLine,
-        content: block.content,
-        messageIndex,
-      });
-    }
-  });
-
-  return snapshots;
 }
 
 function normalizeLineForMatch(line: string): string {
@@ -176,45 +130,6 @@ function findLineSequenceIndex(haystackLines: string[], needleLines: string[]): 
   return -1;
 }
 
-function inferStartLineFromSnapshots(
-  filePath: string,
-  oldText: string,
-  messageIndex: number,
-  snapshots: FileSnapshot[],
-): number | null {
-  const oldLines = normalizeTextLines(oldText);
-  if (oldLines.length === 0) return 1;
-
-  const matchingSnapshots = snapshots
-    .filter(snapshot => snapshot.path === filePath && snapshot.messageIndex < messageIndex)
-    .sort((left, right) => right.messageIndex - left.messageIndex);
-
-  for (const snapshot of matchingSnapshots) {
-    const matchIndex = findLineSequenceIndex(normalizeTextLines(snapshot.content), oldLines);
-    if (matchIndex >= 0) return snapshot.startLine + matchIndex;
-  }
-
-  return null;
-}
-
-function inferStartLineFromPreviousEdits(
-  filePath: string,
-  oldText: string,
-  records: DiffEditRecord[],
-): number | null {
-  const oldLines = normalizeTextLines(oldText);
-  if (oldLines.length === 0) return 1;
-
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const record = records[index];
-    if (record.path !== filePath || record.startLine == null) continue;
-    const matchIndex = findLineSequenceIndex(normalizeTextLines(record.newText), oldLines);
-    if (matchIndex >= 0) return record.startLine + matchIndex;
-  }
-
-  return null;
-}
-
 function buildSimpleLineDiff(oldLines: string[], newLines: string[]): { type: DiffRowType; text: string }[] {
   return diffArrays(oldLines, newLines).flatMap(part => {
     const type: DiffRowType = part.added ? 'add' : part.removed ? 'remove' : 'context';
@@ -222,10 +137,15 @@ function buildSimpleLineDiff(oldLines: string[], newLines: string[]): { type: Di
   });
 }
 
-function buildDiffRows(oldText: string, newText: string, startLine: number | null): SessionDiffRow[] {
+function buildDiffRows(
+  oldText: string,
+  newText: string,
+  oldStartLine: number | null,
+  newStartLine: number | null,
+): SessionDiffRow[] {
   const simpleRows = buildSimpleLineDiff(normalizeTextLines(oldText), normalizeTextLines(newText));
-  let oldLineNumber = startLine;
-  let newLineNumber = startLine;
+  let oldLineNumber = oldStartLine;
+  let newLineNumber = newStartLine;
 
   return simpleRows.map(row => {
     if (row.type === 'add') {
@@ -269,56 +189,51 @@ function getFileStatus(addedLines: number, removedLines: number): DiffFileStatus
 }
 
 export function getSessionDiffSummary(messages: SessionMessageDisplay[]): SessionDiffSummary {
-  const snapshots = getFileSnapshots(messages);
   const recordsByFile = new Map<string, DiffEditRecord[]>();
-  const allRecords: DiffEditRecord[] = [];
+  const artifacts = getSessionDiffArtifacts(messages);
+  const trackers = new Map<string, FileOffsetTracker>();
 
-  messages.forEach((message, messageIndex) => {
-    for (const tool of message.toolCalls || []) {
-      if (tool.artifact?.kind !== 'diff') continue;
+  for (const artifact of artifacts) {
+    if (!trackers.has(artifact.path)) trackers.set(artifact.path, new FileOffsetTracker());
+    const tracker = trackers.get(artifact.path)!;
+    const originalStartLine = artifact.startLine == null ? null : tracker.toOriginal(artifact.startLine);
+    const rows = buildDiffRows(artifact.oldText, artifact.newText, artifact.startLine, artifact.startLine);
+    const addedLines = rows.filter(row => row.type === 'add').length;
+    const removedLines = rows.filter(row => row.type === 'remove').length;
+    const oldLineCount = rows.filter(row => row.type !== 'add').length;
+    const newLineCount = rows.filter(row => row.type !== 'remove').length;
 
-      const filePath = getToolPath(tool.details);
-      const oldText = tool.artifact.oldText || '';
-      const newText = tool.artifact.newText || '';
-      if (!filePath || (!oldText && !newText)) continue;
+    const hunk: SessionDiffHunk = {
+      id: `${artifact.messageIndex}-${artifact.toolId || artifact.toolName}-${artifact.path}`,
+      filePath: artifact.path,
+      toolName: artifact.toolName,
+      toolId: artifact.toolId,
+      messageIndex: artifact.messageIndex,
+      timestamp: artifact.timestamp,
+      location: artifact.location,
+      oldStartLine: artifact.startLine,
+      newStartLine: artifact.startLine,
+      oldLineCount,
+      newLineCount,
+      addedLines,
+      removedLines,
+      rows,
+    };
 
-      const explicitStartLine = getStartLineFromDetails(tool.details)
-        ?? parseLineNumber(tool.artifact.location)
-        ?? null;
-      const startLine = explicitStartLine
-        ?? inferStartLineFromPreviousEdits(filePath, oldText, allRecords)
-        ?? inferStartLineFromSnapshots(filePath, oldText, messageIndex, snapshots);
-      const rows = buildDiffRows(oldText, newText, startLine);
-      const addedLines = rows.filter(row => row.type === 'add').length;
-      const removedLines = rows.filter(row => row.type === 'remove').length;
-      const oldLineCount = rows.filter(row => row.type !== 'add').length;
-      const newLineCount = rows.filter(row => row.type !== 'remove').length;
-
-      const hunk: SessionDiffHunk = {
-        id: `${messageIndex}-${tool.id || tool.name}-${filePath}`,
-        filePath,
-        toolName: tool.name,
-        toolId: tool.id,
-        messageIndex,
-        timestamp: message.timestamp,
-        location: tool.artifact.location || (startLine != null ? `line ${startLine}` : undefined),
-        oldStartLine: startLine,
-        newStartLine: startLine,
-        oldLineCount,
-        newLineCount,
-        addedLines,
-        removedLines,
-        rows,
-      };
-
-      const record = { path: filePath, oldText, newText, startLine, hunk };
-      allRecords.push(record);
-      recordsByFile.set(filePath, [...(recordsByFile.get(filePath) || []), record]);
-    }
-  });
+    const record = {
+      path: artifact.path,
+      oldText: artifact.oldText,
+      newText: artifact.newText,
+      startLine: artifact.startLine,
+      originalStartLine,
+      hunk,
+    };
+    recordsByFile.set(artifact.path, [...(recordsByFile.get(artifact.path) || []), record]);
+    tracker.recordEdit(artifact.startLine, addedLines, removedLines);
+  }
 
   const files = Array.from(recordsByFile.entries())
-    .map(([path, records]) => buildDiffFile(path, records))
+    .map(([path, records]) => buildDiffFile(path, records, trackers.get(path) || new FileOffsetTracker()))
     .sort((left, right) => right.addedLines + right.removedLines - (left.addedLines + left.removedLines) || left.path.localeCompare(right.path));
 
   return {
@@ -332,6 +247,7 @@ export function getSessionDiffSummary(messages: SessionMessageDisplay[]): Sessio
 
 interface NetDiffRegion {
   startLine: number | null;
+  originalStartLine: number | null;
   originalText: string[];
   currentText: string[];
   edits: DiffEditRecord[];
@@ -374,13 +290,14 @@ function mergeRecordIntoRegion(region: NetDiffRegion, record: DiffEditRecord): b
 function createRegion(record: DiffEditRecord): NetDiffRegion {
   return {
     startLine: record.startLine,
+    originalStartLine: record.originalStartLine,
     originalText: normalizeTextLines(record.oldText),
     currentText: normalizeTextLines(record.newText),
     edits: [record],
   };
 }
 
-function buildNetHunks(path: string, records: DiffEditRecord[]): SessionDiffHunk[] {
+function buildNetHunks(path: string, records: DiffEditRecord[], tracker: FileOffsetTracker): SessionDiffHunk[] {
   const regions: NetDiffRegion[] = [];
 
   for (const record of records) {
@@ -392,7 +309,9 @@ function buildNetHunks(path: string, records: DiffEditRecord[]): SessionDiffHunk
   }
 
   return regions.map((region, index) => {
-    const rows = buildDiffRows(region.originalText.join('\n'), region.currentText.join('\n'), region.startLine);
+    const oldStartLine = region.originalStartLine;
+    const newStartLine = oldStartLine == null ? region.startLine : tracker.toCurrent(oldStartLine);
+    const rows = buildDiffRows(region.originalText.join('\n'), region.currentText.join('\n'), oldStartLine, newStartLine);
     const addedLines = rows.filter(row => row.type === 'add').length;
     const removedLines = rows.filter(row => row.type === 'remove').length;
     const oldLineCount = rows.filter(row => row.type !== 'add').length;
@@ -406,9 +325,9 @@ function buildNetHunks(path: string, records: DiffEditRecord[]): SessionDiffHunk
       toolId: lastEdit.hunk.toolId,
       messageIndex: lastEdit.hunk.messageIndex,
       timestamp: lastEdit.hunk.timestamp,
-      location: region.startLine != null ? `line ${region.startLine}` : undefined,
-      oldStartLine: region.startLine,
-      newStartLine: region.startLine,
+      location: oldStartLine != null ? `line ${oldStartLine}` : undefined,
+      oldStartLine,
+      newStartLine,
       oldLineCount,
       newLineCount,
       addedLines,
@@ -418,9 +337,9 @@ function buildNetHunks(path: string, records: DiffEditRecord[]): SessionDiffHunk
   }).filter(hunk => hunk.addedLines > 0 || hunk.removedLines > 0);
 }
 
-function buildDiffFile(path: string, records: DiffEditRecord[]): SessionDiffFile {
+function buildDiffFile(path: string, records: DiffEditRecord[], tracker: FileOffsetTracker): SessionDiffFile {
   const editHunks = records.map(record => record.hunk).sort((left, right) => left.messageIndex - right.messageIndex);
-  const hunks = buildNetHunks(path, records);
+  const hunks = buildNetHunks(path, records, tracker);
   const addedLines = hunks.reduce((sum, hunk) => sum + hunk.addedLines, 0);
   const removedLines = hunks.reduce((sum, hunk) => sum + hunk.removedLines, 0);
 

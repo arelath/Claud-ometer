@@ -1,17 +1,31 @@
+import litellmPricing from './litellm-pricing.generated.json';
+
 export interface ModelPricing {
+  provider?: 'anthropic' | 'openai';
   inputPerMillion: number;
   outputPerMillion: number;
   cacheWritePerMillion: number;
   cacheReadPerMillion: number;
 }
 
-export const MODEL_PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4-7': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.50 },
-  'claude-opus-4-6': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.50 },
-  'claude-opus-4-5': { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.50 },
-  'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
-  'claude-sonnet-4-5': { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cacheReadPerMillion: 0.30 },
-  'claude-haiku-4-5': { inputPerMillion: 1.00, outputPerMillion: 5, cacheWritePerMillion: 1.25, cacheReadPerMillion: 0.1 },
+interface PricingSnapshot {
+  source: string;
+  updatedAt: string;
+  models: Record<string, ModelPricing>;
+}
+
+const pricingSnapshot = litellmPricing as PricingSnapshot;
+
+export const LITELLM_PRICING_SOURCE = {
+  source: pricingSnapshot.source,
+  updatedAt: pricingSnapshot.updatedAt,
+};
+
+export const MODEL_PRICING: Record<string, ModelPricing> = pricingSnapshot.models;
+const MODEL_PRICING_ENTRIES = Object.entries(MODEL_PRICING);
+const PROVIDER_ORDER: Record<string, number> = {
+  anthropic: 0,
+  openai: 1,
 };
 
 /**
@@ -83,7 +97,7 @@ export function calculateCost(
   cacheReadTokens: number,
   mode: CostMode = DEFAULT_COST_MODE
 ): number {
-  const pricing = MODEL_PRICING[model] || findClosestPricing(model);
+  const pricing = getModelPricing(model);
   if (!pricing) return 0;
   const multipliers = COST_MODE_MULTIPLIERS[mode];
   return (
@@ -102,7 +116,7 @@ export function calculateCostAllModes(
   cacheWriteTokens: number,
   cacheReadTokens: number
 ): Record<CostMode, number> {
-  const pricing = MODEL_PRICING[model] || findClosestPricing(model);
+  const pricing = getModelPricing(model);
   if (!pricing) return { api: 0, conservative: 0, subscription: 0 };
 
   const baseCost =
@@ -119,10 +133,119 @@ export function calculateCostAllModes(
   };
 }
 
-function findClosestPricing(model: string): ModelPricing | null {
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    const family = key.includes('opus') ? 'opus' : key.includes('sonnet') ? 'sonnet' : 'haiku';
-    if (model.includes(family)) return pricing;
+export function getModelPricing(model: string): ModelPricing | null {
+  return getModelPricingEntry(model)?.pricing ?? null;
+}
+
+export function getModelPricingEntry(model: string): { model: string; pricing: ModelPricing } | null {
+  const normalized = normalizeModelId(model);
+  if (!normalized) return null;
+
+  const direct = MODEL_PRICING[normalized];
+  if (direct) return { model: normalized, pricing: direct };
+
+  const prefixMatch = pickBestPricingEntry(
+    MODEL_PRICING_ENTRIES.filter(([key]) => normalized.startsWith(`${key}-`) || key.startsWith(`${normalized}-`))
+  );
+  if (prefixMatch) return { model: prefixMatch[0], pricing: prefixMatch[1] };
+
+  const family = getClaudeFamily(normalized);
+  if (!family) return null;
+
+  const familyMatch = pickBestPricingEntry(
+    MODEL_PRICING_ENTRIES.filter(([key]) => getClaudeFamily(key) === family)
+  );
+  return familyMatch ? { model: familyMatch[0], pricing: familyMatch[1] } : null;
+}
+
+export function getPricingReferenceEntries(modelIds?: string[]): Array<{ model: string; pricing: ModelPricing }> {
+  const seen = new Set<string>();
+  const entries: Array<{ model: string; pricing: ModelPricing }> = [];
+
+  const sourceModels = modelIds?.length ? modelIds : MODEL_PRICING_ENTRIES.map(([model]) => model);
+  for (const model of sourceModels) {
+    const entry = modelIds?.length
+      ? getModelPricingEntry(model)
+      : MODEL_PRICING[model]
+        ? { model, pricing: MODEL_PRICING[model] }
+        : null;
+    if (!entry || seen.has(entry.model)) continue;
+    seen.add(entry.model);
+    entries.push(entry);
   }
+
+  return entries.sort(comparePricingReferenceEntries);
+}
+
+function normalizeModelId(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  const claudeIndex = normalized.lastIndexOf('claude-');
+  const claudeModel = claudeIndex >= 0 ? normalized.slice(claudeIndex) : normalized;
+  return claudeModel.replace(/\./g, '-');
+}
+
+function getClaudeFamily(model: string): 'opus' | 'sonnet' | 'haiku' | null {
+  if (model.includes('opus')) return 'opus';
+  if (model.includes('sonnet')) return 'sonnet';
+  if (model.includes('haiku')) return 'haiku';
   return null;
+}
+
+function pickBestPricingEntry(entries: Array<[string, ModelPricing]>): [string, ModelPricing] | null {
+  if (entries.length === 0) return null;
+  return [...entries].sort(([a], [b]) => comparePricingKeys(a, b))[0];
+}
+
+function comparePricingKeys(a: string, b: string): number {
+  const aScore = getPricingKeyScore(a);
+  const bScore = getPricingKeyScore(b);
+  return (
+    bScore.major - aScore.major ||
+    bScore.minor - aScore.minor ||
+    bScore.date - aScore.date ||
+    b.length - a.length ||
+    a.localeCompare(b)
+  );
+}
+
+function comparePricingReferenceEntries(
+  a: { model: string; pricing: ModelPricing },
+  b: { model: string; pricing: ModelPricing }
+): number {
+  const providerA = a.pricing.provider ?? '';
+  const providerB = b.pricing.provider ?? '';
+  return (
+    (PROVIDER_ORDER[providerA] ?? 99) - (PROVIDER_ORDER[providerB] ?? 99) ||
+    comparePricingKeys(a.model, b.model)
+  );
+}
+
+function getPricingKeyScore(model: string): { major: number; minor: number; date: number } {
+  const parts = normalizeModelId(model).split('-');
+  const family = getClaudeFamily(model);
+  const familyIndex = family ? parts.indexOf(family) : -1;
+  let major = 0;
+  let minor = 0;
+
+  if (familyIndex === 1) {
+    major = parseVersionPart(parts[2]);
+    minor = parseVersionPart(parts[3]);
+  } else if (familyIndex > 1) {
+    major = parseVersionPart(parts[1]);
+    minor = familyIndex === 3 ? parseVersionPart(parts[2]) : 0;
+  }
+
+  const date = Math.max(
+    0,
+    ...parts
+      .filter((part) => /^\d{8}$/.test(part))
+      .map((part) => Number(part))
+  );
+
+  return { major, minor, date };
+}
+
+function parseVersionPart(value: string | undefined): number {
+  if (!value || !/^\d+$/.test(value) || /^\d{8}$/.test(value)) return 0;
+  return Number(value);
 }
