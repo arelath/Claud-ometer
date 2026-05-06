@@ -1,10 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
-import { fixtureSessionIds } from '../shared/seed-imported-data';
+import { fixtureSessionIds, hasFixtureData } from '../shared/seed-imported-data';
 
 describe('reader imported-data fixtures', () => {
-  it('loads projects and sessions from seeded imported data', async () => {
+  const fixtureIt = hasFixtureData() ? it : it.skip;
+
+  fixtureIt('loads projects and sessions from seeded imported data', async () => {
     vi.resetModules();
     const { getProjects, getSessions } = await import('@/lib/claude-data/reader');
 
@@ -16,7 +18,7 @@ describe('reader imported-data fixtures', () => {
     expect(sessions.some((session) => fixtureSessionIds.includes(session.id as (typeof fixtureSessionIds)[number]))).toBe(true);
   });
 
-  it('preserves multiline block content in session detail', async () => {
+  fixtureIt('preserves multiline block content in session detail', async () => {
     vi.resetModules();
     const { getSessionDetail } = await import('@/lib/claude-data/reader');
 
@@ -31,7 +33,7 @@ describe('reader imported-data fixtures', () => {
     expect(multilineBlock?.content).toContain('Context Builder Subagent');
   });
 
-  it('preserves edit tool artifacts for diff previews', async () => {
+  fixtureIt('preserves edit tool artifacts for diff previews', async () => {
     vi.resetModules();
     const { getSessionDetail } = await import('@/lib/claude-data/reader');
 
@@ -46,7 +48,7 @@ describe('reader imported-data fixtures', () => {
     expect(editTool?.artifact?.newText).toContain('hints');
   });
 
-  it('parses command messages from local command output', async () => {
+  fixtureIt('parses command messages from local command output', async () => {
     vi.resetModules();
     const { getSessionDetail } = await import('@/lib/claude-data/reader');
 
@@ -58,7 +60,7 @@ describe('reader imported-data fixtures', () => {
     expect(commandMessages.some((message) => message.content.includes('Set model to') || message.content.includes('/model'))).toBe(true);
   });
 
-  it('persists prompt breakdown snapshots for assistant turns', async () => {
+  fixtureIt('persists prompt breakdown snapshots for assistant turns', async () => {
     vi.resetModules();
     const { getSessionDetail } = await import('@/lib/claude-data/reader');
 
@@ -94,7 +96,7 @@ describe('reader imported-data fixtures', () => {
     ).toBe(latestBreakdown?.totalTokens);
   });
 
-  it('captures file-heavy and tool-heavy prompt composition from imported fixtures', async () => {
+  fixtureIt('captures file-heavy and tool-heavy prompt composition from imported fixtures', async () => {
     vi.resetModules();
     const { getSessionDetail } = await import('@/lib/claude-data/reader');
 

@@ -4,16 +4,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { PassThrough } from 'stream';
+import { apiError, withErrorHandler } from '@/lib/api-route';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  try {
-    const claudeDir = path.join(os.homedir(), '.claude');
+export const GET = withErrorHandler(async () => {
+  const claudeDir = path.join(os.homedir(), '.claude');
 
-    if (!fs.existsSync(claudeDir)) {
-      return NextResponse.json({ error: 'No Claude data found' }, { status: 404 });
-    }
+  if (!fs.existsSync(claudeDir)) {
+    apiError('No Claude data found', 404);
+  }
 
     const passthrough = new PassThrough();
     const archive = archiver('zip', { zlib: { level: 6 } });
@@ -100,15 +100,11 @@ export async function GET() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const filename = `claude-code-data-${timestamp}.zip`;
 
-    return new NextResponse(buffer, {
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': buffer.length.toString(),
-      },
-    });
-  } catch (error) {
-    console.error('Export error:', error);
-    return NextResponse.json({ error: 'Failed to export data' }, { status: 500 });
-  }
-}
+  return new NextResponse(buffer, {
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': buffer.length.toString(),
+    },
+  });
+}, 'Export error', 'Failed to export data');

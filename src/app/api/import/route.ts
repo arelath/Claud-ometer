@@ -2,34 +2,31 @@ import { NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import fs from 'fs';
 import path from 'path';
+import { apiError, withErrorHandler } from '@/lib/api-route';
 import { getImportDir, setDataSource } from '@/lib/claude-data/data-source';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: Request) {
-  try {
-    const formData = await request.formData();
-    const file = formData.get('file') as File;
+export const POST = withErrorHandler(async (request: Request) => {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
-    }
+  if (!file) {
+    apiError('No file provided', 400);
+  }
 
-    if (!file.name.endsWith('.zip')) {
-      return NextResponse.json({ error: 'File must be a .zip archive' }, { status: 400 });
-    }
+  if (!file.name.endsWith('.zip')) {
+    apiError('File must be a .zip archive', 400);
+  }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(arrayBuffer);
+  const arrayBuffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(arrayBuffer);
 
-    // Verify it has the expected structure
-    const hasClaudeData = Object.keys(zip.files).some(f => f.startsWith('claude-data/'));
-    if (!hasClaudeData) {
-      return NextResponse.json(
-        { error: 'Invalid archive: missing claude-data/ directory. This doesn\'t look like a Claude Code Dashboard export.' },
-        { status: 400 }
-      );
-    }
+  // Verify it has the expected structure
+  const hasClaudeData = Object.keys(zip.files).some(f => f.startsWith('claude-data/'));
+  if (!hasClaudeData) {
+    apiError('Invalid archive: missing claude-data/ directory. This doesn\'t look like a Claude Code Dashboard export.', 400);
+  }
 
     const importDir = getImportDir();
 
@@ -98,24 +95,15 @@ export async function POST(request: Request) {
     // Switch to imported data source
     setDataSource('imported');
 
-    return NextResponse.json({
-      success: true,
-      meta: importMeta,
-    });
-  } catch (error) {
-    console.error('Import error:', error);
-    return NextResponse.json({ error: 'Failed to import data' }, { status: 500 });
-  }
-}
+  return NextResponse.json({
+    success: true,
+    meta: importMeta,
+  });
+}, 'Import error', 'Failed to import data');
 
-export async function DELETE() {
-  try {
-    const { clearImportedData, setDataSource: setSource } = await import('@/lib/claude-data/data-source');
-    setSource('live');
-    clearImportedData();
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('Clear import error:', error);
-    return NextResponse.json({ error: 'Failed to clear imported data' }, { status: 500 });
-  }
-}
+export const DELETE = withErrorHandler(async () => {
+  const { clearImportedData, setDataSource: setSource } = await import('@/lib/claude-data/data-source');
+  setSource('live');
+  clearImportedData();
+  return NextResponse.json({ success: true });
+}, 'Clear import error', 'Failed to clear imported data');

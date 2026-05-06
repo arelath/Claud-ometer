@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { apiError, withErrorHandler } from '@/lib/api-route';
 import {
   getActiveDataSource,
   hasImportedData,
@@ -16,18 +17,14 @@ export async function GET() {
   });
 }
 
-export async function PUT(request: Request) {
-  try {
-    const { source } = await request.json();
-    if (source !== 'live' && source !== 'imported') {
-      return NextResponse.json({ error: 'Invalid source' }, { status: 400 });
-    }
-    if (source === 'imported' && !hasImportedData()) {
-      return NextResponse.json({ error: 'No imported data available' }, { status: 400 });
-    }
-    setDataSource(source);
-    return NextResponse.json({ active: source });
-  } catch (error) {
-    return NextResponse.json({ error: 'Failed to switch data source' }, { status: 500 });
+export const PUT = withErrorHandler(async (request: Request) => {
+  const { source } = await request.json();
+  if (source !== 'live' && source !== 'imported') {
+    apiError('Invalid source', 400);
   }
-}
+  if (source === 'imported' && !hasImportedData()) {
+    apiError('No imported data available', 400);
+  }
+  setDataSource(source);
+  return NextResponse.json({ active: source });
+}, 'Error switching data source', 'Failed to switch data source');

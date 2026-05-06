@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag. Leave blank to use package.json version, for example v0.1.0."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  windows:
+    name: Build Windows Release
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        run: |
+          $packageVersion = node -p "require('./package.json').version"
+          $expectedTag = "v$packageVersion"
+          $tag = "${{ github.ref_name }}"
+
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $inputTag = "${{ inputs.tag }}"
+            if ([string]::IsNullOrWhiteSpace($inputTag)) {
+              $tag = $expectedTag
+            } else {
+              $tag = $inputTag.Trim()
+            }
+          }
+
+          if ($tag -ne $expectedTag) {
+            throw "Release tag '$tag' must match package.json version '$expectedTag'."
+          }
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$packageVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Build Windows executables
+        run: npm run electron:dist
+
+      - name: Smoke test packaged Next server
+        run: npm run electron:smoke
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claud-ometer-${{ steps.release.outputs.version }}-windows
+          path: |
+            dist-electron/*.exe
+            dist-electron/*.blockmap
+            dist-electron/latest.yml
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $files = @(
+            "dist-electron/Claud-ometer-Setup-$env:RELEASE_VERSION-x64.exe",
+            "dist-electron/Claud-ometer-Portable-$env:RELEASE_VERSION-x64.exe",
+            "dist-electron/Claud-ometer-Setup-$env:RELEASE_VERSION-x64.exe.blockmap",
+            "dist-electron/latest.yml"
+          )
+
+          foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file)) {
+              throw "Missing release artifact: $file"
+            }
+          }
+
+          $notes = @"
+          Windows desktop release for Claud-ometer $env:RELEASE_TAG.
+
+          Artifacts:
+          - NSIS installer: Claud-ometer-Setup-$env:RELEASE_VERSION-x64.exe
+          - Portable executable: Claud-ometer-Portable-$env:RELEASE_VERSION-x64.exe
+
+          Note: builds are currently unsigned and may trigger Windows SmartScreen warnings.
+          "@
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG @files --clobber
+          } else {
+            gh release create $env:RELEASE_TAG @files --target $env:GITHUB_SHA --title "Claud-ometer $env:RELEASE_TAG" --notes $notes
+          }

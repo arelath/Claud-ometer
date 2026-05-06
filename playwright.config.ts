@@ -23,13 +23,15 @@ export default defineConfig({
   globalSetup: './tests/e2e/global.setup.ts',
   globalTeardown: './tests/e2e/global.teardown.ts',
   webServer: {
-    command: 'npm run start -- --hostname 127.0.0.1 --port 3005',
+    command: 'node .next/standalone/server.js',
     url: 'http://127.0.0.1:3005',
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
     env: {
       ...process.env,
       NEXT_TELEMETRY_DISABLED: '1',
+      HOSTNAME: '127.0.0.1',
+      PORT: '3005',
       CLAUD_OMETER_IMPORT_DIR: e2eImportDir,
     },
   },
