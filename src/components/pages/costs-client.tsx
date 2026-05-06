@@ -7,7 +7,13 @@ import { CostModeSelector } from '@/components/cost-mode-selector';
 import { StatCard } from '@/components/cards/stat-card';
 import { CostChart } from '@/components/charts/cost-chart';
 import { formatCost, formatTokens } from '@/lib/format';
-import { getModelDisplayName, getModelColor, MODEL_PRICING } from '@/config/pricing';
+import {
+  getModelDisplayName,
+  getModelColor,
+  getModelPricing,
+  getPricingReferenceEntries,
+  LITELLM_PRICING_SOURCE,
+} from '@/config/pricing';
 import { Coins, TrendingUp, Zap, Database, Info } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
@@ -47,7 +53,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
   // Estimated savings: if cache reads were full-price input tokens instead
   let cacheSavings = 0;
   Object.entries(stats.modelUsage).forEach(([model, usage]) => {
-    const pricing = MODEL_PRICING[model];
+    const pricing = getModelPricing(model);
     if (pricing) {
       const fullPriceCost = (usage.cacheReadInputTokens / 1_000_000) * pricing.inputPerMillion;
       const cachePriceCost = (usage.cacheReadInputTokens / 1_000_000) * pricing.cacheReadPerMillion;
@@ -82,6 +88,8 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
     cacheRead: usage.cacheReadInputTokens,
     cacheWrite: usage.cacheCreationInputTokens,
   }));
+  const pricingRows = getPricingReferenceEntries();
+  const pricingUpdatedAt = new Date(LITELLM_PRICING_SOURCE.updatedAt).toLocaleDateString();
 
   return (
     <div className="space-y-6">
@@ -238,35 +246,47 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
           <CardTitle className="text-sm font-semibold">Pricing Reference (per 1M tokens, API rates)</CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          <div className="overflow-x-auto">
+          <div className="max-h-[460px] overflow-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border/50">
-                  <th className="text-left py-2 font-medium text-muted-foreground">Model</th>
-                  <th className="text-right py-2 font-medium text-muted-foreground">Input</th>
-                  <th className="text-right py-2 font-medium text-muted-foreground">Output</th>
-                  <th className="text-right py-2 font-medium text-muted-foreground">Cache Write</th>
-                  <th className="text-right py-2 font-medium text-muted-foreground">Cache Read</th>
+                  <th className="sticky top-0 bg-card text-left py-2 font-medium text-muted-foreground">Provider</th>
+                  <th className="sticky top-0 bg-card text-left py-2 font-medium text-muted-foreground">Model</th>
+                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Input</th>
+                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Output</th>
+                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Cache Write</th>
+                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Cache Read</th>
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(MODEL_PRICING).slice(0, 3).map(([model, pricing]) => (
+                {pricingRows.map(({ model, pricing }) => (
                   <tr key={model} className="border-b border-border/30">
-                    <td className="py-2 font-medium">{getModelDisplayName(model)}</td>
-                    <td className="py-2 text-right">${pricing.inputPerMillion}</td>
-                    <td className="py-2 text-right">${pricing.outputPerMillion}</td>
-                    <td className="py-2 text-right">${pricing.cacheWritePerMillion}</td>
-                    <td className="py-2 text-right">${pricing.cacheReadPerMillion}</td>
+                    <td className="py-2 pr-3 font-medium text-muted-foreground">{formatProvider(pricing.provider)}</td>
+                    <td className="py-2 pr-3 font-mono font-medium">{model}</td>
+                    <td className="py-2 text-right">{formatRate(pricing.inputPerMillion)}</td>
+                    <td className="py-2 text-right">{formatRate(pricing.outputPerMillion)}</td>
+                    <td className="py-2 text-right">{formatRate(pricing.cacheWritePerMillion)}</td>
+                    <td className="py-2 text-right">{formatRate(pricing.cacheReadPerMillion)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <p className="mt-2 text-[10px] text-muted-foreground">
-            These are published API rates. Claude Code subscription billing differs significantly — cache tokens are not billed at full API rates.
+            Rates are generated from LiteLLM pricing data, refreshed {pricingUpdatedAt}. Claude Code subscription billing differs significantly — cache tokens are not billed at full API rates.
           </p>
         </CardContent>
       </Card>
     </div>
   );
+}
+
+function formatProvider(provider: string | undefined): string {
+  if (provider === 'anthropic') return 'Anthropic';
+  if (provider === 'openai') return 'OpenAI';
+  return provider ?? 'Unknown';
+}
+
+function formatRate(rate: number): string {
+  return `$${Number.isInteger(rate) ? rate.toString() : rate.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
 }

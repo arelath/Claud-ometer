@@ -1,20 +1,15 @@
 import type { SessionMessageBlockDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
 import { formatDisplayPath } from '@/lib/path-utils';
 import { detailMatchesKey, getDetailKeyTail, normalizeDisplayNewlines } from '@/lib/string-utils';
+import {
+  ANTHROPIC_CODE_PATH_DETAIL_KEYS,
+  ANTHROPIC_FILE_DETAIL_KEYS,
+  ANTHROPIC_MONOSPACE_DETAIL_KEYS,
+} from '@/config/anthropic-schema';
 import type { PreviewTone } from './session-render-context';
 
-const MONOSPACE_DETAIL_KEYS = [
-  'args', 'command', 'displayPath', 'file_path', 'filePath', 'filename',
-  'includePattern', 'leafUuid', 'lineContent', 'messageId', 'path', 'paths',
-  'query', 'scope', 'selector', 'signature', 'sourceToolAssistantUUID',
-  'symbol', 'tool_use_id', 'toolUseId', 'url', 'uuid',
-];
-
-const PATH_DETAIL_KEYS = ['displayPath', 'file_path', 'filePath', 'path', 'paths', 'filename', 'content.file.filePath'];
-const CODE_PATH_DETAIL_KEYS = ['originalFile', 'content.file.filePath', 'displayPath', 'filePath', 'file_path', 'filename', 'path'];
-
 export function usesMonospaceDetail(key: string): boolean {
-  return MONOSPACE_DETAIL_KEYS.includes(getDetailKeyTail(key));
+  return (ANTHROPIC_MONOSPACE_DETAIL_KEYS as readonly string[]).includes(getDetailKeyTail(key));
 }
 
 export function findDetail(
@@ -43,11 +38,11 @@ export function omitDetails(
 }
 
 export function getCodePathDetailValue(details: SessionToolCallDisplay['details']): string | undefined {
-  return findPreferredDetail(details, CODE_PATH_DETAIL_KEYS)?.value;
+  return findPreferredDetail(details, [...ANTHROPIC_CODE_PATH_DETAIL_KEYS])?.value;
 }
 
 export function isPathDetailKey(key: string): boolean {
-  return detailMatchesKey(key, PATH_DETAIL_KEYS);
+  return detailMatchesKey(key, [...ANTHROPIC_FILE_DETAIL_KEYS, 'paths']);
 }
 
 export function formatDisplayValue(key: string, value: string, projectRoot?: string): string {

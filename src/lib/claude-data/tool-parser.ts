@@ -4,6 +4,12 @@ import type {
   SessionMessageBlockDisplay,
   SessionToolCallDisplay,
 } from './types';
+import {
+  ANTHROPIC_COMMON_TOOL_DETAIL_KEYS,
+  ANTHROPIC_FILE_DETAIL_KEYS,
+  ANTHROPIC_TOOL_DETAIL_PRIORITY,
+  ANTHROPIC_TOOL_NAMES,
+} from '@/config/anthropic-schema';
 import { getDetailKeyTail, detailMatchesKey } from '@/lib/string-utils';
 import { isRecord } from './record-utils';
 
@@ -65,40 +71,8 @@ const TOOL_DETAIL_LABELS: Record<string, string> = {
   url: 'URL',
 };
 
-const TOOL_DETAIL_PRIORITY: Record<string, string[]> = {
-  Bash: ['command', 'goal', 'mode', 'timeout'],
-  Edit: ['file_path', 'replace_all', 'old_string', 'new_string'],
-  Read: ['file_path', 'startLine', 'endLine'],
-  ToolSearch: ['query', 'max_results'],
-  Write: ['file_path', 'content'],
-};
-
-const COMMON_TOOL_DETAIL_KEYS = [
-  'file_path',
-  'filePath',
-  'path',
-  'paths',
-  'command',
-  'query',
-  'goal',
-  'mode',
-  'url',
-  'selector',
-  'symbol',
-  'newName',
-  'scope',
-  'includePattern',
-  'lineContent',
-  'args',
-  'startLine',
-  'endLine',
-  'replace_all',
-  'max_results',
-  'maxResults',
-];
-
 const LARGE_TEXT_TOOL_KEYS = new Set(['code', 'content', 'file_text', 'new_string', 'old_string']);
-const FILE_LIKE_TOOL_KEYS = new Set(['file_path', 'filePath', 'path', 'paths']);
+const FILE_LIKE_TOOL_KEYS = new Set([...ANTHROPIC_FILE_DETAIL_KEYS, 'paths']);
 
 const STRUCTURED_DETAIL_KEYS = [
   'type',
@@ -213,8 +187,8 @@ export function buildToolCallDetails(name: string, input: unknown): SessionToolC
 
   const inputObject = input as Record<string, unknown>;
   const candidateKeys = [
-    ...(TOOL_DETAIL_PRIORITY[name] || []),
-    ...COMMON_TOOL_DETAIL_KEYS,
+    ...(ANTHROPIC_TOOL_DETAIL_PRIORITY[name] || []),
+    ...ANTHROPIC_COMMON_TOOL_DETAIL_KEYS,
     ...Object.keys(inputObject),
   ];
 
@@ -249,7 +223,7 @@ export function buildToolCallSummary(name: string, details: SessionToolCallDispl
 
   if (!primaryDetail) return name;
 
-  if (name === 'Read') {
+  if (name === ANTHROPIC_TOOL_NAMES.read) {
     const startLine = details.find(detail => detail.key === 'startLine')?.value;
     const endLine = details.find(detail => detail.key === 'endLine')?.value;
     if (startLine || endLine) {
@@ -465,7 +439,7 @@ function buildStructuredSummary(
   if (content) return truncateInline(content, 160);
 
   const fileDetail = details.find(detail =>
-    detailMatchesKey(detail.key, ['displayPath', 'filePath', 'file_path', 'filename', 'path']),
+    detailMatchesKey(detail.key, [...ANTHROPIC_FILE_DETAIL_KEYS]),
   );
   const typeDetail = details.find(detail =>
     detailMatchesKey(detail.key, ['type', 'subtype', 'permissionMode', 'query', 'command']),

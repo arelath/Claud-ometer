@@ -5,6 +5,9 @@ import {
   DEFAULT_COST_MODE,
   getModelColor,
   getModelDisplayName,
+  getModelPricing,
+  getPricingReferenceEntries,
+  LITELLM_PRICING_SOURCE,
 } from '@/config/pricing';
 
 describe('pricing helpers', () => {
@@ -24,6 +27,22 @@ describe('pricing helpers', () => {
   it('falls back to matching model families for dated or variant model names', () => {
     expect(calculateCost('claude-sonnet-4-6-20260504', 1_000_000, 1_000_000, 0, 0, 'api')).toBe(18);
     expect(calculateCost('internal-haiku-experiment', 1_000_000, 1_000_000, 0, 0, 'api')).toBe(6);
+  });
+
+  it('loads rates from the LiteLLM pricing snapshot', () => {
+    expect(LITELLM_PRICING_SOURCE.source).toContain('BerriAI/litellm');
+    expect(getModelPricing('anthropic.claude-opus-4-7')?.outputPerMillion).toBe(25);
+    expect(getModelPricing('claude-opus-4-1')?.outputPerMillion).toBe(75);
+  });
+
+  it('keeps separate pricing reference rows for model versions and OpenAI models', () => {
+    const rows = getPricingReferenceEntries();
+    const models = rows.map(row => row.model);
+
+    expect(models).toContain('claude-opus-4-1');
+    expect(models).toContain('claude-opus-4-7');
+    expect(models).toContain('gpt-5.5');
+    expect(rows.find(row => row.model === 'gpt-5.5')?.pricing.provider).toBe('openai');
   });
 
   it('returns zero estimates for unknown model families', () => {

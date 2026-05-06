@@ -223,4 +223,109 @@ describe('session diff helpers', () => {
     expect(summary.files[0].hunks[0].oldStartLine).toBe(2);
     expect(summary.files[0].hunks[0].rows[0].oldLineNumber).toBe(2);
   });
+
+  it('maps later net diff hunks back through earlier line drift', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithEdit(
+        1,
+        'src/drift.ts',
+        'const anchor = true;',
+        [
+          'const anchor = true;',
+          'const added1 = true;',
+          'const added2 = true;',
+          'const added3 = true;',
+          'const added4 = true;',
+          'const added5 = true;',
+          'const added6 = true;',
+          'const added7 = true;',
+          'const added8 = true;',
+          'const added9 = true;',
+          'const added10 = true;',
+        ].join('\n'),
+        '5',
+      ),
+      assistantWithEdit(
+        2,
+        'src/drift.ts',
+        'const target = false;',
+        'const target = true;',
+        '25',
+      ),
+    ]);
+
+    const file = summary.files[0];
+    const driftedHunk = file.hunks.find(hunk => hunk.toolId === 'edit-2');
+
+    expect(driftedHunk?.oldStartLine).toBe(15);
+    expect(driftedHunk?.newStartLine).toBe(25);
+    expect(driftedHunk?.rows).toEqual([
+      {
+        type: 'remove',
+        oldLineNumber: 15,
+        newLineNumber: null,
+        text: 'const target = false;',
+      },
+      {
+        type: 'add',
+        oldLineNumber: null,
+        newLineNumber: 25,
+        text: 'const target = true;',
+      },
+    ]);
+  });
+
+  it('keeps overlapping net diff regions on a single continuous line-number track', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithEdit(
+        1,
+        'src/overlap.ts',
+        ['line10', 'line11', 'line12', 'line13', 'line14', 'line15'].join('\n'),
+        ['line10', 'line11', 'line12 changed', 'line13', 'line14', 'line15'].join('\n'),
+        '10',
+      ),
+      assistantWithEdit(
+        2,
+        'src/overlap.ts',
+        ['line13', 'line14', 'line15'].join('\n'),
+        ['line13', 'line14 changed', 'line15', 'line16 added'].join('\n'),
+        '13',
+      ),
+    ]);
+
+    const hunk = summary.files[0].hunks[0];
+
+    expect(summary.files[0].hunks).toHaveLength(1);
+    expect(hunk.oldStartLine).toBe(10);
+    expect(hunk.newStartLine).toBe(10);
+    expect(hunk.rows.filter(row => row.oldLineNumber != null).map(row => row.oldLineNumber)).toEqual([10, 11, 12, 13, 14, 15]);
+    expect(hunk.rows.filter(row => row.newLineNumber != null).map(row => row.newLineNumber)).toEqual([10, 11, 12, 13, 14, 15, 16]);
+  });
+
+  it('uses unknown line numbers for low-confidence unresolved edits without corrupting later offsets', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithEdit(
+        1,
+        'src/unknown.ts',
+        '}',
+        '};',
+        '',
+      ),
+      assistantWithEdit(
+        2,
+        'src/unknown.ts',
+        'const later = false;',
+        'const later = true;',
+        '20',
+      ),
+    ]);
+
+    const file = summary.files[0];
+
+    expect(file.editHunks[0].oldStartLine).toBeNull();
+    expect(file.editHunks[0].rows.every(row => row.oldLineNumber == null && row.newLineNumber == null)).toBe(true);
+    expect(file.editHunks[1].oldStartLine).toBe(20);
+    expect(file.editHunks[1].rows[0].oldLineNumber).toBe(20);
+    expect(file.editHunks[1].rows[1].newLineNumber).toBe(20);
+  });
 });

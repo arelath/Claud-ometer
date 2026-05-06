@@ -7,6 +7,7 @@ import type {
   ProjectInfo,
   SessionInfo,
   SessionDetail,
+  SessionMessage,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
   SessionToolCallDisplay,
@@ -31,6 +32,29 @@ import {
 } from './prompt-metrics';
 import { buildEventBlock, buildThinkingBlock, buildToolCallDisplay, buildToolResultBlock } from './tool-parser';
 import { computeSupplementalStats } from './stats-aggregator';
+
+interface SessionFileCacheEntry {
+  signature: string;
+  value: SessionInfo;
+}
+
+const sessionInfoCache = new Map<string, SessionFileCacheEntry>();
+
+function getFileSignature(filePath: string): string {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function getSessionSignature(filePath: string): string {
+  return getSessionAggregateFilePaths(filePath)
+    .map(aggregatePath => `${aggregatePath}:${getFileSignature(aggregatePath)}`)
+    .join('|');
+}
+
 export function getStatsCache(): StatsCache | null {
   const statsPath = path.join(getClaudeDir(), 'stats-cache.json');
   if (!fs.existsSync(statsPath)) return null;
@@ -170,135 +194,176 @@ export async function getSessions(limit = 50, offset = 0): Promise<SessionInfo[]
   return allSessions.slice(offset, offset + limit);
 }
 
-async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
-  const sessionId = path.basename(filePath, '.jsonl');
-  const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
+class SessionParser {
+  private firstTimestamp = '';
+  private lastTimestamp = '';
+  private userMessageCount = 0;
+  private assistantMessageCount = 0;
+  private toolCallCount = 0;
+  private totalInputTokens = 0;
+  private totalOutputTokens = 0;
+  private totalCacheReadTokens = 0;
+  private totalCacheWriteTokens = 0;
+  private estimatedCosts = zeroCosts();
+  private gitBranch = '';
+  private cwd = '';
+  private version = '';
+  private modelsSet = new Set<string>();
+  private toolsUsed: Record<string, number> = {};
+  private compactions = 0;
+  private microcompactions = 0;
+  private totalTokensSaved = 0;
+  private compactionTimestamps: string[] = [];
+  private assistantTurns = new Map<string, AssistantTurnAggregate>();
 
-  let firstTimestamp = '';
-  let lastTimestamp = '';
-  let userMessageCount = 0;
-  let assistantMessageCount = 0;
-  let toolCallCount = 0;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalCacheReadTokens = 0;
-  let totalCacheWriteTokens = 0;
-  let estimatedCosts = zeroCosts();
-  let gitBranch = '';
-  let cwd = '';
-  let version = '';
-  const modelsSet = new Set<string>();
-  const toolsUsed: Record<string, number> = {};
+  constructor(
+    private readonly sessionId: string,
+    private readonly projectId: string,
+    private readonly projectName: string,
+  ) {}
 
-  // Compaction tracking
-  let compactions = 0;
-  let microcompactions = 0;
-  let totalTokensSaved = 0;
-  const compactionTimestamps: string[] = [];
-  const assistantTurns = new Map<string, AssistantTurnAggregate>();
+  processTopLevelLine(filePath: string, msg: SessionMessage): void {
+    this.updateCommonMetadata(msg);
+    this.updateCompactionStats(msg);
+    this.updateUserCounts(msg);
 
-  await forEachJsonlLine(filePath, (msg) => {
-    if (msg.timestamp) {
-      if (!firstTimestamp) firstTimestamp = msg.timestamp;
-      lastTimestamp = msg.timestamp;
+    if (msg.type === 'assistant') {
+      recordAssistantTurn(this.assistantTurns, filePath, msg, true);
     }
-    if (msg.gitBranch && !gitBranch) gitBranch = msg.gitBranch;
-    if (msg.cwd && !cwd) cwd = msg.cwd;
-    if (msg.version && !version) version = msg.version;
+  }
 
-    // Track compaction events
+  processAggregateLine(filePath: string, msg: SessionMessage): void {
+    if (msg.timestamp && msg.timestamp > this.lastTimestamp) this.lastTimestamp = msg.timestamp;
+    recordAssistantTurn(this.assistantTurns, filePath, msg, false);
+  }
+
+  getResult(): SessionInfo {
+    this.finalizeAssistantTurns();
+    const duration = this.firstTimestamp && this.lastTimestamp
+      ? new Date(this.lastTimestamp).getTime() - new Date(this.firstTimestamp).getTime()
+      : 0;
+    const models = Array.from(this.modelsSet);
+
+    return {
+      id: this.sessionId,
+      projectId: this.projectId,
+      projectName: this.projectName,
+      timestamp: this.firstTimestamp || new Date().toISOString(),
+      duration,
+      messageCount: this.userMessageCount + this.assistantMessageCount,
+      userMessageCount: this.userMessageCount,
+      assistantMessageCount: this.assistantMessageCount,
+      toolCallCount: this.toolCallCount,
+      totalInputTokens: this.totalInputTokens,
+      totalOutputTokens: this.totalOutputTokens,
+      totalCacheReadTokens: this.totalCacheReadTokens,
+      totalCacheWriteTokens: this.totalCacheWriteTokens,
+      estimatedCost: this.estimatedCosts[DEFAULT_COST_MODE],
+      estimatedCosts: this.estimatedCosts,
+      model: models[0] || 'unknown',
+      models: models.map(getModelDisplayName),
+      gitBranch: this.gitBranch,
+      cwd: this.cwd,
+      version: this.version,
+      toolsUsed: this.toolsUsed,
+      compaction: {
+        compactions: this.compactions,
+        microcompactions: this.microcompactions,
+        totalTokensSaved: this.totalTokensSaved,
+        compactionTimestamps: this.compactionTimestamps,
+      },
+    };
+  }
+
+  private updateCommonMetadata(msg: SessionMessage): void {
+    if (msg.timestamp) {
+      if (!this.firstTimestamp) this.firstTimestamp = msg.timestamp;
+      this.lastTimestamp = msg.timestamp;
+    }
+    if (msg.gitBranch && !this.gitBranch) this.gitBranch = msg.gitBranch;
+    if (msg.cwd && !this.cwd) this.cwd = msg.cwd;
+    if (msg.version && !this.version) this.version = msg.version;
+  }
+
+  private updateCompactionStats(msg: SessionMessage): void {
     if (msg.compactMetadata) {
-      compactions++;
-      if (msg.timestamp) compactionTimestamps.push(msg.timestamp);
+      this.compactions++;
+      if (msg.timestamp) this.compactionTimestamps.push(msg.timestamp);
     }
     if (msg.microcompactMetadata) {
-      microcompactions++;
-      totalTokensSaved += msg.microcompactMetadata.tokensSaved || 0;
-      if (msg.timestamp) compactionTimestamps.push(msg.timestamp);
+      this.microcompactions++;
+      this.totalTokensSaved += msg.microcompactMetadata.tokensSaved || 0;
+      if (msg.timestamp) this.compactionTimestamps.push(msg.timestamp);
     }
+  }
 
-    if (msg.type === 'user') {
-      if (msg.message?.role === 'user' && typeof msg.message.content === 'string') {
-        userMessageCount++;
-      } else if (msg.message?.role === 'user') {
-        userMessageCount++;
+  private updateUserCounts(msg: SessionMessage): void {
+    if (msg.type === 'user' && msg.message?.role === 'user') {
+      this.userMessageCount++;
+    }
+  }
+
+  private finalizeAssistantTurns(): void {
+    if (this.assistantMessageCount > 0 || this.totalInputTokens > 0 || this.toolCallCount > 0) return;
+
+    for (const assistantTurn of this.assistantTurns.values()) {
+      if (assistantTurn.topLevel) {
+        this.assistantMessageCount++;
+        for (const toolName of assistantTurn.toolCalls.values()) {
+          this.toolCallCount++;
+          this.toolsUsed[toolName] = (this.toolsUsed[toolName] || 0) + 1;
+        }
       }
+
+      if (assistantTurn.model) this.modelsSet.add(assistantTurn.model);
+      if (!assistantTurn.usage) continue;
+
+      const cacheWriteTokens = getAssistantTurnCacheWriteTokens(assistantTurn);
+      this.totalInputTokens += assistantTurn.usage.input_tokens || 0;
+      this.totalOutputTokens += assistantTurn.usage.output_tokens || 0;
+      this.totalCacheReadTokens += assistantTurn.usage.cache_read_input_tokens || 0;
+      this.totalCacheWriteTokens += cacheWriteTokens;
+      this.estimatedCosts = addCosts(
+        this.estimatedCosts,
+        calculateCostAllModes(
+          assistantTurn.model,
+          assistantTurn.usage.input_tokens || 0,
+          assistantTurn.usage.output_tokens || 0,
+          cacheWriteTokens,
+          assistantTurn.usage.cache_read_input_tokens || 0,
+        ),
+      );
     }
-    if (msg.type === 'assistant') {
-      recordAssistantTurn(assistantTurns, filePath, msg, true);
-    }
+  }
+}
+
+async function parseSessionFileUncached(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
+  const sessionId = path.basename(filePath, '.jsonl');
+  const parser = new SessionParser(sessionId, projectId, projectName);
+  const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
+
+  await forEachJsonlLine(filePath, (msg) => {
+    parser.processTopLevelLine(filePath, msg);
   });
 
   for (const aggregateFilePath of aggregateFilePaths.slice(1)) {
     await forEachJsonlLine(aggregateFilePath, (msg) => {
-      if (msg.timestamp && msg.timestamp > lastTimestamp) lastTimestamp = msg.timestamp;
-      recordAssistantTurn(assistantTurns, aggregateFilePath, msg, false);
+      parser.processAggregateLine(aggregateFilePath, msg);
     });
   }
 
-  for (const assistantTurn of assistantTurns.values()) {
-    if (assistantTurn.topLevel) {
-      assistantMessageCount++;
-      for (const toolName of assistantTurn.toolCalls.values()) {
-        toolCallCount++;
-        toolsUsed[toolName] = (toolsUsed[toolName] || 0) + 1;
-      }
-    }
+  return parser.getResult();
+}
 
-    if (assistantTurn.model) modelsSet.add(assistantTurn.model);
-    if (!assistantTurn.usage) continue;
+async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
+  const signature = getSessionSignature(filePath);
+  const cacheKey = `${projectId}:${filePath}`;
+  const cached = sessionInfoCache.get(cacheKey);
+  if (cached?.signature === signature) return cached.value;
 
-    totalInputTokens += assistantTurn.usage.input_tokens || 0;
-    totalOutputTokens += assistantTurn.usage.output_tokens || 0;
-    totalCacheReadTokens += assistantTurn.usage.cache_read_input_tokens || 0;
-    totalCacheWriteTokens += getAssistantTurnCacheWriteTokens(assistantTurn);
-    estimatedCosts = addCosts(
-      estimatedCosts,
-      calculateCostAllModes(
-        assistantTurn.model,
-        assistantTurn.usage.input_tokens || 0,
-        assistantTurn.usage.output_tokens || 0,
-        getAssistantTurnCacheWriteTokens(assistantTurn),
-        assistantTurn.usage.cache_read_input_tokens || 0,
-      ),
-    );
-  }
-
-  const duration = firstTimestamp && lastTimestamp
-    ? new Date(lastTimestamp).getTime() - new Date(firstTimestamp).getTime()
-    : 0;
-
-  const models = Array.from(modelsSet);
-
-  return {
-    id: sessionId,
-    projectId,
-    projectName,
-    timestamp: firstTimestamp || new Date().toISOString(),
-    duration,
-    messageCount: userMessageCount + assistantMessageCount,
-    userMessageCount,
-    assistantMessageCount,
-    toolCallCount,
-    totalInputTokens,
-    totalOutputTokens,
-    totalCacheReadTokens,
-    totalCacheWriteTokens,
-    estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
-    estimatedCosts,
-    model: models[0] || 'unknown',
-    models: models.map(getModelDisplayName),
-    gitBranch,
-    cwd,
-    version,
-    toolsUsed,
-    compaction: {
-      compactions,
-      microcompactions,
-      totalTokensSaved,
-      compactionTimestamps,
-    },
-  };
+  const value = await parseSessionFileUncached(filePath, projectId, projectName);
+  sessionInfoCache.set(cacheKey, { signature, value });
+  return value;
 }
 
 export async function getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
