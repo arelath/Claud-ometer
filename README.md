@@ -85,6 +85,8 @@ Create Windows `.exe` artifacts:
 npm run electron:dist
 ```
 
+This command builds local artifacts only. GitHub Releases are published by the release workflow after artifacts are built and smoke-tested.
+
 Release outputs are written to `dist-electron/`:
 
 | Artifact | Purpose |

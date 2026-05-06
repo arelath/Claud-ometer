@@ -11,7 +11,7 @@
     "electron:dev": "concurrently -k -n next,electron \"npm run dev -- --hostname 127.0.0.1 --port 3000\" \"wait-on http://127.0.0.1:3000 && cross-env ELECTRON_START_URL=http://127.0.0.1:3000 electron .\"",
     "electron:prepare": "npm run build && node scripts/prepare-electron-next.cjs",
     "electron:pack": "npm run electron:prepare && electron-builder --dir",
-    "electron:dist": "npm run electron:prepare && electron-builder --win",
+    "electron:dist": "npm run electron:prepare && electron-builder --win --publish never",
     "electron:smoke": "node scripts/smoke-packaged-next-server.cjs",
     "pricing:update": "node scripts/update-litellm-pricing.mjs",
     "test:unit": "vitest run",
