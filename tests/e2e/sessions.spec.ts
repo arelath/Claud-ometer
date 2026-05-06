@@ -1,5 +1,5 @@
 import { test, expect } from './coverage.fixture';
-import { fixtureSessionIds, toolPairFixtureSessionId } from '../shared/seed-imported-data';
+import { filteredToolCollapseFixtureSessionId, fixtureSessionIds, toolPairFixtureSessionId } from '../shared/seed-imported-data';
 
 test('sessions page supports search and navigation to session detail', async ({ page }) => {
   await page.goto('/sessions');
@@ -128,12 +128,14 @@ test('session detail minimap jumps to messages and stays synchronized with conve
   }).toBeGreaterThan(initialIndicatorTop + 20);
 });
 
-test('session detail keeps tool input and output paired by tool id', async ({ page }) => {
+test('session detail pairs tool input and output only across events hidden by the current view', async ({ page }) => {
   await page.goto(`/sessions/${toolPairFixtureSessionId}`);
 
-  await page.getByRole('button', { name: /All events/i }).click();
+  await page.getByRole('button', { name: /\+ Tools/i }).click();
 
-  const pair = page.locator('[data-testid="tool-io-pair"][data-tool-use-id="grep-2-5"][data-tool-result-id="grep-2-5"]');
+  const pair = page.getByTestId('tool-io-pair')
+    .filter({ has: page.locator('[data-testid="tool-call-inline"][data-tool-call-id="grep-2-5"]') })
+    .filter({ hasText: 'TOOL_PAIR_SENTINEL_OUTPUT' });
   await expect(pair).toHaveCount(1);
   await pair.scrollIntoViewIfNeeded();
 
@@ -146,13 +148,72 @@ test('session detail keeps tool input and output paired by tool id', async ({ pa
     return text.indexOf('Grep') >= 0 && text.indexOf('TOOL_PAIR_SENTINEL_OUTPUT') > text.indexOf('Grep');
   })).toBe(true);
 
-  await expect(page.locator('[data-testid="tool-io-pair"][data-tool-result-id="grep-2-5"]').filter({ hasNotText: 'Grep' })).toHaveCount(0);
+  await expect(page.getByTestId('tool-io-pair').filter({ hasText: 'TOOL_PAIR_SENTINEL_OUTPUT' }).filter({
+    hasNot: page.locator('[data-testid="tool-call-inline"][data-tool-call-id="grep-2-5"]'),
+  })).toHaveCount(0);
 
   const standaloneReadPair = page.locator('[data-testid="tool-io-pair"][data-tool-use-id="read-2-6"][data-tool-result-id="read-2-6"]');
   await expect(standaloneReadPair).toHaveCount(1);
   await expect(page.locator('[data-testid="tool-call-inline"][data-tool-call-id="read-2-6"]')).toHaveCount(1);
   await expect(standaloneReadPair).toContainText('Read');
   await expect(standaloneReadPair).toContainText('Loaded src/context-builder.ts lines 110-119.');
+
+  await page.getByRole('button', { name: /All events/i }).click();
+
+  await expect(pair).toHaveCount(0);
+  await expect(page.locator('[data-testid="tool-call-inline"][data-tool-call-id="grep-2-5"]')).toHaveCount(1);
+
+  const outputAfterVisibleEvent = page.getByTestId('tool-io-pair').filter({ hasText: 'TOOL_PAIR_SENTINEL_OUTPUT' }).filter({
+    hasNot: page.locator('[data-testid="tool-call-inline"][data-tool-call-id="grep-2-5"]'),
+  });
+  await expect(outputAfterVisibleEvent).toHaveCount(1);
+  await expect(outputAfterVisibleEvent).toContainText('TOOL_PAIR_SENTINEL_OUTPUT');
+});
+
+test('session detail shows a changes tab with file diffs and conversation jumps', async ({ page }) => {
+  await page.goto(`/sessions/${toolPairFixtureSessionId}`);
+
+  await page.getByRole('button', { name: /Changes\s+1 file/i }).click();
+
+  await expect(page.getByTestId('session-changes-view')).toBeVisible();
+  await expect(page.getByTestId('session-diff-file-row').filter({ hasText: 'VisualCleanupTasks2.md' })).toBeVisible();
+
+  const diffViewer = page.getByTestId('session-diff-viewer');
+  await expect(diffViewer).toContainText('Everything else is deferred until a real run demands it.');
+  await expect(diffViewer).toContainText('The minimap now gets an e2e guard and a diff tab.');
+  await expect(diffViewer).toContainText('@@ -41');
+  await expect(diffViewer.getByTestId('session-diff-old-line-number').first()).toHaveText('41');
+  await expect(diffViewer.getByTestId('session-diff-new-line-number').first()).toHaveText('41');
+  await expect.poll(async () => diffViewer.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgb(255, 255, 255)');
+  await expect(diffViewer.getByTestId('session-diff-hunk')).toHaveCount(1);
+
+  await page.getByRole('button', { name: 'Per edit' }).click();
+  await expect(diffViewer.getByTestId('session-diff-hunk')).toHaveCount(2);
+  await expect(diffViewer).toContainText('The minimap now gets an e2e guard and a diff tab.');
+
+  await page.getByRole('button', { name: 'Net diff' }).click();
+  await expect(diffViewer.getByTestId('session-diff-hunk')).toHaveCount(1);
+  await expect(diffViewer).toContainText('Jump to message');
+
+  await diffViewer.getByRole('button', { name: /Jump to message/i }).first().click();
+  await expect(page.getByTestId('conversation-scroll-viewer')).toBeVisible();
+  await expect(page.getByTestId('tool-call-inline').filter({ hasText: 'Edit' }).first()).toBeVisible();
+});
+
+test('session detail collapses tool-only Claude turns after hidden events are filtered out', async ({ page }) => {
+  await page.goto(`/sessions/${filteredToolCollapseFixtureSessionId}`);
+
+  await page.getByRole('button', { name: /\+ Tools/i }).click();
+
+  const assistantTurns = page.getByTestId('assistant-turn');
+  await expect(assistantTurns).toHaveCount(1);
+
+  const collapsedTurn = assistantTurns.first();
+  await expect(collapsedTurn).toContainText('Read');
+  await expect(collapsedTurn).toContainText('Grep');
+  await expect(collapsedTurn).toContainText('FILTER_COLLAPSE_READ_OUTPUT');
+  await expect(collapsedTurn).toContainText('FILTER_COLLAPSE_GREP_OUTPUT');
+  await expect(collapsedTurn.getByTestId('tool-io-pair')).toHaveCount(2);
 });
 
 test('session detail shows compaction markers in transcript and minimap', async ({ page }) => {
@@ -196,19 +257,19 @@ test('session detail shows compaction markers in transcript and minimap', async 
   }).toBe(true);
 
   await page.getByRole('button', { name: /All events/i }).click();
-  const sentinelPair = page.locator('[data-testid="tool-io-pair"][data-tool-use-id="grep-2-5"]');
+  const sentinelOutput = page.getByTestId('tool-io-pair').filter({ hasText: 'TOOL_PAIR_SENTINEL_OUTPUT' }).first();
   const untimestampedSystemEvent = page.locator('[id^="conversation-message-"]').filter({ hasText: 'Untimestamped fixture' }).first();
   const followingUserTurn = page.locator('[id^="conversation-message-"]').filter({ hasText: 'Continue Context Builder pass 5.' }).first();
 
-  await expect(sentinelPair).toContainText('TOOL_PAIR_SENTINEL_OUTPUT');
+  await expect(sentinelOutput).toContainText('TOOL_PAIR_SENTINEL_OUTPUT');
   await expect(untimestampedSystemEvent).toContainText('Untimestamped fixture');
   await expect(followingUserTurn).toContainText('Continue Context Builder pass 5.');
 
   await expect.poll(async () => {
-    const pairTop = await sentinelPair.evaluate((element) => (element as HTMLElement).offsetTop);
+    const outputTop = await sentinelOutput.evaluate((element) => (element as HTMLElement).offsetTop);
     const untimestampedTop = await untimestampedSystemEvent.evaluate((element) => (element as HTMLElement).offsetTop);
     const markerTop = await transcriptMarker.evaluate((element) => (element as HTMLElement).offsetTop);
     const followingTop = await followingUserTurn.evaluate((element) => (element as HTMLElement).offsetTop);
-    return pairTop < untimestampedTop && untimestampedTop < markerTop && markerTop < followingTop;
+    return outputTop < untimestampedTop && untimestampedTop < markerTop && markerTop < followingTop;
   }).toBe(true);
 });

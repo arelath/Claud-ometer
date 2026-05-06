@@ -52,3 +52,9 @@ next-env.d.ts
 
 ### IntelliJ IDEA ###
 .idea
+/.windsurf
+/AgentFramework
+AgentFramework.config.json
+PREREQS-RESULTS.md
+.context
+.context.agent-framework

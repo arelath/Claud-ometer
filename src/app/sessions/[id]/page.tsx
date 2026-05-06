@@ -2,7 +2,6 @@
 
 import { createContext, use, useState, useCallback, useMemo, useRef, useEffect, useContext } from 'react';
 import { useSessionDetail } from '@/lib/hooks';
-import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
 import {
   formatContextRanges,
   getContextFileGroups,
@@ -14,6 +13,24 @@ import {
   type ContextFileGroups,
   type ContextFileInfo,
 } from '@/lib/context-files';
+import {
+  buildTranscriptItems,
+  getMinimapTargets,
+  getToolResultId,
+  messagePassesPreset,
+  type AssistantTimelineItem,
+  type FilterPreset,
+  type ToolPair,
+} from '@/lib/session-transcript';
+import {
+  getFilePatchText,
+  getSessionDiffSummary,
+  getSessionPatchText,
+  type SessionDiffFile,
+  type SessionDiffHunk,
+  type SessionDiffRow,
+  type SessionDiffSummary,
+} from '@/lib/session-diff';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { getModelDisplayName } from '@/config/pricing';
 import { getCodeLanguageLabel, guessCodeLanguage, tokenizeCode, type CodeLanguage, type HighlightToken } from '@/lib/code-highlighting';
@@ -32,12 +49,6 @@ import {
 import Link from 'next/link';
 import { format } from 'date-fns';
 
-// ---------------------------------------------------------------------------
-// Filter presets
-// ---------------------------------------------------------------------------
-
-type FilterPreset = 'narrative' | 'tools' | 'all';
-
 const FILTER_STORAGE_KEY = 'claud-ometer-session-filter-preset';
 
 function loadPreset(): FilterPreset {
@@ -54,15 +65,6 @@ function loadPreset(): FilterPreset {
 function savePreset(preset: FilterPreset): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(FILTER_STORAGE_KEY, preset);
-}
-
-function messagePassesPreset(msg: SessionMessageDisplay, preset: FilterPreset): boolean {
-  if (preset === 'all') return true;
-  if (preset === 'tools') {
-    return msg.role === 'user' || msg.role === 'assistant' || msg.role === 'tool-use' || msg.role === 'tool-result' || msg.role === 'command';
-  }
-  // narrative — User + Assistant only
-  return msg.role === 'user' || msg.role === 'assistant';
 }
 
 // ---------------------------------------------------------------------------
@@ -112,44 +114,6 @@ function omitDetails(
   candidates: string[],
 ): SessionToolCallDisplay['details'] {
   return details.filter(detail => !detailMatchesKey(detail.key, candidates));
-}
-
-function hasVisibleAssistantContent(message: SessionMessageDisplay): boolean {
-  if (message.content.trim()) return true;
-  if ((message.toolCalls || []).length > 0) return true;
-  return (message.blocks || []).some(block => {
-    if (block.type === 'thinking') return Boolean(block.summary || block.content);
-    return Boolean(block.summary || block.content || block.details.length > 0);
-  });
-}
-
-function mergeAssistantRun(run: { message: SessionMessageDisplay; index: number }[]): SessionMessageDisplay | null {
-  const visibleMessages = run.filter(({ message }) => hasVisibleAssistantContent(message));
-  if (visibleMessages.length === 0) return null;
-
-  const first = run[0].message;
-  const lastVisible = visibleMessages[visibleMessages.length - 1].message;
-  const assistantMetrics = buildAssistantTurnMetrics(run.map(({ message }) => message));
-  const content = visibleMessages
-    .map(({ message }) => message.content.trim())
-    .filter(Boolean)
-    .join('\n\n');
-  const toolCalls = visibleMessages.flatMap(({ message }) => message.toolCalls || []);
-  const blocks = visibleMessages.flatMap(({ message }) => message.blocks || []);
-
-  return {
-    role: 'assistant',
-    content,
-    timestamp: lastVisible.timestamp || first.timestamp,
-    model: lastVisible.model || first.model,
-    usage: assistantMetrics.usage,
-    estimatedCosts: assistantMetrics.estimatedCosts,
-    promptBreakdown: lastVisible.promptBreakdown,
-    stopReason: lastVisible.stopReason || first.stopReason,
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    blocks: blocks.length > 0 ? blocks : undefined,
-    isMeta: run.some(({ message }) => Boolean(message.isMeta)),
-  };
 }
 
 function getMeterPercents(values: number[]): number[] {
@@ -221,33 +185,6 @@ interface MeterSnapshot {
   segments: MeterSegment[];
 }
 
-// ---------------------------------------------------------------------------
-// Grouped message types for the new design
-// ---------------------------------------------------------------------------
-
-type GroupedItem =
-  | { type: 'user'; message: SessionMessageDisplay; index: number }
-  | { type: 'assistant'; message: SessionMessageDisplay; index: number; toolPairs: ToolPair[]; toolTimeline?: AssistantTimelineItem[] }
-  | { type: 'system-group'; messages: { message: SessionMessageDisplay; index: number }[] };
-
-interface CompactionMarker {
-  type: 'compaction';
-  timestamp: string;
-  index: number;
-  targetId: string;
-}
-
-type TranscriptItem = GroupedItem | CompactionMarker;
-
-interface ToolPair {
-  toolUse?: { message: SessionMessageDisplay; index: number };
-  toolResult?: { message: SessionMessageDisplay; index: number };
-}
-
-type AssistantTimelineItem =
-  | { type: 'tool-pair'; pair: ToolPair }
-  | CompactionMarker;
-
 interface MinimapSegment {
   type: 'user' | 'assistant' | 'system-group' | 'compaction';
   targetId: string;
@@ -258,378 +195,6 @@ interface MinimapSegment {
 interface MinimapViewport {
   topPct: number;
   heightPct: number;
-}
-
-interface TranscriptTarget {
-  type: MinimapSegment['type'];
-  targetId: string;
-}
-
-function parseTimestampMs(timestamp?: string): number | null {
-  if (!timestamp) return null;
-  const ms = new Date(timestamp).getTime();
-  return Number.isNaN(ms) ? null : ms;
-}
-
-function getGroupTimeRange(group: GroupedItem): { start: number; end: number } | null {
-  const timestamps: string[] = [];
-
-  if (group.type === 'user') {
-    timestamps.push(group.message.timestamp);
-  } else if (group.type === 'assistant') {
-    timestamps.push(group.message.timestamp);
-    for (const pair of group.toolPairs) {
-      if (pair.toolUse?.message.timestamp) timestamps.push(pair.toolUse.message.timestamp);
-      if (pair.toolResult?.message.timestamp) timestamps.push(pair.toolResult.message.timestamp);
-    }
-  } else {
-    timestamps.push(...group.messages.map(({ message }) => message.timestamp));
-  }
-
-  const times = timestamps
-    .map(timestamp => parseTimestampMs(timestamp))
-    .filter((time): time is number => time != null);
-
-  if (times.length === 0) return null;
-  return {
-    start: Math.min(...times),
-    end: Math.max(...times),
-  };
-}
-
-function getToolPairTimeRange(pair: ToolPair): { start: number; end: number } | null {
-  const times = [
-    parseTimestampMs(pair.toolUse?.message.timestamp),
-    parseTimestampMs(pair.toolResult?.message.timestamp),
-  ].filter((time): time is number => time != null);
-
-  if (times.length === 0) return null;
-  return {
-    start: Math.min(...times),
-    end: Math.max(...times),
-  };
-}
-
-function buildCompactionMarker(timestamp: string, index: number): CompactionMarker {
-  return {
-    type: 'compaction',
-    timestamp,
-    index,
-    targetId: `conversation-compaction-${index}`,
-  };
-}
-
-function insertCompactionsIntoAssistantTimeline(group: Extract<GroupedItem, { type: 'assistant' }>, markers: CompactionMarker[]): Extract<GroupedItem, { type: 'assistant' }> {
-  if (markers.length === 0) return group;
-
-  const markerQueue = markers
-    .map(marker => ({ marker, time: parseTimestampMs(marker.timestamp) }))
-    .filter((item): item is { marker: CompactionMarker; time: number } => item.time != null)
-    .sort((left, right) => left.time - right.time);
-
-  if (markerQueue.length === 0) return group;
-
-  const timeline: AssistantTimelineItem[] = [];
-  let markerIndex = 0;
-  const fallbackGroupStart = getGroupTimeRange(group)?.start ?? Number.NEGATIVE_INFINITY;
-
-  for (const pair of group.toolPairs) {
-    const pairRange = getToolPairTimeRange(pair);
-    const pairStart = pairRange?.start ?? fallbackGroupStart;
-    const pairEnd = pairRange?.end ?? pairStart;
-
-    while (markerIndex < markerQueue.length && markerQueue[markerIndex].time < pairStart) {
-      timeline.push(markerQueue[markerIndex].marker);
-      markerIndex++;
-    }
-
-    timeline.push({ type: 'tool-pair', pair });
-
-    while (markerIndex < markerQueue.length && markerQueue[markerIndex].time <= pairEnd) {
-      timeline.push(markerQueue[markerIndex].marker);
-      markerIndex++;
-    }
-  }
-
-  while (markerIndex < markerQueue.length) {
-    timeline.push(markerQueue[markerIndex].marker);
-    markerIndex++;
-  }
-
-  return { ...group, toolTimeline: timeline };
-}
-
-function insertCompactionMarkers(groups: GroupedItem[], timestamps: string[]): TranscriptItem[] {
-  const validTimestamps = timestamps
-    .map(timestamp => ({ timestamp, time: parseTimestampMs(timestamp) }))
-    .filter((item): item is { timestamp: string; time: number } => item.time != null)
-    .sort((left, right) => left.time - right.time);
-
-  if (validTimestamps.length === 0) return groups;
-
-  const items: TranscriptItem[] = [];
-  let compactionIndex = 0;
-
-  for (const group of groups) {
-    const range = getGroupTimeRange(group);
-    if (!range) {
-      items.push(group);
-      continue;
-    }
-
-    const groupStart = range.start;
-    const groupEnd = range.end;
-
-    while (compactionIndex < validTimestamps.length && validTimestamps[compactionIndex].time < groupStart) {
-      items.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
-      compactionIndex++;
-    }
-
-    const markersInsideGroup: CompactionMarker[] = [];
-    while (compactionIndex < validTimestamps.length && validTimestamps[compactionIndex].time <= groupEnd) {
-      markersInsideGroup.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
-      compactionIndex++;
-    }
-
-    items.push(group.type === 'assistant'
-      ? insertCompactionsIntoAssistantTimeline(group, markersInsideGroup)
-      : group);
-
-    if (group.type !== 'assistant') {
-      items.push(...markersInsideGroup);
-    }
-  }
-
-  while (compactionIndex < validTimestamps.length) {
-    items.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
-    compactionIndex++;
-  }
-
-  return items;
-}
-
-function getToolResultId(message: SessionMessageDisplay): string | undefined {
-  for (const block of message.blocks || []) {
-    const toolUseId = findDetail(block.details, ['tool_use_id', 'toolUseId'])?.value;
-    if (toolUseId) return toolUseId;
-  }
-  return undefined;
-}
-
-function buildSyntheticToolUseMessage(source: SessionMessageDisplay, tool: SessionToolCallDisplay): SessionMessageDisplay {
-  return {
-    role: 'tool-use',
-    content: '',
-    timestamp: source.timestamp,
-    messageId: source.messageId,
-    model: source.model,
-    usage: source.usage,
-    estimatedCosts: source.estimatedCosts,
-    promptBreakdown: source.promptBreakdown,
-    stopReason: source.stopReason,
-    toolCalls: [tool],
-    blocks: (source.blocks || []).filter(block => block.type === 'thinking'),
-    isMeta: source.isMeta,
-  };
-}
-
-function findMatchingToolResult(
-  items: { message: SessionMessageDisplay; index: number }[],
-  toolId: string | undefined,
-  afterIndex: number,
-  consumedIndexes: Set<number>,
-): { message: SessionMessageDisplay; index: number } | undefined {
-  if (!toolId) return undefined;
-
-  return items.find((item, itemIndex) => (
-    itemIndex > afterIndex
-    && !consumedIndexes.has(itemIndex)
-    && item.message.role === 'tool-result'
-    && getToolResultId(item.message) === toolId
-  ));
-}
-
-/** Group messages: pair tool-use/tool-result with their parent assistant, collapse consecutive system messages, merge consecutive empty assistant turns */
-function groupMessages(items: { message: SessionMessageDisplay; index: number }[]): GroupedItem[] {
-  const groups: GroupedItem[] = [];
-  const consumedIndexes = new Set<number>();
-  let i = 0;
-
-  while (i < items.length) {
-    if (consumedIndexes.has(i)) {
-      i++;
-      continue;
-    }
-
-    const { message, index } = items[i];
-
-    if (message.role === 'user') {
-      groups.push({ type: 'user', message, index });
-      i++;
-    } else if (message.role === 'assistant') {
-      const assistantRun = [{ message, index }];
-      let j = i + 1;
-      while (j < items.length && items[j].message.role === 'assistant') {
-        assistantRun.push(items[j]);
-        j++;
-      }
-
-      // Collect following tool-use/tool-result pairs
-      const toolPairs: ToolPair[] = [];
-      while (j < items.length) {
-        if (consumedIndexes.has(j)) {
-          j++;
-          continue;
-        }
-
-        const next = items[j];
-        if (next.message.role === 'tool-use') {
-          const pair: ToolPair = { toolUse: next };
-          j++;
-          const toolId = next.message.toolCalls?.[0]?.id;
-          const matchedResult = findMatchingToolResult(items, toolId, j - 1, consumedIndexes);
-          if (matchedResult) {
-            pair.toolResult = matchedResult;
-            consumedIndexes.add(items.indexOf(matchedResult));
-          } else if (j < items.length && !consumedIndexes.has(j) && items[j].message.role === 'tool-result') {
-            pair.toolResult = items[j];
-            consumedIndexes.add(j);
-            j++;
-          }
-          toolPairs.push(pair);
-        } else if (next.message.role === 'tool-result') {
-          // Orphaned tool-result
-          toolPairs.push({ toolResult: next });
-          j++;
-        } else {
-          break;
-        }
-      }
-
-      const mergedMessage = mergeAssistantRun(assistantRun);
-      const assistantMetrics = buildAssistantTurnMetrics(assistantRun.map(({ message: runMessage }) => runMessage));
-      const pairedInlineToolIds = new Set<string>();
-      if (mergedMessage?.toolCalls) {
-        for (const tool of mergedMessage.toolCalls) {
-          const matchedResult = findMatchingToolResult(items, tool.id, j - 1, consumedIndexes);
-          if (!matchedResult) continue;
-
-          const owner = assistantRun.find(({ message: runMessage }) => (
-            (runMessage.toolCalls || []).some(runTool => runTool.id === tool.id)
-          )) || assistantRun[assistantRun.length - 1];
-
-          toolPairs.push({
-            toolUse: {
-              message: buildSyntheticToolUseMessage(owner.message, tool),
-              index: owner.index,
-            },
-            toolResult: matchedResult,
-          });
-          consumedIndexes.add(items.indexOf(matchedResult));
-          pairedInlineToolIds.add(tool.id);
-        }
-
-        if (pairedInlineToolIds.size > 0) {
-          const unpairedToolCalls = mergedMessage.toolCalls.filter(tool => !pairedInlineToolIds.has(tool.id));
-          mergedMessage.toolCalls = unpairedToolCalls.length > 0 ? unpairedToolCalls : undefined;
-        }
-      }
-
-      if (!mergedMessage && toolPairs.length === 0) {
-        i = j;
-        continue;
-      }
-
-      groups.push({
-        type: 'assistant',
-        message: mergedMessage || {
-          role: 'assistant',
-          content: '',
-          timestamp: assistantRun[assistantRun.length - 1].message.timestamp,
-          model: assistantRun[assistantRun.length - 1].message.model,
-          usage: assistantMetrics.usage,
-          estimatedCosts: assistantMetrics.estimatedCosts,
-          stopReason: assistantRun[assistantRun.length - 1].message.stopReason,
-          isMeta: assistantRun.some(({ message: runMessage }) => Boolean(runMessage.isMeta)),
-        },
-        index,
-        toolPairs,
-      });
-      i = j;
-    } else if (message.role === 'system' || message.role === 'command') {
-      // Collect consecutive system/command messages
-      const systemBatch: { message: SessionMessageDisplay; index: number }[] = [{ message, index }];
-      let j = i + 1;
-      while (j < items.length && (items[j].message.role === 'system' || items[j].message.role === 'command')) {
-        systemBatch.push(items[j]);
-        j++;
-      }
-      groups.push({ type: 'system-group', messages: systemBatch });
-      i = j;
-    } else if (message.role === 'tool-use') {
-      // Standalone tool-use not following an assistant
-      const pair: ToolPair = { toolUse: { message, index } };
-      const toolId = message.toolCalls?.[0]?.id;
-      const matchedResult = findMatchingToolResult(items, toolId, i, consumedIndexes);
-      i++;
-      if (matchedResult) {
-        pair.toolResult = matchedResult;
-        consumedIndexes.add(items.indexOf(matchedResult));
-      } else if (i < items.length && !consumedIndexes.has(i) && items[i].message.role === 'tool-result') {
-        pair.toolResult = items[i];
-        consumedIndexes.add(i);
-        i++;
-      }
-      groups.push({
-        type: 'assistant',
-        message: { ...message, role: 'assistant', content: '', toolCalls: undefined },
-        index,
-        toolPairs: [pair],
-      });
-    } else if (message.role === 'tool-result') {
-      // Standalone tool-result
-      groups.push({ type: 'assistant', message: { ...message, role: 'assistant', content: '' }, index, toolPairs: [{ toolResult: { message, index } }] });
-      i++;
-    } else {
-      i++;
-    }
-  }
-
-  return groups;
-}
-
-// ---------------------------------------------------------------------------
-// Minimap
-// ---------------------------------------------------------------------------
-
-function getTranscriptItemTargetId(item: TranscriptItem): string | null {
-  if (item.type === 'compaction') return item.targetId;
-  const index = item.type === 'system-group' ? item.messages[0].index : item.index;
-  return `conversation-message-${index}`;
-}
-
-function getMinimapTargets(items: TranscriptItem[]): TranscriptTarget[] {
-  const targets: TranscriptTarget[] = [];
-
-  for (const item of items) {
-    if (item.type === 'compaction') {
-      targets.push({ type: 'compaction', targetId: item.targetId });
-      continue;
-    }
-
-    const targetId = getTranscriptItemTargetId(item);
-    if (targetId) targets.push({ type: item.type, targetId });
-
-    if (item.type === 'assistant') {
-      for (const nestedItem of item.toolTimeline || []) {
-        if (nestedItem.type === 'compaction') {
-          targets.push({ type: 'compaction', targetId: nestedItem.targetId });
-        }
-      }
-    }
-  }
-
-  return targets;
 }
 
 function findSegmentForRatio(segments: MinimapSegment[], ratio: number): MinimapSegment | undefined {
@@ -1648,7 +1213,7 @@ function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
   })();
 
   return (
-    <div id={`conversation-message-${index}`}>
+    <div id={`conversation-message-${index}`} data-testid="assistant-turn">
       {/* Assistant card */}
       <div className="bg-card border border-border/50 rounded-lg p-3">
         {/* Header */}
@@ -1859,11 +1424,13 @@ function ContextWindowMeter({ session, messages }: { session: SessionTokenSummar
 // Context Files Panel (redesigned with fill bars)
 // ---------------------------------------------------------------------------
 
-function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
+function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath, hasDiff, onOpenDiff }: {
   file: ContextFileInfo;
   onJumpToMessage: (messageIndexes: number[]) => void;
   copiedPath: string | null;
   onCopyPath: (filePath: string) => void;
+  hasDiff?: boolean;
+  onOpenDiff?: (filePath: string) => boolean;
 }) {
   const { projectRoot } = useSessionRenderContext();
   const totalCount = parseContextLineCount(file.totalLines);
@@ -1898,6 +1465,10 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
   const barTitle = rangeLabel
     ? `${rangeLabel} loaded`
     : lineSummary || undefined;
+  const handlePrimaryClick = () => {
+    if (hasDiff && onOpenDiff?.(file.fullPath)) return;
+    onJumpToMessage(file.messageIndexes);
+  };
 
   return (
     <div className="group py-1.5 border-b border-border/30 last:border-b-0">
@@ -1906,7 +1477,7 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
           <TooltipTrigger asChild>
             <button
               type="button"
-              onClick={() => onJumpToMessage(file.messageIndexes)}
+              onClick={handlePrimaryClick}
               className="flex min-w-0 max-w-full flex-1 items-baseline font-mono text-[11px] text-foreground hover:underline text-left"
             >
               {displayPathParts.prefix && (
@@ -1917,6 +1488,7 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
           </TooltipTrigger>
           <TooltipContent side="left" className="max-w-[300px]">
             <span className="font-mono text-[10px] break-all">{displayPath}</span>
+            {hasDiff && <span className="mt-1 block text-[10px] text-muted-foreground">Open file diff</span>}
           </TooltipContent>
         </Tooltip>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -1976,11 +1548,13 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath }: {
   );
 }
 
-function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessage }: {
+function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessage, hasDiffForPath, onOpenDiff }: {
   contextFiles: ContextFileGroups;
   copiedPath: string | null;
   onCopyPath: (filePath: string) => void;
   onJumpToMessage: (messageIndexes: number[]) => void;
+  hasDiffForPath?: (filePath: string) => boolean;
+  onOpenDiff?: (filePath: string) => boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   const allFiles = [...contextFiles.inContext, ...contextFiles.referenced];
@@ -2023,6 +1597,8 @@ function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessa
               onJumpToMessage={onJumpToMessage}
               copiedPath={copiedPath}
               onCopyPath={onCopyPath}
+              hasDiff={hasDiffForPath?.(file.fullPath)}
+              onOpenDiff={onOpenDiff}
             />
           ))}
         </div>
@@ -2092,6 +1668,355 @@ function FilterPresets({ preset, onChange, counts }: {
   );
 }
 
+type MainSessionView = 'conversation' | 'changes';
+type DiffDisplayMode = 'net' | 'edits';
+
+function formatDiffFileCountLabel(summary: SessionDiffSummary): string {
+  if (summary.fileCount === 0) return '0 files';
+  return summary.fileCount === 1 ? '1 file' : `${summary.fileCount} files`;
+}
+
+function normalizeDiffPathKey(pathValue: string): string {
+  return normalizeDisplayPath(pathValue).replace(/^\.\//, '').toLowerCase();
+}
+
+function SessionViewTabs({ view, onChange, conversationCount, diffSummary, diffMode, onDiffModeChange, copiedPatchKey, onCopyPatch }: {
+  view: MainSessionView;
+  onChange: (view: MainSessionView) => void;
+  conversationCount: number;
+  diffSummary: SessionDiffSummary;
+  diffMode: DiffDisplayMode;
+  onDiffModeChange: (mode: DiffDisplayMode) => void;
+  copiedPatchKey: string | null;
+  onCopyPatch: (patchText: string, key: string) => void;
+}) {
+  const buttonClass = (active: boolean) => (
+    `-mb-px inline-flex items-center gap-2 border-b-2 px-2 py-2 text-sm font-semibold transition-colors ${
+      active
+        ? 'border-blue-500 text-foreground'
+        : 'border-transparent text-muted-foreground hover:text-foreground'
+    }`
+  );
+  const allPatchKey = `${diffMode}:__all__`;
+  const allCopied = copiedPatchKey === allPatchKey;
+
+  return (
+    <div className="-mx-6 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-6">
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onChange('conversation')}
+          className={buttonClass(view === 'conversation')}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          Conversation
+          <span className="font-mono text-[11px] font-normal text-muted-foreground">{conversationCount}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange('changes')}
+          className={buttonClass(view === 'changes')}
+          disabled={diffSummary.fileCount === 0}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          Changes
+          <span className="rounded-full bg-blue-500/10 px-1.5 py-0.5 font-mono text-[11px] font-normal text-blue-700 dark:text-blue-300">
+            {formatDiffFileCountLabel(diffSummary)}
+          </span>
+        </button>
+      </div>
+      {diffSummary.fileCount > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-0.5 font-mono text-[11px] text-green-700 dark:text-green-300">
+            +{diffSummary.addedLines}
+          </span>
+          <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 font-mono text-[11px] text-red-700 dark:text-red-300">
+            -{diffSummary.removedLines}
+          </span>
+          {view === 'changes' && (
+            <>
+              <DiffModeToggle mode={diffMode} onChange={onDiffModeChange} />
+              <button
+                type="button"
+                onClick={() => onCopyPatch(getSessionPatchText(diffSummary, diffMode), allPatchKey)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-muted/40"
+              >
+                {allCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {allCopied ? 'Copied patch' : 'Copy patch'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiffModeToggle({ mode, onChange }: {
+  mode: DiffDisplayMode;
+  onChange: (mode: DiffDisplayMode) => void;
+}) {
+  const buttons: { key: DiffDisplayMode; label: string }[] = [
+    { key: 'net', label: 'Net diff' },
+    { key: 'edits', label: 'Per edit' },
+  ];
+
+  return (
+    <div className="inline-flex rounded-md border border-border/60 bg-background p-0.5">
+      {buttons.map(button => (
+        <button
+          key={button.key}
+          type="button"
+          onClick={() => onChange(button.key)}
+          className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+            mode === button.key
+              ? 'bg-muted/80 text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {button.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DiffStat({ value, tone }: { value: number; tone: 'add' | 'remove' }) {
+  const className = tone === 'add'
+    ? 'text-green-700 dark:text-green-300'
+    : 'text-red-700 dark:text-red-300';
+  return (
+    <span className={`font-mono text-[11px] tabular-nums ${className}`}>
+      {tone === 'add' ? '+' : '-'}{value}
+    </span>
+  );
+}
+
+function DiffFileRow({ file, selected, onSelect, projectRoot }: {
+  file: SessionDiffFile;
+  selected: boolean;
+  onSelect: () => void;
+  projectRoot?: string;
+}) {
+  const displayPath = formatDisplayPath(file.path, projectRoot);
+  const parts = splitDisplayPath(displayPath);
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      data-testid="session-diff-file-row"
+      className={`w-full rounded-md px-2.5 py-2 text-left transition-colors ${
+        selected
+          ? 'bg-blue-100 text-foreground dark:bg-blue-500/15'
+          : 'bg-white hover:bg-blue-50/70 dark:bg-transparent dark:hover:bg-muted/40'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className={`truncate font-mono text-xs ${file.status === 'deleted' ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
+            {parts.basename}
+          </div>
+          {parts.prefix && (
+            <div className="truncate font-mono text-[10px] text-muted-foreground">{parts.prefix}</div>
+          )}
+        </div>
+        {file.status !== 'modified' && (
+          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
+            file.status === 'added'
+              ? 'bg-green-500/10 text-green-700 dark:text-green-300'
+              : 'bg-red-500/10 text-red-700 dark:text-red-300'
+          }`}>
+            {file.status === 'added' ? 'NEW' : 'DEL'}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {file.addedLines > 0 && <DiffStat value={file.addedLines} tone="add" />}
+          {file.removedLines > 0 && <DiffStat value={file.removedLines} tone="remove" />}
+        </div>
+        <span className="font-mono text-[10px] text-muted-foreground">
+          {file.editCount} edit{file.editCount === 1 ? '' : 's'}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function DiffRow({ row, language, rowKey }: {
+  row: SessionDiffRow;
+  language?: CodeLanguage;
+  rowKey: string;
+}) {
+  const toneClass = row.type === 'add'
+    ? 'bg-green-50 text-green-950 dark:bg-green-500/[0.08] dark:text-green-100'
+    : row.type === 'remove'
+      ? 'bg-red-50 text-red-950 dark:bg-red-500/[0.08] dark:text-red-100'
+      : 'bg-white text-foreground dark:bg-transparent';
+  const prefix = row.type === 'add' ? '+' : row.type === 'remove' ? '-' : ' ';
+  const tokenLine = language ? tokenizeCode(row.text, language)[0] || [] : [];
+  const lineNumberClass = 'select-none border-r border-border/30 bg-white px-2 text-right text-slate-500 dark:bg-background dark:text-muted-foreground';
+  const oldLineNumber = row.oldLineNumber ?? (row.newLineNumber == null ? '?' : '');
+  const newLineNumber = row.newLineNumber ?? (row.oldLineNumber == null ? '?' : '');
+
+  return (
+    <div className={`grid min-w-max grid-cols-[3.5rem_3.5rem_minmax(0,1fr)] border-b border-border/20 font-mono text-[11px] leading-5 ${toneClass}`}>
+      <div data-testid="session-diff-old-line-number" className={lineNumberClass}>{oldLineNumber}</div>
+      <div data-testid="session-diff-new-line-number" className={lineNumberClass}>{newLineNumber}</div>
+      <pre className="whitespace-pre-wrap break-words px-2">
+        <span className="select-none pr-2 text-muted-foreground/70">{prefix}</span>
+        {language ? renderHighlightedTokens(tokenLine, rowKey) : row.text}
+      </pre>
+    </div>
+  );
+}
+
+function DiffHunkView({ hunk, language, onJumpToMessage }: {
+  hunk: SessionDiffHunk;
+  language?: CodeLanguage;
+  onJumpToMessage: (messageIndex: number) => void;
+}) {
+  const timeLabel = hunk.timestamp && !isNaN(new Date(hunk.timestamp).getTime())
+    ? format(new Date(hunk.timestamp), 'h:mm:ss a')
+    : 'message';
+  const formatRange = (start: number | null, count: number) => (
+    start == null ? '?' : `${start},${count}`
+  );
+
+  return (
+    <div data-testid="session-diff-hunk" className="border-b border-border/50 last:border-b-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 bg-muted/30 px-3 py-2 font-mono text-[11px]">
+        <span className="text-muted-foreground">
+          @@ -{formatRange(hunk.oldStartLine, hunk.oldLineCount)} +{formatRange(hunk.newStartLine, hunk.newLineCount)} @@ {hunk.location || hunk.toolName}
+        </span>
+        <button
+          type="button"
+          onClick={() => onJumpToMessage(hunk.messageIndex)}
+          className="text-blue-600 hover:underline dark:text-blue-300"
+        >
+          Jump to message · {timeLabel}
+        </button>
+      </div>
+      <div>
+        {hunk.rows.map((row, index) => (
+          <DiffRow
+            key={`${hunk.id}-${index}`}
+            row={row}
+            language={language}
+            rowKey={`${hunk.id}-${index}`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FileDiffViewer({ file, mode, copiedPatchKey, onCopyPatch, onJumpToMessage, projectRoot }: {
+  file: SessionDiffFile | undefined;
+  mode: DiffDisplayMode;
+  copiedPatchKey: string | null;
+  onCopyPatch: (patchText: string, key: string) => void;
+  onJumpToMessage: (messageIndex: number) => void;
+  projectRoot?: string;
+}) {
+  if (!file) {
+    return (
+      <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-dashed border-border/60 text-sm text-muted-foreground">
+        No file changes found in this session.
+      </div>
+    );
+  }
+
+  const displayPath = formatDisplayPath(file.path, projectRoot);
+  const language = guessCodeLanguage(file.path);
+  const visibleHunks = mode === 'edits' ? file.editHunks : file.hunks;
+  const visibleAddedLines = visibleHunks.reduce((sum, hunk) => sum + hunk.addedLines, 0);
+  const visibleRemovedLines = visibleHunks.reduce((sum, hunk) => sum + hunk.removedLines, 0);
+  const patchText = getFilePatchText(file, mode);
+  const patchKey = `${mode}:${file.path}`;
+  const isCopied = copiedPatchKey === patchKey;
+
+  return (
+    <div data-testid="session-diff-viewer" className="min-w-0 overflow-hidden rounded-lg border border-border/60 bg-white dark:bg-background">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-white px-3 py-3 dark:bg-card">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-mono text-sm font-semibold">{displayPath}</span>
+            <DiffStat value={visibleAddedLines} tone="add" />
+            <DiffStat value={visibleRemovedLines} tone="remove" />
+          </div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            {mode === 'net' ? 'Cumulative session diff' : `${file.editCount} edit${file.editCount === 1 ? '' : 's'} in session order`}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onCopyPatch(patchText, patchKey)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {isCopied ? 'Copied' : 'Copy patch'}
+        </button>
+      </div>
+      <div className="max-h-[68vh] overflow-auto">
+        {visibleHunks.map(hunk => (
+          <DiffHunkView
+            key={hunk.id}
+            hunk={hunk}
+            language={language}
+            onJumpToMessage={onJumpToMessage}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChangesView({ summary, selectedPath, mode, copiedPatchKey, onSelectPath, onCopyPatch, onJumpToMessage, projectRoot }: {
+  summary: SessionDiffSummary;
+  selectedPath: string | null;
+  mode: DiffDisplayMode;
+  copiedPatchKey: string | null;
+  onSelectPath: (path: string) => void;
+  onCopyPatch: (patchText: string, key: string) => void;
+  onJumpToMessage: (messageIndex: number) => void;
+  projectRoot?: string;
+}) {
+  const selectedFile = summary.files.find(file => file.path === selectedPath) || summary.files[0];
+
+  return (
+    <div data-testid="session-changes-view" className="space-y-3">
+      <div className="grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="space-y-2">
+          <div className="px-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            Files Changed
+          </div>
+          <div className="max-h-[68vh] space-y-1 overflow-y-auto pr-1">
+            {summary.files.map(file => (
+              <DiffFileRow
+                key={file.path}
+                file={file}
+                selected={(selectedFile?.path || selectedPath) === file.path}
+                onSelect={() => onSelectPath(file.path)}
+                projectRoot={projectRoot}
+              />
+            ))}
+          </div>
+        </div>
+        <FileDiffViewer
+          file={selectedFile}
+          mode={mode}
+          copiedPatchKey={copiedPatchKey}
+          onCopyPatch={onCopyPatch}
+          onJumpToMessage={onJumpToMessage}
+          projectRoot={projectRoot}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -2107,6 +2032,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const [minimapViewport, setMinimapViewport] = useState<MinimapViewport>({ topPct: 0, heightPct: 6 });
   const [artifactViewer, setArtifactViewer] = useState<ArtifactViewerState | null>(null);
   const [toolFilter, setToolFilter] = useState<string | null>(null);
+  const [mainView, setMainView] = useState<MainSessionView>('conversation');
+  const [diffMode, setDiffMode] = useState<DiffDisplayMode>('net');
+  const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null);
+  const [copiedPatchKey, setCopiedPatchKey] = useState<string | null>(null);
+  const [pendingConversationJump, setPendingConversationJump] = useState<number | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
 
   const handlePresetChange = useCallback((next: FilterPreset) => {
@@ -2146,15 +2076,33 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
   const handleJumpToMessage = useCallback((messageIndexes: number[]) => {
     for (const messageIndex of messageIndexes) {
-      if (scrollMessageIntoConversation(messageIndex, 'center')) return;
+      if (mainView === 'conversation' && scrollMessageIntoConversation(messageIndex, 'center')) return;
+      setMainView('conversation');
+      setPendingConversationJump(messageIndex);
+      return;
     }
-  }, [scrollMessageIntoConversation]);
+  }, [mainView, scrollMessageIntoConversation]);
+
+  const handleJumpToDiffMessage = useCallback((messageIndex: number) => {
+    if (mainView === 'conversation' && scrollMessageIntoConversation(messageIndex, 'center')) return;
+    setMainView('conversation');
+    setPendingConversationJump(messageIndex);
+  }, [mainView, scrollMessageIntoConversation]);
 
   const handleCopyContextPath = useCallback((filePath: string) => {
     void navigator.clipboard.writeText(filePath).then(() => {
       setCopiedContextPath(filePath);
       window.setTimeout(() => {
         setCopiedContextPath(current => (current === filePath ? null : current));
+      }, 1200);
+    });
+  }, []);
+
+  const handleCopyPatch = useCallback((patchText: string, key: string) => {
+    void navigator.clipboard.writeText(patchText).then(() => {
+      setCopiedPatchKey(key);
+      window.setTimeout(() => {
+        setCopiedPatchKey(current => (current === key ? null : current));
       }, 1200);
     });
   }, []);
@@ -2170,28 +2118,43 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   );
 
   const groupedMessages = useMemo(
-    () => {
-      const baseGroups = groupMessages(
-        messages.map((message, index) => ({ message, index })).filter(({ message }) => messagePassesPreset(message, preset)),
-      );
-      const groups = insertCompactionMarkers(baseGroups, compactionTimestamps);
-      if (!toolFilter) return groups;
-      // When a tool filter is active, only show assistant turns that include that tool
-      return groups.filter(group => {
-        if (group.type === 'compaction') return true;
-        if (group.type === 'user') return true;
-        if (group.type === 'system-group') return false;
-        if (group.type === 'assistant') {
-          const inlineTools = group.message.toolCalls || [];
-          const pairedTools = group.toolPairs.flatMap(p => p.toolUse?.message.toolCalls || []);
-          return [...inlineTools, ...pairedTools].some(t => t.name === toolFilter);
-        }
-        return true;
-      });
-    },
+    () => buildTranscriptItems(messages, preset, compactionTimestamps, toolFilter),
     [messages, preset, toolFilter, compactionTimestamps],
   );
+  const diffSummary = useMemo(() => getSessionDiffSummary(messages), [messages]);
+  const diffPathMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const file of diffSummary.files) {
+      map.set(normalizeDiffPathKey(file.path), file.path);
+    }
+    return map;
+  }, [diffSummary.files]);
+  const effectiveSelectedDiffPath = useMemo(() => {
+    if (selectedDiffPath && diffSummary.files.some(file => file.path === selectedDiffPath)) return selectedDiffPath;
+    return diffSummary.files[0]?.path || null;
+  }, [diffSummary.files, selectedDiffPath]);
   const minimapTargets = useMemo(() => getMinimapTargets(groupedMessages), [groupedMessages]);
+
+  useEffect(() => {
+    if (mainView !== 'conversation' || pendingConversationJump === null) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollMessageIntoConversation(pendingConversationJump, 'center');
+      setPendingConversationJump(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [mainView, pendingConversationJump, scrollMessageIntoConversation]);
+
+  const hasDiffForPath = useCallback((filePath: string) => (
+    diffPathMap.has(normalizeDiffPathKey(filePath))
+  ), [diffPathMap]);
+
+  const handleOpenDiffForPath = useCallback((filePath: string) => {
+    const diffPath = diffPathMap.get(normalizeDiffPathKey(filePath));
+    if (!diffPath) return false;
+    setSelectedDiffPath(diffPath);
+    setMainView('changes');
+    return true;
+  }, [diffPathMap]);
 
   const updateMinimapViewport = useCallback(() => {
     const container = conversationRef.current;
@@ -2253,7 +2216,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       container.removeEventListener('scroll', handleScroll);
       resizeObserver.disconnect();
     };
-  }, [groupedMessages, updateMinimapSegments, updateMinimapViewport]);
+  }, [groupedMessages, mainView, updateMinimapSegments, updateMinimapViewport]);
 
   if (isLoading || !session || !session.id) {
     return (
@@ -2361,6 +2324,23 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <p className="text-[9px] leading-3 text-muted-foreground">Tool Calls</p>
             </CardContent>
           </Card>
+          {diffSummary.fileCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setMainView('changes')}
+              className="min-w-[108px] rounded-xl border border-border/50 bg-card text-card-foreground shadow-sm transition-colors hover:bg-muted/30"
+            >
+              <div className="px-2.5 py-1.5 text-center">
+                <div className="flex items-center justify-center gap-1.5">
+                  <FileText className="h-3 w-3 text-muted-foreground" />
+                  <p className="whitespace-nowrap text-sm font-bold leading-5">{diffSummary.fileCount}</p>
+                  <span className="font-mono text-[10px] text-green-700 dark:text-green-300">+{diffSummary.addedLines}</span>
+                  <span className="font-mono text-[10px] text-red-700 dark:text-red-300">-{diffSummary.removedLines}</span>
+                </div>
+                <p className="text-[9px] leading-3 text-muted-foreground">Changes</p>
+              </div>
+            </button>
+          )}
           <Card className="min-w-[86px] border-border/50 shadow-sm">
             <CardContent className="px-2.5 py-1.5 text-center">
               <div className="flex items-center justify-center gap-1">
@@ -2388,47 +2368,72 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_308px] gap-3">
         {/* Conversation */}
         <Card className="border-border/50 shadow-sm">
-          <CardHeader className="border-b border-border/60 pb-3">
-            <FilterPresets preset={preset} onChange={handlePresetChange} counts={presetCounts} />
+          <CardHeader className="space-y-3 pb-3">
+            <SessionViewTabs
+              view={mainView}
+              onChange={setMainView}
+              conversationCount={messages.length}
+              diffSummary={diffSummary}
+              diffMode={diffMode}
+              onDiffModeChange={setDiffMode}
+              copiedPatchKey={copiedPatchKey}
+              onCopyPatch={handleCopyPatch}
+            />
+            {mainView === 'conversation' && (
+              <FilterPresets preset={preset} onChange={handlePresetChange} counts={presetCounts} />
+            )}
           </CardHeader>
           <CardContent className="pt-0">
-            <div className="flex gap-3">
-              {/* Conversation column — internal scroll keeps minimap aligned */}
-              <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="flex-1 min-w-0 max-h-[78vh] overflow-y-auto pr-2 space-y-2">
-                {groupedMessages.map((group, gi) => {
-                  if (group.type === 'compaction') {
-                    return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
-                  }
-                  if (group.type === 'user') {
-                    return <UserMessage key={`u-${gi}`} msg={group.message} index={group.index} />;
-                  }
-                  if (group.type === 'assistant') {
-                    return (
-                      <AssistantCard
-                        key={`a-${gi}`}
-                        msg={group.message}
-                        index={group.index}
-                        toolPairs={group.toolPairs}
-                        toolTimeline={group.toolTimeline}
-                      />
-                    );
-                  }
-                  if (group.type === 'system-group') {
-                    return <SystemGroup key={`s-${gi}`} messages={group.messages} />;
-                  }
-                  return null;
-                })}
-              </div>
+            {mainView === 'conversation' ? (
+              <div className="flex gap-3">
+                {/* Conversation column — internal scroll keeps minimap aligned */}
+                <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="flex-1 min-w-0 max-h-[78vh] overflow-y-auto pr-2 space-y-2">
+                  {groupedMessages.map((group, gi) => {
+                    if (group.type === 'compaction') {
+                      return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
+                    }
+                    if (group.type === 'user') {
+                      return <UserMessage key={`u-${gi}`} msg={group.message} index={group.index} />;
+                    }
+                    if (group.type === 'assistant') {
+                      return (
+                        <AssistantCard
+                          key={`a-${gi}`}
+                          msg={group.message}
+                          index={group.index}
+                          toolPairs={group.toolPairs}
+                          toolTimeline={group.toolTimeline}
+                        />
+                      );
+                    }
+                    if (group.type === 'system-group') {
+                      return <SystemGroup key={`s-${gi}`} messages={group.messages} />;
+                    }
+                    return null;
+                  })}
+                </div>
 
-              {/* Minimap */}
-              <Minimap
-                segments={minimapSegments}
-                viewport={minimapViewport}
-                onJump={(targetId) => {
-                  scrollElementIntoConversation(targetId, 'start');
-                }}
+                {/* Minimap */}
+                <Minimap
+                  segments={minimapSegments}
+                  viewport={minimapViewport}
+                  onJump={(targetId) => {
+                    scrollElementIntoConversation(targetId, 'start');
+                  }}
+                />
+              </div>
+            ) : (
+              <ChangesView
+                summary={diffSummary}
+                selectedPath={effectiveSelectedDiffPath}
+                mode={diffMode}
+                copiedPatchKey={copiedPatchKey}
+                onSelectPath={setSelectedDiffPath}
+                onCopyPatch={handleCopyPatch}
+                onJumpToMessage={handleJumpToDiffMessage}
+                projectRoot={session.cwd || undefined}
               />
-            </div>
+            )}
           </CardContent>
         </Card>
 
@@ -2443,6 +2448,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             copiedPath={copiedContextPath}
             onCopyPath={handleCopyContextPath}
             onJumpToMessage={handleJumpToMessage}
+            hasDiffForPath={hasDiffForPath}
+            onOpenDiff={handleOpenDiffForPath}
           />
 
           {/* Tools Used */}
