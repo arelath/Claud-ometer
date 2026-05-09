@@ -20,8 +20,8 @@ vi.mock('@/lib/claude-data/reader', () => ({
 }));
 
 vi.mock('@/components/pages/dashboard-client', () => ({
-  DashboardClient: ({ initialStats }: { initialStats: DashboardStats }) => (
-    <div>Dashboard client {initialStats.totalSessions}</div>
+  DashboardClient: ({ initialStats }: { initialStats?: DashboardStats }) => (
+    <div>Dashboard client {initialStats?.totalSessions ?? 'client-fetch'}</div>
   ),
 }));
 
@@ -32,8 +32,8 @@ vi.mock('@/components/pages/costs-client', () => ({
 }));
 
 vi.mock('@/components/pages/projects-client', () => ({
-  ProjectsClient: ({ initialProjects }: { initialProjects: ProjectInfo[] }) => (
-    <div>Projects client {initialProjects.length}</div>
+  ProjectsClient: ({ initialProjects }: { initialProjects?: ProjectInfo[] }) => (
+    <div>Projects client {initialProjects?.length ?? 'client-fetch'}</div>
   ),
 }));
 
@@ -44,8 +44,8 @@ vi.mock('@/components/pages/project-detail-client', () => ({
 }));
 
 vi.mock('@/components/pages/sessions-client', () => ({
-  SessionsClient: ({ initialSessions, initialQuery }: { initialSessions: SessionInfo[]; initialQuery: string }) => (
-    <div>Sessions client {initialQuery || 'empty'} {initialSessions.length}</div>
+  SessionsClient: ({ initialSessions, initialQuery }: { initialSessions?: SessionInfo[]; initialQuery?: string }) => (
+    <div>Sessions client {initialQuery || 'empty'} {initialSessions?.length ?? 'client-fetch'}</div>
   ),
 }));
 
@@ -109,6 +109,7 @@ const stats: DashboardStats = {
 
 describe('Next app page wrappers', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     readerState.getDashboardStats.mockResolvedValue(stats);
     readerState.getProjects.mockResolvedValue([project]);
     readerState.getProjectSessions.mockResolvedValue([session]);
@@ -116,19 +117,20 @@ describe('Next app page wrappers', () => {
     readerState.searchSessions.mockResolvedValue([{ ...session, id: 'session-search' }]);
   });
 
-  it('loads dashboard, costs, and projects server data into client components', async () => {
+  it('renders dashboard as a client-fetching shell and loads costs server data', async () => {
     const DashboardPage = (await import('@/app/page')).default;
     const CostsPage = (await import('@/app/costs/page')).default;
     const ProjectsPage = (await import('@/app/projects/page')).default;
 
-    render(await DashboardPage());
-    expect(screen.getByText('Dashboard client 1')).toBeInTheDocument();
+    render(<DashboardPage />);
+    expect(readerState.getDashboardStats).not.toHaveBeenCalled();
+    expect(screen.getByText('Dashboard client client-fetch')).toBeInTheDocument();
 
     render(await CostsPage());
     expect(screen.getByText('Costs client 150 1')).toBeInTheDocument();
 
     render(await ProjectsPage());
-    expect(screen.getByText('Projects client 1')).toBeInTheDocument();
+    expect(screen.getByText('Projects client client-fetch')).toBeInTheDocument();
   });
 
   it('decodes project ids before loading project sessions', async () => {
@@ -140,15 +142,15 @@ describe('Next app page wrappers', () => {
     expect(screen.getByText('Project detail client D:\\dev\\Claudometer 1')).toBeInTheDocument();
   });
 
-  it('loads sessions by default and search results when a query is present', async () => {
+  it('renders the sessions shell without eager-loading large server data', async () => {
     const SessionsPage = (await import('@/app/sessions/page')).default;
 
     render(await SessionsPage({ searchParams: Promise.resolve({}) }));
-    expect(readerState.getSessions).toHaveBeenCalledWith(100, 0);
-    expect(screen.getByText('Sessions client empty 1')).toBeInTheDocument();
+    expect(readerState.getSessions).not.toHaveBeenCalled();
+    expect(screen.getByText('Sessions client empty client-fetch')).toBeInTheDocument();
 
     render(await SessionsPage({ searchParams: Promise.resolve({ q: 'needle' }) }));
-    expect(readerState.searchSessions).toHaveBeenCalledWith('needle', 100);
-    expect(screen.getByText('Sessions client needle 1')).toBeInTheDocument();
+    expect(readerState.searchSessions).not.toHaveBeenCalled();
+    expect(screen.getByText('Sessions client needle client-fetch')).toBeInTheDocument();
   });
 });

@@ -14,11 +14,21 @@ import type {
   DashboardStats,
   DailyActivity,
   DailyModelTokens,
+  ModelUsage,
   TokenUsage,
   CostEstimates,
 } from './types';
 import { addCosts, zeroCosts } from './cost-utils';
 import { getClaudeDir, getProjectsDir, getSessionAggregateFilePaths, getTopLevelSessionFiles, forEachJsonlLine } from './io';
+import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
+import {
+  SESSION_SUMMARY_CACHE_VERSION,
+  normalizeSearchText,
+  type CachedModelUsage,
+  type CachedSessionSummary,
+  type SessionSummarySource,
+  type SessionSourceSignature,
+} from '@/lib/agent-data/session-summary';
 import { getAssistantTurnCacheWriteTokens, recordAssistantTurn, type AssistantTurnAggregate } from './assistant-turns';
 import { isRecord } from './record-utils';
 import {
@@ -35,10 +45,15 @@ import { computeLocalHourCounts, computeSupplementalStats } from './stats-aggreg
 
 interface SessionFileCacheEntry {
   signature: string;
-  value: SessionInfo;
+  value: ParsedSessionInfo;
 }
 
 const sessionInfoCache = new Map<string, SessionFileCacheEntry>();
+export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v1';
+
+type ParsedSessionInfo = SessionInfo & {
+  modelUsage?: Record<string, ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates }>;
+};
 
 function getFileSignature(filePath: string): string {
   try {
@@ -53,6 +68,21 @@ function getSessionSignature(filePath: string): string {
   return getSessionAggregateFilePaths(filePath)
     .map(aggregatePath => `${aggregatePath}:${getFileSignature(aggregatePath)}`)
     .join('|');
+}
+
+function getSessionSourceSignature(filePath: string): SessionSourceSignature {
+  let size = 0;
+  let mtimeMs = 0;
+  for (const aggregatePath of getSessionAggregateFilePaths(filePath)) {
+    try {
+      const stat = fs.statSync(aggregatePath);
+      size += stat.size;
+      mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
+    } catch {
+      // Missing aggregate files simply stop contributing to the summary signature.
+    }
+  }
+  return { size, mtimeMs };
 }
 
 export function getStatsCache(): StatsCache | null {
@@ -210,6 +240,7 @@ class SessionParser {
   private version = '';
   private modelsSet = new Set<string>();
   private toolsUsed: Record<string, number> = {};
+  private modelUsage: Record<string, ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates }> = {};
   private compactions = 0;
   private microcompactions = 0;
   private totalTokensSaved = 0;
@@ -237,7 +268,7 @@ class SessionParser {
     recordAssistantTurn(this.assistantTurns, filePath, msg, false);
   }
 
-  getResult(): SessionInfo {
+  getResult(): ParsedSessionInfo {
     this.finalizeAssistantTurns();
     const duration = this.firstTimestamp && this.lastTimestamp
       ? new Date(this.lastTimestamp).getTime() - new Date(this.firstTimestamp).getTime()
@@ -272,6 +303,7 @@ class SessionParser {
         totalTokensSaved: this.totalTokensSaved,
         compactionTimestamps: this.compactionTimestamps,
       },
+      modelUsage: this.modelUsage,
     };
   }
 
@@ -319,25 +351,47 @@ class SessionParser {
       if (!assistantTurn.usage) continue;
 
       const cacheWriteTokens = getAssistantTurnCacheWriteTokens(assistantTurn);
-      this.totalInputTokens += assistantTurn.usage.input_tokens || 0;
-      this.totalOutputTokens += assistantTurn.usage.output_tokens || 0;
-      this.totalCacheReadTokens += assistantTurn.usage.cache_read_input_tokens || 0;
+      const inputTokens = assistantTurn.usage.input_tokens || 0;
+      const outputTokens = assistantTurn.usage.output_tokens || 0;
+      const cacheReadTokens = assistantTurn.usage.cache_read_input_tokens || 0;
+      this.totalInputTokens += inputTokens;
+      this.totalOutputTokens += outputTokens;
+      this.totalCacheReadTokens += cacheReadTokens;
       this.totalCacheWriteTokens += cacheWriteTokens;
-      this.estimatedCosts = addCosts(
-        this.estimatedCosts,
-        calculateCostAllModes(
-          assistantTurn.model,
-          assistantTurn.usage.input_tokens || 0,
-          assistantTurn.usage.output_tokens || 0,
-          cacheWriteTokens,
-          assistantTurn.usage.cache_read_input_tokens || 0,
-        ),
+      const model = assistantTurn.model || 'unknown';
+      const costs = calculateCostAllModes(
+        model,
+        inputTokens,
+        outputTokens,
+        cacheWriteTokens,
+        cacheReadTokens,
       );
+      const existing = this.modelUsage[model] || {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        reasoningOutputTokens: 0,
+        costUSD: 0,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+        webSearchRequests: 0,
+        estimatedCost: 0,
+        estimatedCosts: zeroCosts(),
+      };
+      existing.inputTokens += inputTokens;
+      existing.outputTokens += outputTokens;
+      existing.cacheReadInputTokens += cacheReadTokens;
+      existing.cacheCreationInputTokens += cacheWriteTokens;
+      existing.estimatedCosts = addCosts(existing.estimatedCosts, costs);
+      existing.estimatedCost = existing.estimatedCosts[DEFAULT_COST_MODE];
+      this.modelUsage[model] = existing;
+      this.estimatedCosts = addCosts(this.estimatedCosts, costs);
     }
   }
 }
 
-async function parseSessionFileUncached(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
+async function parseSessionFileUncached(filePath: string, projectId: string, projectName: string): Promise<ParsedSessionInfo> {
   const sessionId = path.basename(filePath, '.jsonl');
   const parser = new SessionParser(sessionId, projectId, projectName);
   const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
@@ -355,7 +409,7 @@ async function parseSessionFileUncached(filePath: string, projectId: string, pro
   return parser.getResult();
 }
 
-async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<SessionInfo> {
+async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<ParsedSessionInfo> {
   const signature = getSessionSignature(filePath);
   const cacheKey = `${projectId}:${filePath}`;
   const cached = sessionInfoCache.get(cacheKey);
@@ -633,6 +687,151 @@ export async function searchSessions(query: string, limit = 50): Promise<Session
 
   matchingSessions.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   return matchingSessions.slice(0, limit);
+}
+
+function getMessageContentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => {
+      if (!isRecord(item)) return '';
+      if (typeof item.text === 'string') return item.text;
+      if (typeof item.content === 'string') return item.content;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function collectClaudeSearchTextPreview(filePath: string, info: SessionInfo): Promise<string> {
+  const parts = [
+    info.title,
+    info.projectName,
+    info.cwd,
+    info.gitBranch,
+    info.version,
+    info.model,
+    ...info.models,
+    ...Object.keys(info.toolsUsed || {}),
+  ];
+  let length = parts.join('\n').length;
+  const maxLength = 8 * 1024;
+
+  await forEachJsonlLine(filePath, (msg) => {
+    if (length >= maxLength) return;
+    if (msg.type !== 'user' && msg.type !== 'assistant') return;
+    const text = getMessageContentText(msg.message?.content);
+    if (!text) return;
+    parts.push(text);
+    length += text.length;
+  });
+
+  return normalizeSearchText(parts);
+}
+
+function getSummaryUpdatedAt(info: SessionInfo, source: SessionSummarySource): string {
+  const createdAtMs = new Date(info.timestamp).getTime();
+  if (!Number.isNaN(createdAtMs) && info.duration > 0) {
+    return new Date(createdAtMs + info.duration).toISOString();
+  }
+  if (source.sourceSignature.mtimeMs > 0) return new Date(source.sourceSignature.mtimeMs).toISOString();
+  return info.timestamp;
+}
+
+function getCachedModelUsage(info: ParsedSessionInfo): Record<string, CachedModelUsage> {
+  const sourceUsage = info.modelUsage || {};
+  if (Object.keys(sourceUsage).length > 0) {
+    return Object.fromEntries(Object.entries(sourceUsage).map(([model, usage]) => [model, {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      reasoningOutputTokens: usage.reasoningOutputTokens || 0,
+      contextWindow: usage.contextWindow || 0,
+      maxOutputTokens: usage.maxOutputTokens || 0,
+      webSearchRequests: usage.webSearchRequests || 0,
+    }]));
+  }
+
+  return {
+    [info.model || 'unknown']: {
+      inputTokens: info.totalInputTokens,
+      outputTokens: info.totalOutputTokens,
+      cacheReadInputTokens: info.totalCacheReadTokens,
+      cacheCreationInputTokens: info.totalCacheWriteTokens,
+      reasoningOutputTokens: 0,
+    },
+  };
+}
+
+export async function discoverSessionSummarySources(): Promise<SessionSummarySource[]> {
+  if (!fs.existsSync(getProjectsDir())) return [];
+  const sources: SessionSummarySource[] = [];
+
+  for (const entry of fs.readdirSync(getProjectsDir())) {
+    const projectPath = path.join(getProjectsDir(), entry);
+    if (!fs.statSync(projectPath).isDirectory()) continue;
+    const { name: projectName } = getProjectNameFromDir(projectPath, entry);
+    for (const file of getTopLevelSessionFiles(projectPath)) {
+      const filePath = path.join(projectPath, file);
+      sources.push({
+        provider: 'claude',
+        parserVersion: CLAUDE_SESSION_SUMMARY_PARSER_VERSION,
+        sourceFilePath: filePath,
+        sourceSignature: getSessionSourceSignature(filePath),
+        nativeProjectId: entry,
+        projectName,
+      });
+    }
+  }
+
+  return sources.sort((left, right) => left.sourceFilePath.localeCompare(right.sourceFilePath));
+}
+
+export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
+  const projectId = source.nativeProjectId || '';
+  const projectName = source.projectName || projectIdToName(projectId);
+  const info = await parseSessionFile(source.sourceFilePath, projectId, projectName);
+  const nativeId = info.nativeId || info.id;
+  const nativeProjectId = info.nativeProjectId || projectId || info.projectId;
+  const routeId = makeRouteId('claude', nativeId);
+  const projectRouteId = qualifyProjectId('claude', nativeProjectId);
+  const searchTextPreview = await collectClaudeSearchTextPreview(source.sourceFilePath, info);
+
+  return {
+    cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+    parserVersion: source.parserVersion,
+    provider: 'claude',
+    nativeId,
+    routeId,
+    nativeProjectId,
+    projectRouteId,
+    projectName: info.projectName,
+    sourceFilePath: source.sourceFilePath,
+    sourceSignature: source.sourceSignature,
+    createdAt: info.timestamp,
+    updatedAt: getSummaryUpdatedAt(info, source),
+    title: info.title,
+    cwd: info.cwd,
+    gitBranch: info.gitBranch,
+    version: info.version,
+    model: info.model,
+    models: info.models,
+    messageCount: info.messageCount,
+    userMessageCount: info.userMessageCount,
+    assistantMessageCount: info.assistantMessageCount,
+    toolCallCount: info.toolCallCount,
+    tokenTotals: {
+      input: info.totalInputTokens,
+      output: info.totalOutputTokens,
+      cacheRead: info.totalCacheReadTokens,
+      cacheWrite: info.totalCacheWriteTokens,
+    },
+    modelUsage: getCachedModelUsage(info),
+    toolsUsed: info.toolsUsed,
+    compaction: info.compaction,
+    searchTextPreview,
+  };
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {

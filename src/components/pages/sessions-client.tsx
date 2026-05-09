@@ -52,14 +52,14 @@ function LiveSessionStatus({ session }: { session: LiveSessionInfo }) {
 }
 
 export function SessionsClient({ initialSessions, initialQuery }: {
-  initialSessions: SessionInfo[];
-  initialQuery: string;
+  initialSessions?: SessionInfo[];
+  initialQuery?: string;
 }) {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || initialQuery);
+  const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || initialQuery || '');
   const debouncedQuery = useDebounce(searchQuery, 300);
-  const fallbackData = debouncedQuery === initialQuery ? initialSessions : undefined;
+  const fallbackData = initialSessions && debouncedQuery === (initialQuery || '') ? initialSessions : undefined;
   const { data: sessions, isLoading } = useSessions(100, 0, debouncedQuery, fallbackData);
   const { data: liveSessions } = useLiveSessions();
   const { data: sourceInfo } = useDataSourceInfo();

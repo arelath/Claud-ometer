@@ -41,6 +41,10 @@ A local-first analytics dashboard for Claude Code and Codex-style agent sessions
 
 Codex support is historical/read-only in this version. Claude live sessions and resume continue to work, but Codex live input and Codex resume are intentionally unavailable until the CLI semantics are stable enough to wire safely.
 
+### Local data cache
+
+Overview, Sessions, Projects, Costs, and common searches use a local per-session summary cache so unchanged transcript files do not need to be reparsed on every page load. The cache stores normalized metadata, token totals, cost inputs, tool counts, and bounded search text; it does not store full raw transcripts, and session detail pages still read the selected source file. Set `CLAUD_OMETER_CACHE_DIR` to override the cache location for development or tests. See [docs/CacheArchitecture.md](./docs/CacheArchitecture.md) for details.
+
 ## Quick Start
 
 ```bash

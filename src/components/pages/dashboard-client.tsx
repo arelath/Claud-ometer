@@ -23,7 +23,7 @@ import { Badge } from '@/components/ui/badge';
 import { AgentBadge } from '@/components/agent-badge';
 import Link from 'next/link';
 
-export function DashboardClient({ initialStats }: { initialStats: DashboardStats }) {
+export function DashboardClient({ initialStats }: { initialStats?: DashboardStats }) {
   const { data: stats, isLoading } = useStats(initialStats);
   const { pickCost, label: modeLabel } = useCostMode();
 

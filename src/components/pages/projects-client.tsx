@@ -10,7 +10,7 @@ import { AgentBadge } from '@/components/agent-badge';
 import { FolderKanban, MessageSquare, Clock, Layers } from 'lucide-react';
 import Link from 'next/link';
 
-export function ProjectsClient({ initialProjects }: { initialProjects: ProjectInfo[] }) {
+export function ProjectsClient({ initialProjects }: { initialProjects?: ProjectInfo[] }) {
   const { data: projects, isLoading } = useProjects(initialProjects);
   const { pickCost } = useCostMode();
 
