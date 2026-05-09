@@ -90,9 +90,20 @@ class FileOffsetTracker {
 }
 
 function normalizeTextLines(value: string): string[] {
-  const normalized = value.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n?/g, '\n');
+  const normalized = value
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n$/, '');
   if (!normalized) return [];
   return normalized.split('\n');
+}
+
+function hasNormalizedTextChanges(oldText: string, newText: string): boolean {
+  const oldLines = normalizeTextLines(oldText);
+  const newLines = normalizeTextLines(newText);
+  if (oldLines.length !== newLines.length) return true;
+  return oldLines.some((line, index) => line !== newLines[index]);
 }
 
 function normalizeLineForMatch(line: string): string {
@@ -137,13 +148,13 @@ function buildSimpleLineDiff(oldLines: string[], newLines: string[]): { type: Di
   });
 }
 
-function buildDiffRows(
-  oldText: string,
-  newText: string,
+function buildDiffRowsFromLines(
+  oldLines: string[],
+  newLines: string[],
   oldStartLine: number | null,
   newStartLine: number | null,
 ): SessionDiffRow[] {
-  const simpleRows = buildSimpleLineDiff(normalizeTextLines(oldText), normalizeTextLines(newText));
+  const simpleRows = buildSimpleLineDiff(oldLines, newLines);
   let oldLineNumber = oldStartLine;
   let newLineNumber = newStartLine;
 
@@ -182,6 +193,20 @@ function buildDiffRows(
   });
 }
 
+function buildDiffRows(
+  oldText: string,
+  newText: string,
+  oldStartLine: number | null,
+  newStartLine: number | null,
+): SessionDiffRow[] {
+  return buildDiffRowsFromLines(
+    normalizeTextLines(oldText),
+    normalizeTextLines(newText),
+    oldStartLine,
+    newStartLine,
+  );
+}
+
 function getFileStatus(addedLines: number, removedLines: number): DiffFileStatus {
   if (addedLines > 0 && removedLines === 0) return 'added';
   if (removedLines > 0 && addedLines === 0) return 'deleted';
@@ -194,6 +219,8 @@ export function getSessionDiffSummary(messages: SessionMessageDisplay[]): Sessio
   const trackers = new Map<string, FileOffsetTracker>();
 
   for (const artifact of artifacts) {
+    if (!hasNormalizedTextChanges(artifact.oldText, artifact.newText)) continue;
+
     if (!trackers.has(artifact.path)) trackers.set(artifact.path, new FileOffsetTracker());
     const tracker = trackers.get(artifact.path)!;
     const originalStartLine = artifact.startLine == null ? null : tracker.toOriginal(artifact.startLine);
@@ -311,7 +338,7 @@ function buildNetHunks(path: string, records: DiffEditRecord[], tracker: FileOff
   return regions.map((region, index) => {
     const oldStartLine = region.originalStartLine;
     const newStartLine = oldStartLine == null ? region.startLine : tracker.toCurrent(oldStartLine);
-    const rows = buildDiffRows(region.originalText.join('\n'), region.currentText.join('\n'), oldStartLine, newStartLine);
+    const rows = buildDiffRowsFromLines(region.originalText, region.currentText, oldStartLine, newStartLine);
     const addedLines = rows.filter(row => row.type === 'add').length;
     const removedLines = rows.filter(row => row.type === 'remove').length;
     const oldLineCount = rows.filter(row => row.type !== 'add').length;

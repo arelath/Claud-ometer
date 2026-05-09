@@ -1,0 +1,439 @@
+import path from 'path';
+import { calculateCostAllModes, DEFAULT_COST_MODE, getModelDisplayName } from '@/config/pricing';
+import { zeroCosts } from '@/lib/claude-data/cost-utils';
+import type {
+  SessionDetail,
+  SessionInfo,
+  SessionMessageBlockDisplay,
+  SessionMessageDisplay,
+  TokenUsage,
+} from '@/lib/claude-data/types';
+import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
+import { asRecord, getCodexPayloadKind, type CodexEnvelope } from './schema';
+import {
+  collectCodexToolResults,
+  buildCodexToolCalls,
+  buildCodexToolResultBlock,
+  isCodexEnrichedToolResult,
+} from './tool-parser';
+import { forEachCodexJsonlLine } from './io';
+import type { CodexSessionFileInfo } from './session-index';
+
+export interface CodexParsedSession {
+  info: SessionInfo;
+  detail: SessionDetail;
+  records: CodexEnvelope[];
+  searchableText: string;
+  reasoningOutputTokens: number;
+}
+
+interface CodexTokenUsage {
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  reasoning_output_tokens?: number;
+}
+
+function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function getTimestamp(record: CodexEnvelope, payload: Record<string, unknown> | null = asRecord(record.payload)): string {
+  return getOptionalString(record as unknown as Record<string, unknown>, 'timestamp')
+    || getOptionalString(payload, 'timestamp')
+    || new Date(0).toISOString();
+}
+
+function getContentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+
+  const parts: string[] = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (!record) continue;
+    const type = getOptionalString(record, 'type');
+    if ((type === 'input_text' || type === 'output_text' || type === 'text' || type === 'summary_text') && typeof record.text === 'string') {
+      parts.push(record.text);
+    } else if (type === 'input_image') {
+      const mediaType = getOptionalString(record, 'media_type') || getOptionalString(record, 'mime_type') || 'image';
+      parts.push(`[${mediaType} input omitted]`);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+function getImagePlaceholder(payload: Record<string, unknown>): string {
+  const images = Array.isArray(payload.images) ? payload.images : [];
+  const localImages = Array.isArray(payload.local_images) ? payload.local_images : [];
+  const count = images.length + localImages.length;
+  if (count === 0) return '';
+  return count === 1 ? '[image input omitted]' : `[${count} image inputs omitted]`;
+}
+
+function getUserMessageText(payload: Record<string, unknown>): string {
+  const parts = [
+    getContentText(payload.content ?? payload.message),
+    getContentText(payload.text_elements),
+    getImagePlaceholder(payload),
+  ].filter(Boolean);
+  return Array.from(new Set(parts)).join('\n').trim();
+}
+
+function getReasoningText(payload: Record<string, unknown>): string {
+  return getContentText(payload.summary)
+    || getContentText(payload.content)
+    || getOptionalString(payload, 'text')
+    || '';
+}
+
+function parseTokenUsage(value: unknown): CodexTokenUsage {
+  const record = asRecord(value);
+  if (!record) return {};
+  return {
+    input_tokens: typeof record.input_tokens === 'number' ? record.input_tokens : 0,
+    cached_input_tokens: typeof record.cached_input_tokens === 'number' ? record.cached_input_tokens : 0,
+    output_tokens: typeof record.output_tokens === 'number' ? record.output_tokens : 0,
+    reasoning_output_tokens: typeof record.reasoning_output_tokens === 'number' ? record.reasoning_output_tokens : 0,
+  };
+}
+
+function getTokenUsageFromCountPayload(payload: Record<string, unknown>): CodexTokenUsage {
+  const info = asRecord(payload.info);
+  return parseTokenUsage(info?.total_token_usage ?? payload.total_token_usage);
+}
+
+function toClaudeUsage(usage: CodexTokenUsage): TokenUsage {
+  return {
+    input_tokens: usage.input_tokens || 0,
+    output_tokens: (usage.output_tokens || 0) + (usage.reasoning_output_tokens || 0),
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: usage.cached_input_tokens || 0,
+  };
+}
+
+function getProjectNativeId(cwd: string, fallbackFilePath: string): string {
+  const source = cwd || path.dirname(fallbackFilePath);
+  return source.replace(/^[A-Za-z]:/, match => match[0]).replace(/[\\/:]+/g, '-').replace(/^-+|-+$/g, '') || 'codex';
+}
+
+function makeEventBlock(title: string, summary: string, details: Array<{ key: string; value: string }>): SessionMessageBlockDisplay {
+  return {
+    type: 'event',
+    title,
+    summary,
+    details: details.map(item => ({ key: item.key, label: item.key, value: item.value })),
+  };
+}
+
+function shouldSkipDuplicateAssistant(seen: Set<string>, text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  if (seen.has(normalized)) return true;
+  seen.add(normalized);
+  return false;
+}
+
+export async function readCodexRecords(filePath: string): Promise<CodexEnvelope[]> {
+  const records: CodexEnvelope[] = [];
+  await forEachCodexJsonlLine(filePath, record => {
+    records.push(record);
+  });
+  return records;
+}
+
+export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fileInfo?: CodexSessionFileInfo): CodexParsedSession {
+  const results = collectCodexToolResults(records);
+  const messages: SessionMessageDisplay[] = [];
+  const searchableParts: string[] = [];
+  const seenAssistantText = new Set<string>();
+  const toolsUsed: Record<string, number> = {};
+  const modelsSet = new Set<string>();
+
+  let nativeId = fileInfo?.nativeId || path.basename(filePath, '.jsonl');
+  const title = fileInfo?.title;
+  let cwd = fileInfo?.cwd || '';
+  let gitBranch = '';
+  let version = '';
+  let model = 'unknown';
+  let firstTimestamp = fileInfo?.createdAt || '';
+  let lastTimestamp = fileInfo?.updatedAt || '';
+  let userMessageCount = 0;
+  let assistantMessageCount = 0;
+  let toolCallCount = 0;
+  let finalTokenUsage: CodexTokenUsage = {};
+  let compactions = 0;
+  const compactionTimestamps: string[] = [];
+
+  for (const record of records) {
+    const payload = asRecord(record.payload) || {};
+    const timestamp = getTimestamp(record, payload);
+    if (timestamp) {
+      if (!firstTimestamp) firstTimestamp = timestamp;
+      lastTimestamp = timestamp;
+    }
+
+    if (record.type === 'session_meta') {
+      const git = asRecord(payload.git);
+      nativeId = getOptionalString(payload, 'id') || nativeId;
+      cwd = getOptionalString(payload, 'cwd') || cwd;
+      version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
+      gitBranch = getOptionalString(git, 'branch')
+        || getOptionalString(payload, 'git_branch')
+        || getOptionalString(payload, 'gitBranch')
+        || gitBranch;
+      continue;
+    }
+
+    if (record.type === 'turn_context') {
+      model = getOptionalString(payload, 'model') || model;
+      cwd = getOptionalString(payload, 'cwd') || cwd;
+      if (model !== 'unknown') modelsSet.add(model);
+      continue;
+    }
+
+    if (record.type === 'response_item') {
+      const kind = getCodexPayloadKind(record);
+      if (kind === 'message') {
+        const role = getOptionalString(payload, 'role');
+        const text = getContentText(payload.content);
+        if (text) searchableParts.push(text);
+
+        if (role === 'user') {
+          userMessageCount++;
+          messages.push({ role: 'user', content: text, timestamp });
+        } else if (role === 'assistant') {
+          if (!shouldSkipDuplicateAssistant(seenAssistantText, text)) {
+            assistantMessageCount++;
+            messages.push({ role: 'assistant', content: text, timestamp, model });
+          }
+        } else if (role === 'developer' || role === 'system') {
+          messages.push({
+            role: 'system',
+            content: text,
+            timestamp,
+            blocks: [makeEventBlock('Developer message', text, [])],
+            isMeta: true,
+          });
+        }
+        continue;
+      }
+
+      if (kind === 'reasoning') {
+        const summary = getReasoningText(payload);
+        messages.push({
+          role: 'assistant',
+          content: '',
+          timestamp,
+          model,
+          blocks: [{
+            type: 'thinking',
+            title: 'Reasoning',
+            summary: summary || 'Reasoning summary',
+            content: summary,
+            details: [],
+          }],
+        });
+        if (summary) searchableParts.push(summary);
+        continue;
+      }
+
+      if (kind === 'function_call' || kind === 'custom_tool_call' || kind === 'web_search_call') {
+        const toolCalls = buildCodexToolCalls(payload, results);
+        toolCallCount += toolCalls.length;
+        for (const tool of toolCalls) {
+          toolsUsed[tool.name] = (toolsUsed[tool.name] || 0) + 1;
+          searchableParts.push(tool.summary, ...tool.details.map(item => item.value));
+        }
+        messages.push({
+          role: 'tool-use',
+          content: '',
+          timestamp,
+          model,
+          toolCalls,
+        });
+        continue;
+      }
+
+      if (kind === 'function_call_output' || kind === 'custom_tool_call_output') {
+        const result = results.get(getOptionalString(payload, 'call_id') || '');
+        if (result && !isCodexEnrichedToolResult(result)) {
+          const block = buildCodexToolResultBlock(result);
+          searchableParts.push(block.summary, block.content || '', ...block.details.map(item => item.value));
+          messages.push({
+            role: 'tool-result',
+            content: block.summary,
+            timestamp,
+            blocks: [block],
+          });
+        }
+        continue;
+      }
+    }
+
+    if (record.type === 'event_msg') {
+      const kind = getCodexPayloadKind(record);
+      if (kind === 'user_message') {
+        const text = getUserMessageText(payload);
+        if (text) {
+          userMessageCount++;
+          searchableParts.push(text);
+          messages.push({ role: 'user', content: text, timestamp });
+        }
+        continue;
+      }
+
+      if (kind === 'agent_reasoning') {
+        const summary = getReasoningText(payload);
+        messages.push({
+          role: 'assistant',
+          content: '',
+          timestamp,
+          model,
+          blocks: [{
+            type: 'thinking',
+            title: 'Reasoning',
+            summary: summary || 'Reasoning summary',
+            content: summary,
+            details: [],
+          }],
+        });
+        if (summary) searchableParts.push(summary);
+        continue;
+      }
+
+      if (kind === 'agent_message') {
+        const text = getContentText(payload.content ?? payload.message);
+        if (text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
+          assistantMessageCount++;
+          searchableParts.push(text);
+          messages.push({ role: 'assistant', content: text, timestamp, model });
+        }
+        continue;
+      }
+
+      if (kind === 'token_count') {
+        finalTokenUsage = getTokenUsageFromCountPayload(payload);
+        continue;
+      }
+
+      if (kind === 'exec_command_end' || kind === 'patch_apply_end' || kind === 'web_search_end') {
+        const result = results.get(getOptionalString(payload, 'call_id') || '');
+        if (result) {
+          const block = buildCodexToolResultBlock(result);
+          searchableParts.push(block.summary, block.content || '', ...block.details.map(item => item.value));
+          messages.push({
+            role: 'tool-result',
+            content: block.summary,
+            timestamp,
+            blocks: [block],
+          });
+        }
+        continue;
+      }
+
+      if (kind === 'context_compacted') {
+        compactions++;
+        compactionTimestamps.push(timestamp);
+        messages.push({
+          role: 'system',
+          content: 'Context compacted',
+          timestamp,
+          blocks: [makeEventBlock('Context compacted', 'Context compacted', [
+            { key: 'trigger', value: getOptionalString(payload, 'trigger') || 'unknown' },
+            { key: 'pre_tokens', value: String(payload.pre_tokens || '') },
+          ])],
+          isMeta: true,
+        });
+        continue;
+      }
+
+      if (kind === 'error' || kind === 'turn_aborted') {
+        const reason = getOptionalString(payload, 'reason') || getOptionalString(payload, 'message') || kind;
+        messages.push({
+          role: 'system',
+          content: reason,
+          timestamp,
+          blocks: [makeEventBlock(kind, reason, [])],
+          isMeta: true,
+        });
+        continue;
+      }
+    }
+
+    if (record.type === 'compacted') {
+      compactions++;
+      compactionTimestamps.push(timestamp);
+      messages.push({
+        role: 'system',
+        content: 'Context compacted',
+        timestamp,
+        blocks: [makeEventBlock('Context compacted', 'Context compacted', [])],
+        isMeta: true,
+      });
+    }
+  }
+
+  const projectNativeId = getProjectNativeId(cwd, filePath);
+  const routeId = makeRouteId('codex', nativeId);
+  const projectRouteId = qualifyProjectId('codex', projectNativeId);
+  const usage = toClaudeUsage(finalTokenUsage);
+  const models = model === 'unknown' ? [] : Array.from(modelsSet);
+  const costs = model === 'unknown'
+    ? zeroCosts()
+    : calculateCostAllModes(model, usage.input_tokens, usage.output_tokens, 0, usage.cache_read_input_tokens);
+  const timestamp = firstTimestamp || new Date(0).toISOString();
+  const duration = firstTimestamp && lastTimestamp
+    ? Math.max(0, new Date(lastTimestamp).getTime() - new Date(firstTimestamp).getTime())
+    : 0;
+
+  const info: SessionInfo = {
+    id: routeId,
+    agentKind: 'codex',
+    nativeId,
+    routeId,
+    projectId: projectRouteId,
+    nativeProjectId: projectNativeId,
+    projectRouteId,
+    projectName: cwd ? path.basename(cwd) : projectNativeId,
+    title,
+    sourceFilePath: filePath,
+    timestamp,
+    duration,
+    messageCount: userMessageCount + assistantMessageCount,
+    userMessageCount,
+    assistantMessageCount,
+    toolCallCount,
+    totalInputTokens: usage.input_tokens,
+    totalOutputTokens: usage.output_tokens,
+    totalCacheReadTokens: usage.cache_read_input_tokens,
+    totalCacheWriteTokens: 0,
+    estimatedCost: costs[DEFAULT_COST_MODE],
+    estimatedCosts: costs,
+    model,
+    models: models.map(getModelDisplayName),
+    gitBranch,
+    cwd,
+    version,
+    toolsUsed,
+    compaction: {
+      compactions,
+      microcompactions: 0,
+      totalTokensSaved: 0,
+      compactionTimestamps,
+    },
+  };
+
+  return {
+    info,
+    detail: { ...info, messages },
+    records,
+    searchableText: searchableParts.join('\n').toLowerCase(),
+    reasoningOutputTokens: finalTokenUsage.reasoning_output_tokens || 0,
+  };
+}
+
+export async function parseCodexSessionFile(filePath: string, fileInfo?: CodexSessionFileInfo): Promise<CodexParsedSession> {
+  return parseCodexRecords(filePath, await readCodexRecords(filePath), fileInfo);
+}

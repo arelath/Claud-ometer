@@ -3,7 +3,9 @@ import {
   getManagedClaudeSession,
   resetManagedClaudeSessionsForTests,
   sendTextToManagedClaudeSession,
+  resizeManagedClaudeSession,
   startManagedClaudeResume,
+  writeDataToManagedClaudeSession,
 } from '@/lib/claude-data/managed-pty';
 
 const {
@@ -81,6 +83,24 @@ describe('managed PTY sessions', () => {
     expect(snapshot?.isRunning).toBe(true);
     expect(writeMock).toHaveBeenNthCalledWith(1, 'Continue please.');
     expect(writeMock).toHaveBeenNthCalledWith(2, '\r');
+  });
+
+  it('writes raw terminal data without altering control sequences', async () => {
+    await startManagedClaudeResume(sessionId, '/work/project');
+
+    const snapshot = writeDataToManagedClaudeSession(sessionId, '\u001b[A');
+
+    expect(snapshot?.isRunning).toBe(true);
+    expect(writeMock).toHaveBeenCalledWith('\u001b[A');
+  });
+
+  it('resizes the managed PTY', async () => {
+    await startManagedClaudeResume(sessionId, '/work/project');
+
+    const snapshot = resizeManagedClaudeSession(sessionId, 132, 43);
+
+    expect(snapshot).toMatchObject({ cols: 132, rows: 43 });
+    expect(resizeMock).toHaveBeenCalledWith(132, 43);
   });
 
   it('captures terminal output and exit status', async () => {

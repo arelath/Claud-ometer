@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import path from 'path';
-import { getSessionDetail, getSessionDetailFromFile } from '@/lib/claude-data/reader';
+import { getSessionDetailFromFile } from '@/lib/claude-data/reader';
 import { getLiveSessionBySessionId, getLiveTranscriptRevision } from '@/lib/claude-data/live-sessions';
 import { zeroCosts } from '@/lib/claude-data/cost-utils';
 import type { LiveSessionInfo, SessionDetail } from '@/lib/claude-data/types';
 import { apiError, withErrorHandler } from '@/lib/api-route';
+import { makeRouteId, parseRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
+import { resolveSessionProvider } from '@/lib/agent-data/registry';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +15,11 @@ export const GET = withErrorHandler(async (
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> => {
   const { id } = await params;
-  const liveSession = getLiveSessionBySessionId(id);
+  const parsed = parseRouteId(id);
+  const nativeId = parsed.nativeId;
+  const liveSession = !parsed.agentKind || parsed.agentKind === 'claude'
+    ? getLiveSessionBySessionId(nativeId)
+    : null;
   const session = await getSessionDetailForRequest(id, liveSession);
 
   if (!session) {
@@ -32,7 +38,8 @@ async function getSessionDetailForRequest(id: string, liveSession: LiveSessionIn
     );
   }
 
-  const historical = await getSessionDetail(id);
+  const provider = resolveSessionProvider(id);
+  const historical = provider ? await provider.getSessionDetail(id) : null;
   if (historical || !liveSession) return historical;
 
   return {
@@ -68,11 +75,21 @@ async function getSessionDetailForRequest(id: string, liveSession: LiveSessionIn
 }
 
 function attachLiveMetadata(session: SessionDetail, liveSession: LiveSessionInfo): SessionDetail {
+  const nativeProjectId = session.nativeProjectId || parseRouteId(session.projectId).nativeId;
   return {
     ...session,
+    agentKind: 'claude',
+    nativeId: liveSession.sessionId,
+    routeId: makeRouteId('claude', liveSession.sessionId),
+    nativeProjectId,
+    projectRouteId: qualifyProjectId('claude', nativeProjectId),
     isLive: true,
     liveStatus: liveSession.status,
     liveStatusReason: liveSession.statusReason,
+    liveBusySinceAt: liveSession.busySinceAt,
+    liveBusySinceAtMs: liveSession.busySinceAtMs,
+    liveActiveToolName: liveSession.activeToolName,
+    liveCachePaused: liveSession.cachePaused,
     liveMetadataRevision: liveSession.revision,
     liveTranscriptRevision: getLiveTranscriptRevision(liveSession.sessionId) || liveSession.transcriptRevision,
     liveMetadataFilePath: liveSession.metadataFilePath,

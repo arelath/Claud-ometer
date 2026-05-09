@@ -1,6 +1,6 @@
 # Claud-ometer — Architecture & Development Guide
 
-Local-first Claude Code analytics dashboard. Reads `~/.claude/` directly — no database, no cloud, no auth.
+Local-first Claude Code and Codex analytics dashboard. Reads local agent data directly (`~/.claude/`, `~/.codex/`, or imported archives) — no database, no cloud, no auth.
 
 ## Tech Stack
 
@@ -29,7 +29,7 @@ src/
 │   └── api/                    # All routes are force-dynamic (filesystem reads)
 │       ├── stats/route.ts      # GET — DashboardStats
 │       ├── projects/route.ts   # GET — ProjectInfo[]
-│       ├── sessions/route.ts   # GET — SessionInfo[] (?q=, ?projectId=, ?limit=, ?offset=)
+│       ├── sessions/route.ts   # GET — SessionInfo[] (?q=, ?projectId=, ?agent=, ?limit=, ?offset=)
 │       ├── sessions/[id]/      # GET — SessionDetail (404 if not found)
 │       ├── data-source/        # GET/PUT — toggle live vs imported data
 │       ├── export/route.ts     # GET — ZIP download
@@ -40,10 +40,17 @@ src/
 │   ├── charts/                 # Recharts wrappers (usage-over-time, model-breakdown, etc.)
 │   └── ui/                     # shadcn components (card, badge, separator, tooltip, tabs, etc.)
 ├── lib/
+│   ├── agent-data/
+│   │   ├── data-source.ts      # live/imported mode plus selected agents
+│   │   ├── registry.ts         # provider dispatch for Claude, Codex, combined views
+│   │   ├── route-id.ts         # provider-qualified session/project ids
+│   │   └── providers/
+│   │       ├── claude/         # adapter over existing Claude reader/export
+│   │       └── codex/          # Codex JSONL discovery, parser, stats, export
 │   ├── claude-data/
 │   │   ├── types.ts            # All interfaces (SessionInfo, SessionDetail, DashboardStats, etc.)
 │   │   ├── reader.ts           # JSONL parsing, stats aggregation, search
-│   │   └── data-source.ts      # Live vs imported data toggle
+│   │   └── data-source.ts      # Compatibility re-exports for data source helpers
 │   ├── hooks.ts                # SWR hooks: useStats, useProjects, useSessions, useSessionDetail
 │   ├── format.ts               # formatTokens, formatCost, formatDuration, timeAgo, formatNumber
 │   └── utils.ts                # cn() — clsx + tailwind-merge
@@ -53,11 +60,12 @@ src/
 
 ## Data Flow
 
-1. Claude Code writes JSONL files to `~/.claude/projects/<projectId>/<sessionId>.jsonl`
-2. `reader.ts` parses these files (line-by-line streaming via `readline`)
-3. API routes (`force-dynamic`) call reader functions and return JSON
-4. Pages use SWR hooks to fetch from API routes (auto-caching, revalidation on focus)
-5. All pages are `'use client'` components
+1. Claude Code writes JSONL files to `~/.claude/projects/<projectId>/<sessionId>.jsonl`; Codex writes rollout files under `~/.codex/sessions/**/*.jsonl`.
+2. The provider registry selects Claude, Codex, or both from the current data source settings.
+3. Provider readers normalize projects, sessions, details, search results, stats, and archive data into shared dashboard types.
+4. API routes (`force-dynamic`) dispatch through the registry and return provider-qualified ids where needed.
+5. Pages use SWR hooks to fetch from API routes (auto-caching, revalidation on focus).
+6. All pages are `'use client'` components.
 
 ## Key Types (src/lib/claude-data/types.ts)
 
@@ -67,6 +75,16 @@ src/
 - **ProjectInfo** — id, name, path, sessionCount, totalMessages, totalTokens, estimatedCost, models[]
 - **DashboardStats** — totals, dailyActivity[], dailyModelTokens[], modelUsage, hourCounts, recentSessions[]
 - **CompactionInfo** — compactions, microcompactions, totalTokensSaved, compactionTimestamps[]
+
+Provider fields are available on normalized project/session shapes: `agentKind`, `nativeId`, `routeId`, `nativeProjectId`, and `projectRouteId`. Legacy unqualified Claude session links are still accepted, but new Codex ids are route-qualified as `codex:<nativeId>`.
+
+## Multi-Agent Notes
+
+- Data source mode (`live` or `imported`) is separate from selected agents (`claude`, `codex`, or both).
+- Environment overrides: `CLAUD_OMETER_CLAUDE_DIR`, `CLAUD_OMETER_CODEX_DIR`, `CLAUD_OMETER_IMPORT_DIR`, and `CLAUD_OMETER_AGENTS=claude,codex`.
+- Codex support is read-only in this phase. Do not wire Codex sessions into Claude live input, terminal, or resume routes.
+- Codex exports must exclude secrets and transient data: `auth.json`, `cap_sid`, `installation_id`, sandbox/temp folders, SQLite/log files, plugin caches, and skill caches.
+- Combined views merge sessions by timestamp and aggregate dashboard stats by summing totals and merging daily/model/hour buckets.
 
 ## Conventions
 

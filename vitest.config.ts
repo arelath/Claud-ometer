@@ -16,6 +16,9 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: 'coverage/unit',
       reporter: ['text', 'html', 'lcov', 'json-summary'],
+      thresholds: {
+        lines: 92,
+      },
       include: ['src/**/*.{ts,tsx}'],
       exclude: [
         'src/**/*.d.ts',

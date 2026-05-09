@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildTranscriptItems } from '@/lib/session-transcript';
+import {
+  buildTranscriptItems,
+  getMinimapTargets,
+  getToolResultId,
+  groupMessages,
+  insertCompactionMarkers,
+  messagePassesPreset,
+} from '@/lib/session-transcript';
 import { calculateCostAllModes } from '@/config/pricing';
 import type { TokenUsage } from '@/lib/claude-data/types';
 import type { SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
@@ -231,5 +238,80 @@ describe('session transcript grouping', () => {
       calculateCostAllModes('claude-opus-4', 300, 30, 0, 0),
     ].reduce((sum, cost) => sum + cost.subscription, 0);
     expect(toolAssistantItems[0].message.estimatedCosts?.subscription).toBeCloseTo(expectedCosts, 12);
+  });
+
+  it('handles standalone tool results, empty assistant runs, compaction placement, and minimap targets', () => {
+    const hiddenAssistant: SessionMessageDisplay = {
+      role: 'assistant',
+      content: '',
+      timestamp: 'not-a-date',
+      blocks: [{ type: 'thinking', title: 'Thinking', summary: '', details: [] }],
+    };
+    const result = toolResult(1, 'tool-missing-parent', 'ORPHAN_RESULT');
+    const system: SessionMessageDisplay = {
+      role: 'command',
+      content: 'npm test',
+      timestamp: '2026-05-03T10:00:02.000Z',
+    };
+    const user: SessionMessageDisplay = {
+      role: 'user',
+      content: 'Continue.',
+      timestamp: '2026-05-03T10:00:03.000Z',
+    };
+
+    expect(getToolResultId(result)).toBe('tool-missing-parent');
+    expect(getToolResultId({ ...result, blocks: [] })).toBeUndefined();
+
+    const groups = groupMessages([
+      { message: hiddenAssistant, index: 0 },
+      { message: result, index: 1 },
+      { message: system, index: 2 },
+      { message: user, index: 3 },
+    ]);
+
+    expect(groups[0]).toMatchObject({ type: 'assistant', index: 0 });
+    expect(groups[1]).toMatchObject({ type: 'system-group' });
+    expect(groups[2]).toMatchObject({ type: 'user', index: 3 });
+
+    const withCompactions = insertCompactionMarkers(groups, [
+      'invalid-date',
+      '2026-05-03T10:00:01.000Z',
+      '2026-05-03T10:00:02.500Z',
+      '2026-05-03T10:00:04.000Z',
+    ]);
+
+    expect(withCompactions.filter(item => item.type === 'compaction')).toHaveLength(2);
+    expect(getMinimapTargets(withCompactions).map(target => target.targetId)).toEqual(expect.arrayContaining([
+      'conversation-message-0',
+      'conversation-message-2',
+      'conversation-message-3',
+      'conversation-compaction-0',
+      'conversation-compaction-1',
+      'conversation-compaction-2',
+    ]));
+  });
+
+  it('filters transcript items by preset and tool name without dropping user context', () => {
+    const read = toolCall('Read', 'read-filter-1', { file_path: 'src/one.ts' });
+    const edit = toolCall('Edit', 'edit-filter-2', { file_path: 'src/two.ts' });
+    const messages: SessionMessageDisplay[] = [
+      { role: 'user', content: 'Use tools.', timestamp: '2026-05-03T10:00:00.000Z' },
+      assistantWithTool(1, read),
+      toolResult(2, 'read-filter-1', 'READ_OUTPUT'),
+      assistantWithTool(3, edit),
+      toolResult(4, 'edit-filter-2', 'EDIT_OUTPUT'),
+      { role: 'system', content: 'hidden when filtering', timestamp: '2026-05-03T10:00:05.000Z' },
+    ];
+
+    expect(messagePassesPreset(messages[5], 'narrative')).toBe(false);
+    expect(messagePassesPreset(messages[5], 'tools')).toBe(false);
+    expect(messagePassesPreset(messages[5], 'all')).toBe(true);
+
+    const readItems = buildTranscriptItems(messages, 'tools', [], 'Read');
+
+    expect(readItems.some(item => item.type === 'user')).toBe(true);
+    const assistantItems = readItems.filter(item => item.type === 'assistant');
+    expect(assistantItems).toHaveLength(1);
+    expect(assistantItems[0].toolPairs[0].toolUse?.message.toolCalls?.[0]?.name).toBe('Read');
   });
 });

@@ -17,11 +17,16 @@ import {
   FileArchive,
   ArrowRightLeft,
 } from 'lucide-react';
+import type { AgentKind } from '@/lib/agent-data/types';
+import { getAgentLabel } from '@/lib/agent-data/types';
+import { AgentBadge } from '@/components/agent-badge';
 
 const fetcher = (url: string) => fetch(url).then(r => r.json());
 
 interface DataSourceInfo {
   active: 'live' | 'imported';
+  agents: AgentKind[];
+  detectedAgents: AgentKind[];
   hasImportedData: boolean;
   importMeta: {
     importedAt: string;
@@ -31,6 +36,7 @@ interface DataSourceInfo {
     sessionCount: number;
     fileCount: number;
     totalSize: number;
+    agents?: AgentKind[];
   } | null;
 }
 
@@ -57,7 +63,7 @@ export default function DataPage() {
       const a = document.createElement('a');
       a.href = url;
       a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]
-        || `claude-code-data-${new Date().toISOString().slice(0, 10)}.zip`;
+        || `agent-data-${new Date().toISOString().slice(0, 10)}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -109,7 +115,7 @@ export default function DataPage() {
       if (!res.ok) throw new Error('Failed to switch');
       mutateSource();
       mutate(() => true);
-      setMessage({ type: 'success', text: `Switched to ${source === 'live' ? 'live (~/.claude/)' : 'imported'} data.` });
+      setMessage({ type: 'success', text: `Switched to ${source === 'live' ? 'live agent' : 'imported'} data.` });
     } catch {
       setMessage({ type: 'error', text: 'Failed to switch data source.' });
     }
@@ -128,11 +134,29 @@ export default function DataPage() {
     }
   }, [mutateSource]);
 
+  const handleSetAgents = useCallback(async (agents: AgentKind[]) => {
+    if (agents.length === 0) return;
+    setMessage(null);
+    try {
+      const res = await fetch('/api/data-source', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: sourceInfo?.active || 'live', agents }),
+      });
+      if (!res.ok) throw new Error('Failed to switch agents');
+      mutateSource();
+      mutate(() => true);
+      setMessage({ type: 'success', text: `Selected ${agents.map(getAgentLabel).join(' + ')} data.` });
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to switch selected agents.' });
+    }
+  }, [mutateSource, sourceInfo?.active]);
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-bold tracking-tight">Data Management</h1>
-        <p className="text-sm text-muted-foreground">Export, import, and manage your dashboard data</p>
+        <p className="text-sm text-muted-foreground">Export, import, and manage your agent dashboard data</p>
       </div>
 
       {/* Status Message */}
@@ -177,7 +201,7 @@ export default function DataPage() {
               <HardDrive className={`h-5 w-5 ${sourceInfo?.active === 'live' ? 'text-primary' : 'text-muted-foreground'}`} />
               <div className="text-left">
                 <p className="text-sm font-medium">Live Data</p>
-                <p className="text-xs text-muted-foreground">Read from ~/.claude/ in real-time</p>
+                <p className="text-xs text-muted-foreground">Read from selected local agent directories</p>
               </div>
               {sourceInfo?.active === 'live' && (
                 <CheckCircle2 className="h-4 w-4 text-primary ml-auto" />
@@ -209,6 +233,64 @@ export default function DataPage() {
         </CardContent>
       </Card>
 
+      <Card className="border-border/50 shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold">Agent Sources</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {(['claude', 'codex'] as AgentKind[]).map(agent => {
+              const detected = Boolean(sourceInfo?.detectedAgents?.includes(agent));
+              const selected = Boolean(sourceInfo?.agents?.includes(agent));
+              return (
+                <button
+                  key={agent}
+                  type="button"
+                  disabled={!detected}
+                  onClick={() => handleSetAgents([agent])}
+                  className={`flex items-center justify-between rounded-lg border-2 p-3 text-left transition-all ${
+                    selected && sourceInfo?.agents?.length === 1
+                      ? 'border-primary bg-primary/5'
+                      : detected
+                        ? 'border-border hover:border-primary/50'
+                        : 'border-border/50 opacity-50 cursor-not-allowed'
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <AgentBadge agentKind={agent} />
+                    <p className="text-xs text-muted-foreground">
+                      {detected ? `${getAgentLabel(agent)} data detected` : `${getAgentLabel(agent)} not found`}
+                    </p>
+                  </div>
+                  {selected && sourceInfo?.agents?.length === 1 && <CheckCircle2 className="h-4 w-4 text-primary" />}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              disabled={(sourceInfo?.detectedAgents?.length || 0) < 2}
+              onClick={() => handleSetAgents(['claude', 'codex'])}
+              className={`flex items-center justify-between rounded-lg border-2 p-3 text-left transition-all ${
+                sourceInfo?.agents?.length === 2
+                  ? 'border-primary bg-primary/5'
+                  : (sourceInfo?.detectedAgents?.length || 0) >= 2
+                    ? 'border-border hover:border-primary/50'
+                    : 'border-border/50 opacity-50 cursor-not-allowed'
+              }`}
+            >
+              <div className="space-y-1">
+                <div className="flex gap-1">
+                  <AgentBadge agentKind="claude" />
+                  <AgentBadge agentKind="codex" />
+                </div>
+                <p className="text-xs text-muted-foreground">Use all detected agents</p>
+              </div>
+              {sourceInfo?.agents?.length === 2 && <CheckCircle2 className="h-4 w-4 text-primary" />}
+            </button>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-2 gap-4">
         {/* Export */}
         <Card className="border-border/50 shadow-sm">
@@ -220,8 +302,8 @@ export default function DataPage() {
           </CardHeader>
           <CardContent className="pt-0 space-y-4">
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Download all your Claude Code data as a ZIP archive. Includes session logs,
-              stats, history, plans, and todos. Load it on another machine or keep as a backup.
+              Download selected agent data as a ZIP archive. Includes safe session logs and metadata.
+              Load it on another machine or keep as a backup.
             </p>
             <div className="rounded-lg bg-accent/50 p-3 space-y-1.5">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Includes</p>

@@ -3,9 +3,14 @@ import type { SessionMessageDisplay, SessionToolCallDetail } from '@/lib/claude-
 import { normalizeDisplayPath } from '@/lib/path-utils';
 import { detailMatchesKey, parseLineNumber } from '@/lib/string-utils';
 
+const READ_LOADED_LINE_DETAIL_KEYS = ['content.file.numLines', 'numLines'];
+const READ_TOTAL_LINE_DETAIL_KEYS = ['content.file.totalLines', 'totalLines'];
+
 interface FileSnapshot {
   path: string;
   startLine: number;
+  loadedLineCount: number | null;
+  totalLineCount: number | null;
   content: string;
   messageIndex: number;
 }
@@ -32,19 +37,31 @@ function normalizePath(pathValue: string): string {
 }
 
 function normalizeTextLines(value: string): string[] {
-  const normalized = value.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n?/g, '\n');
+  const normalized = value
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n$/, '');
   if (!normalized) return [];
   return normalized.split('\n');
 }
 
-function getStartLineFromDetails(details: SessionToolCallDetail[]): number | null {
-  for (const key of ANTHROPIC_START_LINE_DETAIL_KEYS) {
+function getLineNumberFromDetails(details: SessionToolCallDetail[], keys: readonly string[]): number | null {
+  for (const key of keys) {
     const detail = findDetail(details, [key]);
     const lineNumber = parseLineNumber(detail?.value);
     if (lineNumber == null) continue;
     return Math.max(1, lineNumber);
   }
   return null;
+}
+
+function getStartLineFromDetails(details: SessionToolCallDetail[]): number | null {
+  return getLineNumberFromDetails(details, ANTHROPIC_START_LINE_DETAIL_KEYS);
+}
+
+function getLineCountFromDetails(details: SessionToolCallDetail[], keys: readonly string[]): number | null {
+  return getLineNumberFromDetails(details, keys);
 }
 
 function getToolPath(details: SessionToolCallDetail[]): string | null {
@@ -84,11 +101,15 @@ function getFileSnapshots(messages: SessionMessageDisplay[]): FileSnapshot[] {
       const readRange = toolUseId ? readToolRanges.get(toolUseId) : undefined;
       const path = getToolPath(block.details) || readRange?.path;
       const startLine = getStartLineFromDetails(block.details) ?? readRange?.startLine ?? 1;
+      const loadedLineCount = getLineCountFromDetails(block.details, READ_LOADED_LINE_DETAIL_KEYS);
+      const totalLineCount = getLineCountFromDetails(block.details, READ_TOTAL_LINE_DETAIL_KEYS);
 
       if (!path || startLine == null) continue;
       snapshots.push({
         path,
         startLine,
+        loadedLineCount,
+        totalLineCount,
         content: block.content,
         messageIndex,
       });
@@ -186,6 +207,37 @@ function inferStartLineFromPreviousEdits(
   return null;
 }
 
+function getSnapshotLineCount(snapshot: FileSnapshot): number {
+  return snapshot.loadedLineCount ?? normalizeTextLines(snapshot.content).length;
+}
+
+function isFullFileSnapshot(snapshot: FileSnapshot): boolean {
+  if (snapshot.startLine !== 1) return false;
+  if (snapshot.totalLineCount == null) return false;
+
+  const loadedLineCount = getSnapshotLineCount(snapshot);
+  return loadedLineCount >= snapshot.totalLineCount;
+}
+
+function findLatestFullFileSnapshot(
+  filePath: string,
+  messageIndex: number,
+  snapshots: FileSnapshot[],
+): FileSnapshot | undefined {
+  return snapshots
+    .filter(snapshot => snapshot.path === filePath && snapshot.messageIndex < messageIndex && isFullFileSnapshot(snapshot))
+    .sort((left, right) => right.messageIndex - left.messageIndex)[0];
+}
+
+function resolveWriteOldTextFromSnapshot(
+  filePath: string,
+  messageIndex: number,
+  snapshots: FileSnapshot[],
+): string | null {
+  const snapshot = findLatestFullFileSnapshot(filePath, messageIndex, snapshots);
+  return snapshot?.content ?? null;
+}
+
 export function getSessionDiffArtifacts(messages: SessionMessageDisplay[]): SessionDiffArtifact[] {
   const snapshots = getFileSnapshots(messages);
   const artifacts: SessionDiffArtifact[] = [];
@@ -207,7 +259,11 @@ export function getSessionDiffArtifacts(messages: SessionMessageDisplay[]): Sess
           }];
 
       diffItems.forEach((diffItem, artifactIndex) => {
-        const oldText = diffItem.oldText;
+        const isWriteArtifact = tool.name === ANTHROPIC_TOOL_NAMES.write;
+        const snapshotOldText = isWriteArtifact && diffItem.oldText === ''
+          ? resolveWriteOldTextFromSnapshot(filePath, messageIndex, snapshots)
+          : null;
+        const oldText = snapshotOldText ?? diffItem.oldText;
         const newText = diffItem.newText;
         if (!diffItem.includeWhenEmpty && !oldText && !newText) return;
 

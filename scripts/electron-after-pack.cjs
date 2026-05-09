@@ -13,4 +13,13 @@ exports.default = async function afterPack(context) {
 
   fs.rmSync(destination, { recursive: true, force: true });
   fs.cpSync(source, destination, { recursive: true });
+
+  const preferredMsys2Source = path.join(context.packager.projectDir, 'vendor', 'msys2');
+  const legacyMsys2Source = path.join(context.packager.projectDir, 'vender', 'msys2');
+  const msys2Source = fs.existsSync(preferredMsys2Source) ? preferredMsys2Source : legacyMsys2Source;
+  const msys2Destination = path.join(context.appOutDir, 'resources', 'msys2');
+  if (fs.existsSync(msys2Source)) {
+    fs.rmSync(msys2Destination, { recursive: true, force: true });
+    fs.cpSync(msys2Source, msys2Destination, { recursive: true });
+  }
 };

@@ -6,6 +6,7 @@ import { useCostMode } from '@/lib/cost-mode-context';
 import { formatCost, formatDuration, timeAgo } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { AgentBadge } from '@/components/agent-badge';
 import { ArrowLeft, Clock, GitBranch, MessageSquare, Wrench } from 'lucide-react';
 import Link from 'next/link';
 
@@ -13,7 +14,7 @@ export function ProjectDetailClient({ projectId, initialSessions }: { projectId:
   const { data: sessions, isLoading } = useProjectSessions(projectId, initialSessions);
   const { pickCost } = useCostMode();
 
-  const projectName = projectId.split('-').pop() || projectId;
+  const projectName = sessions?.[0]?.projectName || projectId.split('-').pop() || projectId;
 
   if (isLoading || !sessions) {
     return (
@@ -51,7 +52,10 @@ export function ProjectDetailClient({ projectId, initialSessions }: { projectId:
           <ArrowLeft className="h-4 w-4" />
         </Link>
         <div>
-          <h1 className="text-xl font-bold tracking-tight">{projectName}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold tracking-tight">{projectName}</h1>
+            {sessions?.[0]?.agentKind && <AgentBadge agentKind={sessions[0].agentKind} />}
+          </div>
           <p className="text-sm text-muted-foreground">{sessions.length} sessions</p>
         </div>
       </div>
@@ -124,8 +128,9 @@ export function ProjectDetailClient({ projectId, initialSessions }: { projectId:
                         {m}
                       </Badge>
                     ))}
+                    {session.agentKind && <AgentBadge agentKind={session.agentKind} className="text-[10px] px-1.5 py-0" />}
                     <span className="text-xs text-muted-foreground">
-                      {session.id.slice(0, 8)}...
+                      {(session.nativeId || session.id).slice(0, 8)}...
                     </span>
                   </div>
                   <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">

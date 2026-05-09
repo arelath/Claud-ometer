@@ -41,6 +41,17 @@ describe('tool parser helpers', () => {
       { key: 'file_path', label: 'File', value: 'a.txt' },
       { key: 'content', label: 'Content', value: '3 lines' },
     ]);
+
+    expect(buildToolCallDetails('TodoWrite', { todos: [{ text: 'one' }, { text: 'two' }], empty: {} })).toEqual([
+      { key: 'todos', label: 'Todos', value: '2 items' },
+      { key: 'empty', label: 'Empty', value: '{}' },
+    ]);
+    expect(buildToolCallDetails('Glob', { paths: Array.from({ length: 50 }, (_, index) => `src/${index}.ts`) })[0]).toEqual({
+      key: 'paths',
+      label: 'Paths',
+      value: '50 items',
+    });
+    expect(buildToolCallDetails('Unknown', null)).toEqual([]);
   });
 
   it('builds diff artifacts from edit-style tool calls', () => {
@@ -137,6 +148,18 @@ describe('tool parser helpers', () => {
       location: 'insert - cell abc123',
       includeWhenEmpty: true,
     });
+
+    const deleted = buildToolCallDisplay('NotebookEdit', 'tool-2', {
+      notebook_path: 'notebooks/analysis.ipynb',
+      edit_mode: 'delete',
+      old_source: 'print("bye")',
+    });
+    expect(deleted.artifact).toMatchObject({
+      oldText: 'print("bye")',
+      newText: '',
+      location: 'delete',
+      includeWhenEmpty: true,
+    });
   });
 
   it('flattens nested structured records up to the supported depth', () => {
@@ -151,8 +174,9 @@ describe('tool parser helpers', () => {
 
   it('extracts text previews from strings, arrays, and structured content', () => {
     expect(extractTextPreview('  hello world  ')).toBe('hello world');
-    expect(extractTextPreview([{ text: 'first' }, { tool_name: 'Read' }])).toBe('first, Read');
+    expect(extractTextPreview([{ text: 'first\nline' }, { tool_name: 'Read' }])).toBe('first\nline\nRead');
     expect(extractTextPreview({ content: 'nested text' })).toBe('nested text');
+    expect(extractTextPreview({ text: 'direct text' })).toBe('direct text');
     expect(extractTextPreview([''])).toBeUndefined();
   });
 
@@ -171,6 +195,25 @@ describe('tool parser helpers', () => {
       { key: 'tool_use_id', label: 'Tool call', value: 'tool-1' },
       { key: 'filePath', label: 'File', value: 'src/app.ts' },
       { key: 'sourceToolAssistantUUID', label: 'Source assistant', value: 'assistant-uuid' },
+    ]));
+
+    const primitive = buildToolResultBlock(undefined, undefined);
+    expect(primitive).toMatchObject({
+      title: 'Tool Result',
+      summary: 'Tool Result',
+      content: undefined,
+      details: [],
+    });
+
+    const fallback = buildToolResultBlock(
+      { content: { text: 'nested result' } },
+      { type: 'rename', addedNames: ['newName'], removedNames: ['oldName'], exitCode: 0 },
+    );
+    expect(fallback.summary).toBe('nested result');
+    expect(fallback.details).toEqual(expect.arrayContaining([
+      { key: 'addedNames', label: 'Added', value: 'newName' },
+      { key: 'removedNames', label: 'Removed', value: 'oldName' },
+      { key: 'exitCode', label: 'Exit code', value: '0' },
     ]));
   });
 
@@ -219,6 +262,28 @@ describe('tool parser helpers', () => {
     expect(buildEventBlock({ type: 'empty', sessionId: 's1', timestamp: 't' })).toMatchObject({
       type: 'event',
       title: 'Empty',
+    });
+    expect(buildEventBlock({
+      type: 'attachment',
+      sessionId: 's1',
+      timestamp: '2026-05-03T12:00:00.000Z',
+      attachment: { type: 'hook_success', stdout: 'hook output' },
+    })).toMatchObject({
+      title: 'Attachment: Hook success',
+      summary: 'hook output',
+      content: 'hook output',
+    });
+    expect(buildEventBlock({
+      type: 'custom_event',
+      sessionId: 's1',
+      timestamp: '2026-05-03T12:00:00.000Z',
+      data: { statusMessage: 'ignored nested data' },
+      level: 'info',
+      content: 'custom event content',
+    } as SessionMessage & { level: string; content: string })).toMatchObject({
+      title: 'Custom event',
+      summary: 'custom event content',
+      content: 'custom event content',
     });
   });
 });

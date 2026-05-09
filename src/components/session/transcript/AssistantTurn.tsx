@@ -10,6 +10,7 @@ import { getToolResultId, type AssistantTimelineItem, type ToolPair } from '@/li
 import { ANTHROPIC_FILE_DETAIL_KEYS } from '@/config/anthropic-schema';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { findDetail } from '../detail-utils';
+import { useSessionRenderContext } from '../session-render-context';
 import { ToolCallInline, ToolResultInline } from './ToolCall';
 import { CompactionDivider, ThinkingSummary, BlockCard } from './SystemEvent';
 
@@ -20,6 +21,7 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
   toolTimeline?: AssistantTimelineItem[];
 }) {
   const { pickCost } = useCostMode();
+  const { assistantLabel = 'Claude' } = useSessionRenderContext();
   const thinkingBlocks = (msg.blocks || []).filter(block => block.type === 'thinking');
   const eventBlocks = (msg.blocks || []).filter(block => block.type === 'event');
 
@@ -56,7 +58,7 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
           <div className="w-[18px] h-[18px] rounded bg-amber-500/10 flex items-center justify-center">
             <Bot className="h-2.5 w-2.5 text-amber-600" />
           </div>
-          <span className="text-[11px] font-medium text-foreground">Claude</span>
+          <span className="text-[11px] font-medium text-foreground">{assistantLabel}</span>
           {modelLabel && <span className="text-[11px] text-muted-foreground">{modelLabel}</span>}
           {msg.timestamp && !Number.isNaN(new Date(msg.timestamp).getTime()) && (
             <span className="text-[11px] text-muted-foreground">- {format(new Date(msg.timestamp), 'h:mm:ss a')}</span>

@@ -1,7 +1,8 @@
 import { DashboardClient } from '@/components/pages/dashboard-client';
-import { getDashboardStats } from '@/lib/claude-data/reader';
+import { getActiveProviders } from '@/lib/agent-data/registry';
+import { mergeDashboardStats } from '@/lib/agent-data/aggregate';
 
 export default async function DashboardPage() {
-  const stats = await getDashboardStats();
+  const stats = mergeDashboardStats(await Promise.all(getActiveProviders().map(provider => provider.getDashboardStats())));
   return <DashboardClient initialStats={stats} />;
 }

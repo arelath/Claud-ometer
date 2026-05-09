@@ -1,9 +1,8 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import readline from 'readline';
 import { z } from 'zod';
-import { getActiveDataSource, getImportDir } from './data-source';
+import { getAgentDataDir } from './data-source';
 import type { SessionMessage } from './types';
 
 const looseRecord = z.record(z.string(), z.unknown());
@@ -41,10 +40,7 @@ export async function forEachJsonlLine(filePath: string, callback: (msg: Session
 }
 
 export function getClaudeDir(): string {
-  if (getActiveDataSource() === 'imported') {
-    return path.join(getImportDir(), 'claude-data');
-  }
-  return path.join(os.homedir(), '.claude');
+  return getAgentDataDir('claude');
 }
 
 export function getProjectsDir(): string {

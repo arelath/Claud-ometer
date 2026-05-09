@@ -6,6 +6,7 @@ import { useCostMode } from '@/lib/cost-mode-context';
 import { formatTokens, formatCost, timeAgo } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { AgentBadge } from '@/components/agent-badge';
 import { FolderKanban, MessageSquare, Clock, Layers } from 'lucide-react';
 import Link from 'next/link';
 
@@ -43,7 +44,10 @@ export function ProjectsClient({ initialProjects }: { initialProjects: ProjectIn
                         <FolderKanban className="h-4 w-4 text-primary" />
                       </div>
                       <div>
-                        <h3 className="text-sm font-semibold">{project.name}</h3>
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="text-sm font-semibold">{project.name}</h3>
+                          {project.agentKind && <AgentBadge agentKind={project.agentKind} className="text-[9px] px-1 py-0" />}
+                        </div>
                         <p className="text-[10px] text-muted-foreground truncate max-w-[180px]">
                           {project.path}
                         </p>

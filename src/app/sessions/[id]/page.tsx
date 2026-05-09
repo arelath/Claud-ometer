@@ -24,6 +24,8 @@ import { useSessionViewState } from '@/hooks/use-session-view-state';
 import { formatCost, formatDuration, formatTokens } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { AgentBadge } from '@/components/agent-badge';
+import { getAgentLabel } from '@/lib/agent-data/types';
 import { Separator } from '@/components/ui/separator';
 import { ArtifactFullscreenViewer } from '@/components/session/artifact-viewer';
 import { ContextFilesPanel, ContextWindowMeter } from '@/components/session/context-panel';
@@ -31,9 +33,9 @@ import {
   ChangesView,
   SessionViewTabs,
 } from '@/components/session/diff-viewer';
-import { ManagedTerminalPanel } from '@/components/session/managed-terminal-panel';
 import { Minimap } from '@/components/session/minimap';
 import { LiveSessionSendBox } from '@/components/session/live-session-send-box';
+import { LiveWorkingIndicator } from '@/components/session/live-working-indicator';
 import { SessionPill } from '@/components/session/session-pill';
 import { ResumeSessionButton } from '@/components/session/resume-session-button';
 import {
@@ -167,66 +169,76 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const compactionCount = compaction.compactions + compaction.microcompactions;
   const sessionRenderContext: SessionRenderContextValue = {
     projectRoot: session.cwd || undefined,
+    agentKind: session.agentKind,
+    assistantLabel: session.agentKind ? getAgentLabel(session.agentKind) : 'Claude',
     openArtifact: setArtifactViewer,
   };
 
   return (
     <SessionRenderContext.Provider value={sessionRenderContext}>
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-start gap-3">
-            <Link href="/sessions" className="mt-0.5 rounded-lg border border-border p-1.5 hover:bg-accent transition-colors">
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <h1 className="min-w-0 truncate text-xl font-bold tracking-tight">{session.projectName}</h1>
-                {models.map(model => <Badge key={model} variant="secondary" className="text-xs">{model}</Badge>)}
-                {session.isLive && (
-                  <Badge className="border-green-500/30 bg-green-500/10 text-green-700 hover:bg-green-500/10 dark:text-green-300">
-                    Live
-                  </Badge>
-                )}
-                {session.isLive && session.liveStatus && (
-                  <SessionPill
-                    value={session.liveStatus}
-                    tone={session.liveStatus === 'busy' ? 'warn' : session.liveStatus === 'idle' ? 'good' : 'neutral'}
-                  />
-                )}
-                {(!session.isLive || compactionCount > 0) && (
-                  <SessionPill
-                    value={compactionCount > 0 ? 'compacted' : 'completed'}
-                    tone={compactionCount > 0 ? 'warn' : 'good'}
-                  />
-                )}
-                {sourceInfo?.active === 'live' && !session.isLive && (
-                  <ResumeSessionButton sessionId={session.id} showLabel />
-                )}
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="font-mono">{session.id.slice(0, 8)}</span>
-                {session.gitBranch && (
-                  <>
-                    <span className="opacity-40">-</span>
-                    <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{session.gitBranch}</span>
-                  </>
-                )}
-                <span className="opacity-40">-</span>
-                <span>{format(new Date(session.timestamp), 'MMM d, yyyy h:mm a')}</span>
+      <div className="flex h-[calc(100vh-3rem)] min-h-0 flex-col overflow-hidden">
+        <div className="shrink-0 pb-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <Link href="/sessions" className="mt-0.5 rounded-lg border border-border p-1.5 hover:bg-accent transition-colors">
+                <ArrowLeft className="h-4 w-4" />
+              </Link>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <h1 className="min-w-0 truncate text-xl font-bold tracking-tight">{session.projectName}</h1>
+                  {session.agentKind && <AgentBadge agentKind={session.agentKind} />}
+                  {models.map(model => <Badge key={model} variant="secondary" className="text-xs">{model}</Badge>)}
+                  {session.isLive && (
+                    <Badge className="border-green-500/30 bg-green-500/10 text-green-700 hover:bg-green-500/10 dark:text-green-300">
+                      Live
+                    </Badge>
+                  )}
+                  {session.isLive && session.liveStatus === 'busy' && (
+                    <LiveWorkingIndicator
+                      activeToolName={session.liveActiveToolName}
+                      busySinceAtMs={session.liveBusySinceAtMs}
+                    />
+                  )}
+                  {session.isLive && session.liveStatus && session.liveStatus !== 'busy' && (
+                    <SessionPill
+                      value={session.liveStatus}
+                      tone={session.liveStatus === 'idle' ? 'good' : 'neutral'}
+                    />
+                  )}
+                  {(!session.isLive || compactionCount > 0) && (
+                    <SessionPill
+                      value={compactionCount > 0 ? 'compacted' : 'completed'}
+                      tone={compactionCount > 0 ? 'warn' : 'good'}
+                    />
+                  )}
+                  {sourceInfo?.active === 'live' && !session.isLive && session.agentKind !== 'codex' && (
+                    <ResumeSessionButton sessionId={session.id} showLabel />
+                  )}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-mono">{(session.nativeId || session.id).slice(0, 8)}</span>
+                  {session.gitBranch && (
+                    <>
+                      <span className="opacity-40">-</span>
+                      <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{session.gitBranch}</span>
+                    </>
+                  )}
+                  <span className="opacity-40">-</span>
+                  <span>{format(new Date(session.timestamp), 'MMM d, yyyy h:mm a')}</span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:flex lg:shrink-0 lg:justify-end">
-            <Card className="min-w-[86px] border-primary/30 bg-primary/5 shadow-sm">
-              <CardContent className="px-2.5 py-1.5 text-center">
-                <div className="flex items-center justify-center gap-1">
-                  <Coins className="h-3 w-3 text-primary" />
-                  <p className="whitespace-nowrap text-sm font-bold leading-5 text-primary">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
-                </div>
-                <p className="text-[9px] leading-3 text-muted-foreground">Est. Usage</p>
-              </CardContent>
-            </Card>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:flex lg:shrink-0 lg:justify-end">
+              <Card className="min-w-[86px] border-primary/30 bg-primary/5 shadow-sm">
+                <CardContent className="px-2.5 py-1.5 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    <Coins className="h-3 w-3 text-primary" />
+                    <p className="whitespace-nowrap text-sm font-bold leading-5 text-primary">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
+                  </div>
+                  <p className="text-[9px] leading-3 text-muted-foreground">Est. Usage</p>
+                </CardContent>
+              </Card>
             <Card className="min-w-[86px] border-border/50 shadow-sm">
               <CardContent className="px-2.5 py-1.5 text-center">
                 <div className="flex items-center justify-center gap-1">
@@ -293,10 +305,12 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             )}
           </div>
         </div>
+        </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_308px] gap-3">
-          <Card className="border-border/50 shadow-sm">
-            <CardHeader className="space-y-3 pb-3">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_308px]">
+          <section className="flex min-h-0 flex-col gap-2">
+          <Card className="min-h-0 flex-1 gap-0 overflow-hidden border-border/50 py-0 shadow-sm">
+            <CardHeader className="shrink-0 space-y-3 px-4 py-3">
               <SessionViewTabs
                 view={mainView}
                 onChange={setMainView}
@@ -311,11 +325,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 <FilterPresets preset={preset} onChange={handlePresetChange} counts={presetCounts} />
               )}
             </CardHeader>
-            <CardContent className="pt-0">
+            <CardContent className="min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-0">
               {mainView === 'conversation' ? (
-                <div className="flex gap-3">
-                  <div className="relative flex-1 min-w-0">
-                    <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="max-h-[78vh] overflow-y-auto pr-2 space-y-2">
+                <div className="flex h-full min-h-0 gap-3">
+                  <div className="relative min-h-0 flex-1 min-w-0">
+                    <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="h-full min-h-0 space-y-2 overflow-y-auto pr-2">
                       {groupedMessages.map((group, groupIndex) => {
                         if (group.type === 'compaction') {
                           return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
@@ -376,9 +390,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               )}
             </CardContent>
           </Card>
+          {session.isLive && <LiveSessionSendBox sessionId={session.id} liveStatus={session.liveStatus} />}
+          </section>
 
-          <div className="space-y-2">
-            <ContextWindowMeter session={session} messages={messages} />
+          <aside className="hidden h-full min-h-0 flex-col gap-2 overflow-hidden xl:flex">
+            <ContextWindowMeter session={session} messages={messages} className="shrink-0" />
 
             <ContextFilesPanel
               contextFiles={contextFiles}
@@ -387,10 +403,13 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               onJumpToMessage={handleJumpToMessage}
               hasDiffForPath={hasDiffForPath}
               onOpenDiff={handleOpenDiffForPath}
+              fillHeight
+              className="min-h-[150px]"
             />
 
+            <div className="min-h-0 shrink-0 space-y-2 overflow-y-auto pr-1 xl:max-h-[45%]">
             {topTools.length > 0 && (
-              <Card className="border-border/50 shadow-sm py-0 gap-0">
+              <Card className="shrink-0 border-border/50 shadow-sm py-0 gap-0">
                 <CardHeader className="px-3 pt-3 pb-2.5">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm font-semibold">Tools Used</CardTitle>
@@ -426,7 +445,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
             )}
 
             {compactionCount > 0 && (
-              <Card className="border-amber-300/50 bg-amber-50/30 dark:bg-amber-950/10 shadow-sm py-0 gap-0">
+              <Card className="shrink-0 border-amber-300/50 bg-amber-50/30 dark:bg-amber-950/10 shadow-sm py-0 gap-0">
                 <CardHeader className="px-3 pt-3 pb-2.5">
                   <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
                     <Minimize2 className="h-3.5 w-3.5" />
@@ -468,11 +487,27 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               </Card>
             )}
 
-            <Card className="border-border/50 shadow-sm py-0 gap-0">
+            <Card className="shrink-0 border-border/50 shadow-sm py-0 gap-0">
               <CardHeader className="px-3 pt-3 pb-2.5">
                 <CardTitle className="text-sm font-semibold">Metadata</CardTitle>
               </CardHeader>
               <CardContent className="px-3 pb-3 pt-0 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Provider</span>
+                  <span className="font-medium">{session.agentKind || 'claude'}</span>
+                </div>
+                {session.routeId && (
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Route ID</span>
+                    <span className="font-mono truncate max-w-[160px]">{session.routeId}</span>
+                  </div>
+                )}
+                {session.nativeId && (
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Native ID</span>
+                    <span className="font-mono truncate max-w-[160px]">{session.nativeId}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">Version</span>
                   <span className="font-mono">{session.version}</span>
@@ -489,14 +524,9 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 )}
               </CardContent>
             </Card>
-          </div>
+            </div>
+          </aside>
         </div>
-        {session.isLive && (
-          <>
-            <ManagedTerminalPanel sessionId={session.id} />
-            <LiveSessionSendBox sessionId={session.id} liveStatus={session.liveStatus} />
-          </>
-        )}
       </div>
       <ArtifactFullscreenViewer artifact={artifactViewer} onClose={() => setArtifactViewer(null)} />
     </SessionRenderContext.Provider>

@@ -15,6 +15,7 @@ import {
 import type { SessionMessageDisplay } from '@/lib/claude-data/types';
 import { formatTokens } from '@/lib/format';
 import { formatDisplayPath, splitDisplayPath } from '@/lib/path-utils';
+import { cn } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSessionRenderContext } from './session-render-context';
@@ -88,7 +89,15 @@ function buildWindowMeterSnapshot(messages: SessionMessageDisplay[]): MeterSnaps
   };
 }
 
-export function ContextWindowMeter({ session, messages }: { session: SessionTokenSummary; messages: SessionMessageDisplay[] }) {
+export function ContextWindowMeter({
+  session,
+  messages,
+  className,
+}: {
+  session: SessionTokenSummary;
+  messages: SessionMessageDisplay[];
+  className?: string;
+}) {
   const [mode, setMode] = useState<TokenMeterMode>('usage');
   const usageSnapshot = useMemo(() => buildUsageMeterSnapshot(session), [session]);
   const windowSnapshot = useMemo(() => buildWindowMeterSnapshot(messages), [messages]);
@@ -98,7 +107,7 @@ export function ContextWindowMeter({ session, messages }: { session: SessionToke
   const percents = getMeterPercents(snapshot.segments.map(segment => segment.value));
 
   return (
-    <Card className="border-border/50 shadow-sm py-0 gap-0">
+    <Card className={cn('border-border/50 shadow-sm py-0 gap-0', className)}>
       <CardContent className="p-3">
         <div className="mb-2.5 flex items-start justify-between gap-2">
           <div>
@@ -278,13 +287,24 @@ function ContextFileRow({ file, onJumpToMessage, copiedPath, onCopyPath, hasDiff
   );
 }
 
-export function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJumpToMessage, hasDiffForPath, onOpenDiff }: {
+export function ContextFilesPanel({
+  contextFiles,
+  copiedPath,
+  onCopyPath,
+  onJumpToMessage,
+  hasDiffForPath,
+  onOpenDiff,
+  className,
+  fillHeight = false,
+}: {
   contextFiles: ContextFileGroups;
   copiedPath: string | null;
   onCopyPath: (filePath: string) => void;
   onJumpToMessage: (messageIndexes: number[]) => void;
   hasDiffForPath?: (filePath: string) => boolean;
   onOpenDiff?: (filePath: string) => boolean;
+  className?: string;
+  fillHeight?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   const allFiles = [...contextFiles.inContext, ...contextFiles.referenced];
@@ -293,15 +313,15 @@ export function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJump
   if (totalCount === 0) return null;
 
   const initialShow = 6;
-  const visibleFiles = showAll ? allFiles : allFiles.slice(0, initialShow);
+  const visibleFiles = fillHeight || showAll ? allFiles : allFiles.slice(0, initialShow);
   const remaining = totalCount - initialShow;
   const allPathsText = getContextFilePathsText(allFiles);
   const isAllCopied = copiedPath === allPathsText;
 
   return (
-    <Card className="border-border/50 shadow-sm py-0 gap-0">
-      <CardContent className="p-3">
-        <div className="flex items-center justify-between mb-3">
+    <Card className={cn('border-border/50 shadow-sm py-0 gap-0', fillHeight && 'min-h-0 flex-1 overflow-hidden', className)}>
+      <CardContent className={cn('p-3', fillHeight && 'flex min-h-0 flex-1 flex-col')}>
+        <div className="mb-3 flex shrink-0 items-center justify-between">
           <span className="text-xs font-medium text-foreground">
             Files in context <span className="text-muted-foreground font-normal">- {totalCount}</span>
           </span>
@@ -319,7 +339,7 @@ export function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJump
             <TooltipContent>{isAllCopied ? 'Copied all paths' : 'Copy all file paths'}</TooltipContent>
           </Tooltip>
         </div>
-        <div className="max-h-[320px] overflow-y-auto pr-1">
+        <div className={cn('max-h-[320px] overflow-y-auto pr-1', fillHeight && 'min-h-0 flex-1 max-h-none')}>
           {visibleFiles.map(file => (
             <ContextFileRow
               key={file.fullPath}
@@ -332,7 +352,7 @@ export function ContextFilesPanel({ contextFiles, copiedPath, onCopyPath, onJump
             />
           ))}
         </div>
-        {!showAll && remaining > 0 && (
+        {!fillHeight && !showAll && remaining > 0 && (
           <button
             onClick={() => setShowAll(true)}
             className="w-full mt-2 py-1.5 border border-border/50 rounded text-[11px] text-muted-foreground hover:bg-muted/30 transition-colors"

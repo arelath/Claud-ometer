@@ -3,7 +3,16 @@ import JSZip from 'jszip';
 import fs from 'fs';
 import path from 'path';
 import { apiError, withErrorHandler } from '@/lib/api-route';
-import { getImportDir, setDataSource } from '@/lib/claude-data/data-source';
+import { getImportDir, setDataSource, setSelectedAgents } from '@/lib/claude-data/data-source';
+import {
+  AGENT_ARCHIVE_ROOT,
+  LEGACY_CLAUDE_ARCHIVE_ROOT,
+  countClaudeData,
+  countCodexData,
+  getSafeImportTarget,
+  type AgentArchiveMeta,
+} from '@/lib/agent-data/archive';
+import type { AgentKind } from '@/lib/agent-data/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,10 +31,11 @@ export const POST = withErrorHandler(async (request: Request) => {
   const arrayBuffer = await file.arrayBuffer();
   const zip = await JSZip.loadAsync(arrayBuffer);
 
-  // Verify it has the expected structure
-  const hasClaudeData = Object.keys(zip.files).some(f => f.startsWith('claude-data/'));
-  if (!hasClaudeData) {
-    apiError('Invalid archive: missing claude-data/ directory. This doesn\'t look like a Claude Code Dashboard export.', 400);
+  const zipFileNames = Object.keys(zip.files);
+  const hasAgentData = zipFileNames.some(f => f.startsWith(`${AGENT_ARCHIVE_ROOT}/`));
+  const hasLegacyClaudeData = zipFileNames.some(f => f.startsWith(`${LEGACY_CLAUDE_ARCHIVE_ROOT}/`));
+  if (!hasAgentData && !hasLegacyClaudeData) {
+    apiError('Invalid archive: missing agent-data/ or claude-data/ directory.', 400);
   }
 
     const importDir = getImportDir();
@@ -43,7 +53,8 @@ export const POST = withErrorHandler(async (request: Request) => {
     for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
       if (zipEntry.dir) continue;
 
-      const targetPath = path.join(importDir, relativePath);
+      const targetPath = getSafeImportTarget(importDir, relativePath);
+      if (!targetPath) continue;
       const targetDir = path.dirname(targetPath);
 
       if (!fs.existsSync(targetDir)) {
@@ -57,28 +68,27 @@ export const POST = withErrorHandler(async (request: Request) => {
     }
 
     // Read export metadata
-    let exportMeta = { exportedAt: 'unknown', exportedFrom: 'unknown' };
-    const metaPath = path.join(importDir, 'claude-data', 'export-meta.json');
+    let exportMeta: Partial<AgentArchiveMeta> & { exportedAt?: string; exportedFrom?: string } = { exportedAt: 'unknown', exportedFrom: 'unknown' };
+    const metaPath = hasAgentData
+      ? path.join(importDir, AGENT_ARCHIVE_ROOT, 'export-meta.json')
+      : path.join(importDir, LEGACY_CLAUDE_ARCHIVE_ROOT, 'export-meta.json');
     if (fs.existsSync(metaPath)) {
       exportMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
     }
 
-    // Count projects and sessions
-    const projectsDir = path.join(importDir, 'claude-data', 'projects');
-    let projectCount = 0;
-    let sessionCount = 0;
-    if (fs.existsSync(projectsDir)) {
-      const projects = fs.readdirSync(projectsDir);
-      projectCount = projects.filter(p =>
-        fs.statSync(path.join(projectsDir, p)).isDirectory()
-      ).length;
-      for (const project of projects) {
-        const pDir = path.join(projectsDir, project);
-        if (fs.statSync(pDir).isDirectory()) {
-          sessionCount += fs.readdirSync(pDir).filter(f => f.endsWith('.jsonl')).length;
-        }
-      }
+    const agents = (hasAgentData && Array.isArray(exportMeta.agents) ? exportMeta.agents : ['claude']) as AgentKind[];
+    const agentCounts = exportMeta.agentCounts || {};
+    if (!agentCounts.claude && (agents.includes('claude') || hasLegacyClaudeData)) {
+      const claudeDir = hasAgentData
+        ? path.join(importDir, AGENT_ARCHIVE_ROOT, 'claude')
+        : path.join(importDir, LEGACY_CLAUDE_ARCHIVE_ROOT);
+      agentCounts.claude = countClaudeData(claudeDir);
     }
+    if (!agentCounts.codex && agents.includes('codex')) {
+      agentCounts.codex = countCodexData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'codex'));
+    }
+    const projectCount = Object.values(agentCounts).reduce((sum, count) => sum + (count?.projectCount || 0), 0);
+    const sessionCount = Object.values(agentCounts).reduce((sum, count) => sum + (count?.sessionCount || 0), 0);
 
     // Save import metadata
     const importMeta = {
@@ -89,10 +99,13 @@ export const POST = withErrorHandler(async (request: Request) => {
       sessionCount,
       fileCount,
       totalSize,
+      agents,
+      agentCounts,
     };
     fs.writeFileSync(path.join(importDir, 'meta.json'), JSON.stringify(importMeta, null, 2));
 
     // Switch to imported data source
+    setSelectedAgents(agents);
     setDataSource('imported');
 
   return NextResponse.json({

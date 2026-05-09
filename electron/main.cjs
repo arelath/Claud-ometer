@@ -88,6 +88,7 @@ async function startNextServer() {
   const serverDir = path.dirname(serverPath);
   const url = `http://127.0.0.1:${port}`;
   const importDir = path.join(app.getPath('userData'), 'dashboard-data');
+  const settingsDir = path.join(app.getPath('userData'), 'settings');
 
   nextServerProcess = spawn(process.execPath, [serverPath], {
     cwd: serverDir,
@@ -98,6 +99,8 @@ async function startNextServer() {
       HOSTNAME: '127.0.0.1',
       PORT: String(port),
       CLAUD_OMETER_IMPORT_DIR: importDir,
+      CLAUD_OMETER_SETTINGS_DIR: settingsDir,
+      CLAUD_OMETER_ELECTRON_RESOURCES_DIR: process.resourcesPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -144,9 +147,50 @@ function createMainWindow() {
   mainWindow.loadURL(nextServerUrl);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isConsoleWindowUrl(url)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1120,
+          height: 780,
+          minWidth: 480,
+          minHeight: 320,
+          title: 'PTY Console',
+          backgroundColor: '#000000',
+          frame: false,
+          autoHideMenuBar: true,
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    }
+
     shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  mainWindow.webContents.on('did-create-window', (childWindow) => {
+    childWindow.setMenuBarVisibility(false);
+    childWindow.webContents.setWindowOpenHandler(({ url }) => {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    });
+  });
+}
+
+function isConsoleWindowUrl(url) {
+  try {
+    if (!nextServerUrl) return false;
+    const serverUrl = new URL(nextServerUrl);
+    const targetUrl = new URL(url);
+    return targetUrl.origin === serverUrl.origin
+      && /^\/sessions\/[^/]+\/console\/?$/.test(targetUrl.pathname);
+  } catch {
+    return false;
+  }
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();

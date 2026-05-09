@@ -1,8 +1,11 @@
 import useSWR from 'swr';
+import type { AgentKind } from '@/lib/agent-data/types';
 import type { DashboardStats, LiveSessionInfo, ProjectInfo, SessionInfo, SessionDetail } from '@/lib/claude-data/types';
 
 export interface DataSourceInfo {
   active: 'live' | 'imported';
+  agents: AgentKind[];
+  detectedAgents: AgentKind[];
   hasImportedData: boolean;
   importMeta: {
     importedAt: string;
@@ -12,6 +15,8 @@ export interface DataSourceInfo {
     sessionCount: number;
     fileCount?: number;
     totalSize?: number;
+    agents?: AgentKind[];
+    agentCounts?: Partial<Record<AgentKind, { projectCount: number; sessionCount: number }>>;
   } | null;
 }
 

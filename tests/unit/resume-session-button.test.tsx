@@ -2,6 +2,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ResumeSessionButton } from '@/components/session/resume-session-button';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { ToastProvider } from '@/components/ui/toast';
+
+function renderResumeButton() {
+  return render(
+    <TooltipProvider>
+      <ToastProvider>
+        <ResumeSessionButton sessionId="00000000-0000-4000-8000-000000000123" showLabel />
+      </ToastProvider>
+    </TooltipProvider>,
+  );
+}
 
 describe('ResumeSessionButton', () => {
   afterEach(() => {
@@ -12,11 +23,7 @@ describe('ResumeSessionButton', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    render(
-      <TooltipProvider>
-        <ResumeSessionButton sessionId="00000000-0000-4000-8000-000000000123" showLabel />
-      </TooltipProvider>,
-    );
+    renderResumeButton();
 
     fireEvent.click(screen.getByRole('button', { name: 'Resume session in Claude' }));
 
@@ -33,11 +40,7 @@ describe('ResumeSessionButton', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    render(
-      <TooltipProvider>
-        <ResumeSessionButton sessionId="00000000-0000-4000-8000-000000000123" showLabel />
-      </TooltipProvider>,
-    );
+    renderResumeButton();
 
     const button = screen.getByRole('button', { name: 'Resume session in Claude' });
     fireEvent.click(button);
@@ -46,5 +49,17 @@ describe('ResumeSessionButton', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     resolveResponse(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     expect(await screen.findByText('Launched')).toBeInTheDocument();
+  });
+
+  it('shows a toast with the resume error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'Could not launch Claude.' }), { status: 409 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderResumeButton();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume session in Claude' }));
+
+    expect(await screen.findByText('Resume failed')).toBeInTheDocument();
+    expect(await screen.findByText('Could not launch Claude.')).toBeInTheDocument();
   });
 });

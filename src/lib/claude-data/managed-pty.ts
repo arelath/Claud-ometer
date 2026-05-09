@@ -11,6 +11,8 @@ export interface ManagedClaudeSessionSnapshot {
   sessionId: string;
   cwd: string;
   pid?: number;
+  cols: number;
+  rows: number;
   startedAt: string;
   updatedAt: string;
   exitedAt?: string;
@@ -24,6 +26,8 @@ interface ManagedClaudeSessionEntry {
   sessionId: string;
   cwd: string;
   pty: PtyProcess;
+  cols: number;
+  rows: number;
   startedAtMs: number;
   updatedAtMs: number;
   exitedAtMs?: number;
@@ -37,6 +41,12 @@ interface ManagedClaudeStore {
 }
 
 const OUTPUT_LIMIT = 200_000;
+const DEFAULT_COLS = 120;
+const DEFAULT_ROWS = 32;
+const MIN_COLS = 20;
+const MAX_COLS = 400;
+const MIN_ROWS = 5;
+const MAX_ROWS = 160;
 const globalStoreKey = Symbol.for('claudometer.managedClaudePtys');
 
 function getStore(): ManagedClaudeStore {
@@ -61,6 +71,8 @@ function toSnapshot(entry: ManagedClaudeSessionEntry): ManagedClaudeSessionSnaps
     sessionId: entry.sessionId,
     cwd: entry.cwd,
     pid: entry.pty.pid,
+    cols: entry.cols,
+    rows: entry.rows,
     startedAt: new Date(entry.startedAtMs).toISOString(),
     updatedAt: new Date(entry.updatedAtMs).toISOString(),
     exitedAt: entry.exitedAtMs ? new Date(entry.exitedAtMs).toISOString() : undefined,
@@ -69,6 +81,11 @@ function toSnapshot(entry: ManagedClaudeSessionEntry): ManagedClaudeSessionSnaps
     sequence: entry.sequence,
     isRunning: entry.exitedAtMs == null,
   };
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
 function getShellCommand(sessionId: string): { command: string; args: string[] } {
@@ -111,8 +128,8 @@ export async function startManagedClaudeResume(sessionId: string, cwd: string): 
   const now = Date.now();
   const terminal = pty.spawn(command, args, {
     name: 'xterm-256color',
-    cols: 120,
-    rows: 32,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
     cwd,
     env: process.env,
   });
@@ -121,6 +138,8 @@ export async function startManagedClaudeResume(sessionId: string, cwd: string): 
     sessionId,
     cwd,
     pty: terminal,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
     startedAtMs: now,
     updatedAtMs: now,
     output: '',
@@ -147,6 +166,28 @@ export function sendTextToManagedClaudeSession(sessionId: string, text: string):
 
   entry.pty.write(text);
   entry.pty.write('\r');
+  entry.updatedAtMs = Date.now();
+  entry.sequence += 1;
+  return toSnapshot(entry);
+}
+
+export function writeDataToManagedClaudeSession(sessionId: string, data: string): ManagedClaudeSessionSnapshot | null {
+  const entry = getStore().sessions.get(sessionId);
+  if (!entry || entry.exitedAtMs != null) return null;
+
+  entry.pty.write(data);
+  entry.updatedAtMs = Date.now();
+  entry.sequence += 1;
+  return toSnapshot(entry);
+}
+
+export function resizeManagedClaudeSession(sessionId: string, cols: number, rows: number): ManagedClaudeSessionSnapshot | null {
+  const entry = getStore().sessions.get(sessionId);
+  if (!entry || entry.exitedAtMs != null) return null;
+
+  entry.cols = clampInteger(cols, MIN_COLS, MAX_COLS);
+  entry.rows = clampInteger(rows, MIN_ROWS, MAX_ROWS);
+  entry.pty.resize?.(entry.cols, entry.rows);
   entry.updatedAtMs = Date.now();
   entry.sequence += 1;
   return toSnapshot(entry);

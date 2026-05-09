@@ -5,6 +5,7 @@ import type { MouseEvent } from 'react';
 import { Loader2, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useToast } from '@/components/ui/toast';
 
 export function ResumeSessionButton({
   sessionId,
@@ -16,6 +17,8 @@ export function ResumeSessionButton({
   showLabel?: boolean;
 }) {
   const [state, setState] = useState<'idle' | 'launching' | 'launched' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const toast = useToast();
 
   const handleResume = async (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -23,6 +26,7 @@ export function ResumeSessionButton({
 
     if (state === 'launching') return;
     setState('launching');
+    setError('');
 
     try {
       const response = await fetch(`/api/sessions/${sessionId}/resume`, { method: 'POST' });
@@ -32,8 +36,11 @@ export function ResumeSessionButton({
       }
       setState('launched');
       window.setTimeout(() => setState('idle'), 2000);
-    } catch {
+    } catch (resumeError) {
+      const message = resumeError instanceof Error ? resumeError.message : 'Failed to resume session';
       setState('error');
+      setError(message);
+      toast.error('Resume failed', message);
       window.setTimeout(() => setState('idle'), 2500);
     }
   };
@@ -41,7 +48,7 @@ export function ResumeSessionButton({
   const tooltip = state === 'launched'
     ? 'Claude resume started'
     : state === 'error'
-      ? 'Could not start Claude resume'
+      ? error || 'Could not start Claude resume'
       : 'Resume session in Claude';
 
   return (

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
-import type { SessionMessageDisplay, TokenUsage } from '@/lib/claude-data/types';
+import type { TokenUsage } from '@/lib/claude-data/types';
+
+type AssistantMetricInput = Parameters<typeof buildAssistantTurnMetrics>[0][number];
 
 function usage(partial: Partial<TokenUsage>): TokenUsage {
   return {
@@ -12,8 +14,13 @@ function usage(partial: Partial<TokenUsage>): TokenUsage {
   };
 }
 
-function assistant(partial: Partial<SessionMessageDisplay>): Pick<SessionMessageDisplay, 'messageId' | 'model' | 'usage'> {
-  return partial;
+function assistant(partial: Partial<AssistantMetricInput>): AssistantMetricInput {
+  return {
+    content: '',
+    blocks: [],
+    toolCalls: [],
+    ...partial,
+  };
 }
 
 describe('assistant turn metrics', () => {
@@ -106,5 +113,41 @@ describe('assistant turn metrics', () => {
       assistant({ messageId: 'turn-1', model: 'claude-opus-4' }),
       assistant({ messageId: 'turn-2' }),
     ])).toEqual({});
+  });
+
+  it('keeps hidden thinking cache writes when a final visible snapshot replaces the same message id', () => {
+    const metrics = buildAssistantTurnMetrics([
+      assistant({
+        messageId: 'turn-1',
+        model: 'claude-opus-4',
+        blocks: [
+          {
+            type: 'thinking',
+            title: 'Thinking',
+            summary: 'thinking',
+            details: [],
+            content: 'private thought',
+          },
+        ],
+        usage: usage({
+          cache_creation_input_tokens: 120,
+        }),
+      }),
+      assistant({
+        messageId: 'turn-1',
+        model: 'claude-opus-4',
+        content: 'Done.',
+        stopReason: 'end_turn',
+        usage: usage({
+          input_tokens: 100,
+          output_tokens: 10,
+          cache_creation_input_tokens: 120,
+          cache_read_input_tokens: 30,
+        }),
+      }),
+    ]);
+
+    expect(metrics.usage?.cache_creation_input_tokens).toBe(240);
+    expect(metrics.estimatedCosts?.api).toBeGreaterThan(0);
   });
 });

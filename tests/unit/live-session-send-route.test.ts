@@ -2,15 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST } from '@/app/api/live-sessions/[id]/send/route';
 
 const {
+  getAppSettingsMock,
   getActiveDataSourceMock,
   getLiveSessionByIdMock,
   sendTextToManagedClaudeSessionMock,
-  sendTextToTmuxLiveSessionMock,
 } = vi.hoisted(() => ({
+  getAppSettingsMock: vi.fn(),
   getActiveDataSourceMock: vi.fn(),
   getLiveSessionByIdMock: vi.fn(),
   sendTextToManagedClaudeSessionMock: vi.fn(),
-  sendTextToTmuxLiveSessionMock: vi.fn(),
+}));
+
+vi.mock('@/lib/claude-data/app-settings', () => ({
+  getAppSettings: getAppSettingsMock,
 }));
 
 vi.mock('@/lib/claude-data/data-source', () => ({
@@ -23,10 +27,6 @@ vi.mock('@/lib/claude-data/live-sessions', () => ({
 
 vi.mock('@/lib/claude-data/managed-pty', () => ({
   sendTextToManagedClaudeSession: sendTextToManagedClaudeSessionMock,
-}));
-
-vi.mock('@/lib/claude-data/tmux-live-input', () => ({
-  sendTextToTmuxLiveSession: sendTextToTmuxLiveSessionMock,
 }));
 
 function request(text: string) {
@@ -42,10 +42,11 @@ function params(id = 'live-id') {
 
 describe('live session send route', () => {
   beforeEach(() => {
+    getAppSettingsMock.mockReset();
     getActiveDataSourceMock.mockReset();
     getLiveSessionByIdMock.mockReset();
     sendTextToManagedClaudeSessionMock.mockReset();
-    sendTextToTmuxLiveSessionMock.mockReset();
+    getAppSettingsMock.mockReturnValue({ resumeTransport: 'pty', resumeTransportSource: 'default' });
     getActiveDataSourceMock.mockReturnValue('live');
     getLiveSessionByIdMock.mockReturnValue({
       sessionId: 'live-id',
@@ -53,10 +54,21 @@ describe('live session send route', () => {
       cwd: 'D:/dev/project',
     });
     sendTextToManagedClaudeSessionMock.mockReturnValue(null);
-    sendTextToTmuxLiveSessionMock.mockResolvedValue('%1');
   });
 
-  it('sends text to managed sessions before falling back to tmux', async () => {
+  it('rejects app-side sends when MSYS2 launch mode is selected', async () => {
+    getAppSettingsMock.mockReturnValue({ resumeTransport: 'msys2-launch', resumeTransportSource: 'stored' });
+
+    const response = await POST(request('  Continue please.  '), params());
+
+    await expect(response.json()).resolves.toEqual({
+      error: 'MSYS2 launch mode uses the opened Claude window for input.',
+    });
+    expect(response.status).toBe(409);
+    expect(sendTextToManagedClaudeSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('sends text to managed PTY sessions when PTY is selected', async () => {
     sendTextToManagedClaudeSessionMock.mockReturnValue({ sessionId: 'live-id', output: '', isRunning: true });
 
     const response = await POST(request('  Continue please.  '), params());
@@ -64,10 +76,28 @@ describe('live session send route', () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true, target: 'managed-pty' });
     expect(response.status).toBe(200);
     expect(sendTextToManagedClaudeSessionMock).toHaveBeenCalledWith('live-id', 'Continue please.');
-    expect(sendTextToTmuxLiveSessionMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to tmux for external idle sessions', async () => {
+  it('accepts qualified Claude ids using the native live id', async () => {
+    sendTextToManagedClaudeSessionMock.mockReturnValue({ sessionId: 'live-id', output: '', isRunning: true });
+
+    const response = await POST(request('Continue please.'), params('claude:live-id'));
+
+    expect(response.status).toBe(200);
+    expect(getLiveSessionByIdMock).toHaveBeenCalledWith('live-id');
+    expect(sendTextToManagedClaudeSessionMock).toHaveBeenCalledWith('live-id', 'Continue please.');
+  });
+
+  it('rejects qualified Codex ids', async () => {
+    const response = await POST(request('Continue please.'), params('codex:live-id'));
+
+    expect(response.status).toBe(501);
+    await expect(response.json()).resolves.toEqual({ error: 'Codex live input is not supported yet.' });
+    expect(getLiveSessionByIdMock).not.toHaveBeenCalled();
+    expect(sendTextToManagedClaudeSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the selected PTY error when no managed PTY session exists', async () => {
     const idleSession = {
       sessionId: 'live-id',
       status: 'idle',
@@ -77,10 +107,9 @@ describe('live session send route', () => {
 
     const response = await POST(request('  Continue please.  '), params());
 
-    await expect(response.json()).resolves.toEqual({ ok: true, target: '%1', mode: 'tmux' });
-    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ error: 'No managed PTY session was found for this live session.' });
+    expect(response.status).toBe(409);
     expect(sendTextToManagedClaudeSessionMock).toHaveBeenCalledWith('live-id', 'Continue please.');
-    expect(sendTextToTmuxLiveSessionMock).toHaveBeenCalledWith(idleSession, 'Continue please.');
   });
 
   it('blocks busy sessions', async () => {
@@ -94,7 +123,7 @@ describe('live session send route', () => {
 
     await expect(response.json()).resolves.toEqual({ error: 'Claude is busy in this session.' });
     expect(response.status).toBe(409);
-    expect(sendTextToTmuxLiveSessionMock).not.toHaveBeenCalled();
+    expect(sendTextToManagedClaudeSessionMock).not.toHaveBeenCalled();
   });
 
   it('requires live data mode', async () => {
@@ -103,13 +132,13 @@ describe('live session send route', () => {
     const response = await POST(request('Continue please.'), params());
 
     expect(response.status).toBe(409);
-    expect(sendTextToTmuxLiveSessionMock).not.toHaveBeenCalled();
+    expect(sendTextToManagedClaudeSessionMock).not.toHaveBeenCalled();
   });
 
   it('rejects empty messages', async () => {
     const response = await POST(request('   '), params());
 
     expect(response.status).toBe(400);
-    expect(sendTextToTmuxLiveSessionMock).not.toHaveBeenCalled();
+    expect(sendTextToManagedClaudeSessionMock).not.toHaveBeenCalled();
   });
 });

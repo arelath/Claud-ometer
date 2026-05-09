@@ -33,14 +33,14 @@ const PROVIDER_ORDER: Record<string, number> = {
  *
  * "api"          — Raw API-equivalent cost. All 4 token types at published API rates.
  *                  Useful for comparing what this usage would cost on the API.
- *                  Typically 5-8x higher than what a Claude Code subscriber actually pays.
+ *                  Typically higher than what a local agent CLI subscriber actually pays.
  *
  * "conservative" — Discounted estimate. Output tokens at full price, input at full price,
  *                  cache writes at 50% discount, cache reads at 90% discount.
  *                  Reflects that Anthropic likely doesn't charge subscription users
  *                  full API rate for cached context. Lands ~2-3x above real spend.
  *
- * "subscription" — Subscription-friendly estimate. Designed to approximate real Claude Code
+ * "subscription" — Subscription-friendly estimate. Designed to approximate local agent CLI
  *                  plan billing. Output at full price, input at full price, cache tokens
  *                  heavily discounted (cache writes 80% off, cache reads 95% off).
  *                  For a $100/mo + overage plan, this tracks much closer to reality.
@@ -58,7 +58,7 @@ export const COST_MODE_LABELS: Record<CostMode, { name: string; description: str
   },
   subscription: {
     name: 'Subscription',
-    description: 'Approximates real Claude Code plan billing',
+    description: 'Approximates local agent CLI subscription-style billing',
   },
 };
 
@@ -74,18 +74,63 @@ export const DEFAULT_COST_MODE: CostMode = 'subscription';
 export function getModelDisplayName(modelId: string): string {
   const normalized = modelId.toLowerCase();
   if (normalized.includes('synthetic')) return 'Synthetic';
+  if (normalized.startsWith('gpt-')) return modelId;
   if (normalized.includes('opus')) return 'Opus';
   if (normalized.includes('sonnet')) return 'Sonnet';
   if (normalized.includes('haiku')) return 'Haiku';
   return modelId;
 }
 
+const CLAUDE_MODEL_COLORS: Record<'opus' | 'sonnet' | 'haiku', string> = {
+  opus: '#D4764E',
+  sonnet: '#6B8AE6',
+  haiku: '#5CB87A',
+};
+
+const OPENAI_MODEL_COLOR_RULES: Array<{ pattern: RegExp; color: string }> = [
+  { pattern: /^gpt-5\.5-pro\b/, color: '#0E7C66' },
+  { pattern: /^gpt-5\.5\b/, color: '#10A37F' },
+  { pattern: /^gpt-5\.4-pro\b/, color: '#2664B8' },
+  { pattern: /^gpt-5\.4-mini\b/, color: '#68B1E8' },
+  { pattern: /^gpt-5\.4-nano\b/, color: '#8AC4E8' },
+  { pattern: /^gpt-5\.4\b/, color: '#4F8FEA' },
+  { pattern: /^gpt-5\.3-codex\b/, color: '#8E61D4' },
+  { pattern: /^gpt-5\.3\b/, color: '#A067D8' },
+  { pattern: /^gpt-5\.2-pro\b/, color: '#B54A83' },
+  { pattern: /^gpt-5\.2-codex\b/, color: '#D45A9E' },
+  { pattern: /^gpt-5\.2\b/, color: '#E0527D' },
+  { pattern: /^gpt-5\.1-codex-max\b/, color: '#C47A16' },
+  { pattern: /^gpt-5\.1-codex-mini\b/, color: '#E9B44C' },
+  { pattern: /^gpt-5\.1-codex\b/, color: '#D9902F' },
+  { pattern: /^gpt-5\.1\b/, color: '#F2A93B' },
+  { pattern: /^gpt-5-codex\b/, color: '#4FA58D' },
+  { pattern: /^gpt-5-pro\b/, color: '#2B8C72' },
+  { pattern: /^gpt-5-mini\b/, color: '#60BFA0' },
+  { pattern: /^gpt-5-nano\b/, color: '#8BD2B3' },
+  { pattern: /^gpt-5\b/, color: '#10A37F' },
+  { pattern: /^gpt-4o-mini\b/, color: '#6AA8E8' },
+  { pattern: /^gpt-4o\b/, color: '#3B82F6' },
+  { pattern: /^gpt-4\.1-nano\b/, color: '#9BA6F8' },
+  { pattern: /^gpt-4\.1-mini\b/, color: '#7C83E6' },
+  { pattern: /^gpt-4\.1\b/, color: '#5F6FE6' },
+  { pattern: /^gpt-4-turbo\b/, color: '#4B5FD5' },
+  { pattern: /^gpt-4\b/, color: '#6366F1' },
+  { pattern: /^gpt-3\.5\b/, color: '#A78BFA' },
+  { pattern: /^o4-mini\b/, color: '#F59E0B' },
+  { pattern: /^o3-pro\b/, color: '#C2410C' },
+  { pattern: /^o3-mini\b/, color: '#EF8354' },
+  { pattern: /^o3\b/, color: '#EA580C' },
+  { pattern: /^o1-pro\b/, color: '#B455C7' },
+  { pattern: /^o1\b/, color: '#9333EA' },
+];
+
 export function getModelColor(modelId: string): string {
-  const normalized = modelId.toLowerCase();
+  const normalized = normalizeModelId(modelId);
   if (normalized.includes('synthetic')) return '#7A7A7A';
-  if (normalized.includes('opus')) return '#D4764E';
-  if (normalized.includes('sonnet')) return '#6B8AE6';
-  if (normalized.includes('haiku')) return '#5CB87A';
+  const claudeFamily = getClaudeFamily(normalized);
+  if (claudeFamily) return CLAUDE_MODEL_COLORS[claudeFamily];
+  const openAiRule = OPENAI_MODEL_COLOR_RULES.find(rule => rule.pattern.test(normalized));
+  if (openAiRule) return openAiRule.color;
   return '#888888';
 }
 
@@ -180,8 +225,8 @@ export function getPricingReferenceEntries(modelIds?: string[]): Array<{ model: 
 function normalizeModelId(model: string): string {
   const normalized = model.trim().toLowerCase();
   const claudeIndex = normalized.lastIndexOf('claude-');
-  const claudeModel = claudeIndex >= 0 ? normalized.slice(claudeIndex) : normalized;
-  return claudeModel.replace(/\./g, '-');
+  if (claudeIndex < 0) return normalized;
+  return normalized.slice(claudeIndex).replace(/\./g, '-');
 }
 
 function getClaudeFamily(model: string): 'opus' | 'sonnet' | 'haiku' | null {

@@ -46,7 +46,7 @@ export function SessionViewTabs({ view, onChange, conversationCount, diffSummary
   const allCopied = copiedPatchKey === allPatchKey;
 
   return (
-    <div className="-mx-6 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-6">
+    <div className="-mx-4 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-4">
       <div className="flex items-center gap-1">
         <button
           type="button"
@@ -267,7 +267,7 @@ export function FileDiffViewer({ file, mode, copiedPatchKey, onCopyPatch, onJump
 }) {
   if (!file) {
     return (
-      <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-dashed border-border/60 text-sm text-muted-foreground">
+      <div className="flex h-full min-h-[320px] items-center justify-center rounded-lg border border-dashed border-border/60 text-sm text-muted-foreground">
         No file changes found in this session.
       </div>
     );
@@ -283,8 +283,8 @@ export function FileDiffViewer({ file, mode, copiedPatchKey, onCopyPatch, onJump
   const isCopied = copiedPatchKey === patchKey;
 
   return (
-    <div data-testid="session-diff-viewer" className="min-w-0 overflow-hidden rounded-lg border border-border/60 bg-white dark:bg-background">
-      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-white px-3 py-3 dark:bg-card">
+    <div data-testid="session-diff-viewer" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border/60 bg-white dark:bg-background">
+      <div className="z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-white px-3 py-3 dark:bg-card">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate font-mono text-sm font-semibold">{displayPath}</span>
@@ -309,7 +309,7 @@ export function FileDiffViewer({ file, mode, copiedPatchKey, onCopyPatch, onJump
           {isCopied ? 'Copied' : 'Copy patch'}
         </button>
       </div>
-      <div className="max-h-[68vh] overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         {visibleHunks.map(hunk => (
           <DiffHunkView
             key={hunk.id}
@@ -336,13 +336,13 @@ export function ChangesView({ summary, selectedPath, mode, copiedPatchKey, onSel
   const selectedFile = summary.files.find(file => file.path === selectedPath) || summary.files[0];
 
   return (
-    <div data-testid="session-changes-view" className="space-y-3">
-      <div className="grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="space-y-2">
+    <div data-testid="session-changes-view" className="flex h-full min-h-0 flex-col">
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="flex min-h-0 flex-col gap-2">
           <div className="px-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             Files Changed
           </div>
-          <div className="max-h-[68vh] space-y-1 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
             {summary.files.map(file => (
               <DiffFileRow
                 key={file.path}

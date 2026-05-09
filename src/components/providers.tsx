@@ -3,6 +3,7 @@
 import { type ReactNode } from 'react';
 import { ThemeProvider } from 'next-themes';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { ToastProvider } from '@/components/ui/toast';
 import { CostModeProvider } from '@/lib/cost-mode-context';
 
 export function Providers({ children }: { children: ReactNode }) {
@@ -16,7 +17,9 @@ export function Providers({ children }: { children: ReactNode }) {
     >
       <CostModeProvider>
         <TooltipProvider>
-          {children}
+          <ToastProvider>
+            {children}
+          </ToastProvider>
         </TooltipProvider>
       </CostModeProvider>
     </ThemeProvider>

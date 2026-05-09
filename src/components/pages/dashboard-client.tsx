@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { AgentBadge } from '@/components/agent-badge';
 import Link from 'next/link';
 
 export function DashboardClient({ initialStats }: { initialStats: DashboardStats }) {
@@ -42,7 +43,7 @@ export function DashboardClient({ initialStats }: { initialStats: DashboardStats
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Overview</h1>
-          <p className="text-sm text-muted-foreground">Your Claude Code usage at a glance</p>
+          <p className="text-sm text-muted-foreground">Your agent usage at a glance</p>
         </div>
         <CostModeSelector />
       </div>
@@ -114,6 +115,7 @@ export function DashboardClient({ initialStats }: { initialStats: DashboardStats
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{session.projectName}</span>
+                      {session.agentKind && <AgentBadge agentKind={session.agentKind} className="text-[10px] px-1.5 py-0" />}
                       {[...new Set(session.models)].map(m => (
                         <Badge key={m} variant="secondary" className="text-[10px] px-1.5 py-0">
                           {m}

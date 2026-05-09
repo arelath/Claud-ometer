@@ -2,6 +2,7 @@
 
 import { createContext, useContext } from 'react';
 import type { CodeLanguage } from '@/lib/code-highlighting';
+import type { AgentKind } from '@/lib/agent-data/types';
 
 export type PreviewTone = 'neutral' | 'success' | 'error' | 'unknown';
 
@@ -20,6 +21,8 @@ export interface ArtifactViewerState {
 
 export interface SessionRenderContextValue {
   projectRoot?: string;
+  agentKind?: AgentKind;
+  assistantLabel?: string;
   openArtifact: (artifact: ArtifactViewerState) => void;
 }
 

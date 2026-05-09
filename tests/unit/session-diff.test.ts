@@ -41,7 +41,16 @@ function assistantWithEdit(
   };
 }
 
-function readMessages(filePath: string, startLine: string, content: string): SessionMessageDisplay[] {
+function readMessages(
+  filePath: string,
+  startLine: string,
+  content: string,
+  options: {
+    endLine?: string;
+    loadedLines?: string;
+    totalLines?: string;
+  } = {},
+): SessionMessageDisplay[] {
   return [
     {
       role: 'tool-use',
@@ -55,7 +64,8 @@ function readMessages(filePath: string, startLine: string, content: string): Ses
           details: [
             detail('file_path', filePath),
             detail('startLine', startLine),
-          ],
+            options.endLine ? detail('endLine', options.endLine) : null,
+          ].filter(Boolean) as SessionToolCallDetail[],
         },
       ],
     },
@@ -72,7 +82,9 @@ function readMessages(filePath: string, startLine: string, content: string): Ses
           details: [
             detail('tool_use_id', 'read-1'),
             detail('content.file.filePath', filePath),
-          ],
+            options.loadedLines ? detail('content.file.numLines', options.loadedLines) : null,
+            options.totalLines ? detail('content.file.totalLines', options.totalLines) : null,
+          ].filter(Boolean) as SessionToolCallDetail[],
         },
       ],
     },
@@ -151,6 +163,42 @@ describe('session diff helpers', () => {
     expect(filePatch).toContain('-old line');
     expect(filePatch).toContain('+new line');
     expect(getSessionPatchText(summary)).toBe(filePatch);
+  });
+
+  it('ignores line ending only edits', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithEdit(
+        1,
+        'src/line-endings.ts',
+        ['const value = true;', 'export { value };'].join('\r\n') + '\r\n',
+        ['const value = true;', 'export { value };'].join('\n') + '\n',
+        '1',
+      ),
+    ]);
+
+    expect(summary).toMatchObject({
+      fileCount: 0,
+      editCount: 0,
+      addedLines: 0,
+      removedLines: 0,
+    });
+    expect(summary.files).toEqual([]);
+  });
+
+  it('still shows real blank line additions beyond the final newline', () => {
+    const summary = getSessionDiffSummary([
+      assistantWithEdit(
+        1,
+        'src/blank-line.ts',
+        'const value = true;\n',
+        'const value = true;\n\n',
+        '1',
+      ),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.addedLines).toBe(1);
+    expect(summary.files[0].hunks[0].rows.map(row => row.type)).toEqual(['context', 'add']);
   });
 
   it('combines sequential edits to the same region in net mode while preserving per-edit hunks', () => {
@@ -378,6 +426,76 @@ describe('session diff helpers', () => {
         text: 'created;',
       },
     ]);
+  });
+
+  it('diffs Write calls against a prior full-file Read snapshot when one exists', () => {
+    const oldContent = [
+      'export const unchanged = true;',
+      'export const value = false;',
+      'unchanged;',
+    ].join('\n');
+    const newContent = [
+      'export const unchanged = true;',
+      'export const value = true;',
+      'unchanged;',
+    ].join('\n');
+
+    const summary = getSessionDiffSummary([
+      ...readMessages('src/existing.ts', '1', oldContent, {
+        endLine: '3',
+        loadedLines: '3',
+        totalLines: '3',
+      }),
+      assistantWithTool(3, 'Write', 'write-existing', {
+        file_path: 'src/existing.ts',
+        content: newContent,
+      }),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.addedLines).toBe(1);
+    expect(summary.removedLines).toBe(1);
+    expect(summary.files[0]).toMatchObject({
+      path: 'src/existing.ts',
+      status: 'modified',
+      addedLines: 1,
+      removedLines: 1,
+    });
+    expect(summary.files[0].hunks[0].rows.map(row => `${row.type}:${row.text}`)).toEqual([
+      'context:export const unchanged = true;',
+      'remove:export const value = false;',
+      'add:export const value = true;',
+      'context:unchanged;',
+    ]);
+  });
+
+  it('does not treat partial Read output as the old side of a full-file Write', () => {
+    const partialContent = [
+      'export const unchanged = true;',
+      'export const value = false;',
+    ].join('\n');
+    const newContent = [
+      'export const unchanged = true;',
+      'export const value = true;',
+      'unchanged;',
+    ].join('\n');
+
+    const summary = getSessionDiffSummary([
+      ...readMessages('src/partial.ts', '1', partialContent, {
+        endLine: '2',
+        loadedLines: '2',
+        totalLines: '3',
+      }),
+      assistantWithTool(3, 'Write', 'write-partial', {
+        file_path: 'src/partial.ts',
+        content: newContent,
+      }),
+    ]);
+
+    expect(summary.fileCount).toBe(1);
+    expect(summary.addedLines).toBe(3);
+    expect(summary.removedLines).toBe(0);
+    expect(summary.files[0].status).toBe('added');
   });
 
   it('includes delete edits where new_string is empty', () => {

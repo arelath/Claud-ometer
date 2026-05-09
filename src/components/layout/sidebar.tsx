@@ -17,11 +17,15 @@ import {
   Moon,
   Circle,
   LoaderCircle,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useLiveSessions } from '@/lib/hooks';
+import type { DataSourceInfo } from '@/lib/hooks';
+import { getAgentLabel } from '@/lib/agent-data/types';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { LiveWorkingIndicator } from '@/components/session/live-working-indicator';
 import type { LiveSessionInfo } from '@/lib/claude-data/types';
 
 const navItems = [
@@ -30,6 +34,7 @@ const navItems = [
   { href: '/sessions', label: 'Sessions', icon: MessageSquare },
   { href: '/costs', label: 'Costs', icon: DollarSign },
   { href: '/data', label: 'Data', icon: Database },
+  { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
 const fetcher = (url: string) => fetch(url).then(r => r.json());
@@ -45,6 +50,9 @@ function formatLiveRelativeTime(value: string): string {
 }
 
 function formatCacheCountdown(session: LiveSessionInfo, nowMs: number): string {
+  if (session.cachePaused) return 'Cache 5m paused';
+  if (!session.cacheExpiresAtMs) return '';
+
   const remainingMs = session.cacheExpiresAtMs - nowMs;
   if (remainingMs <= 0) return 'Cache expired';
 
@@ -56,6 +64,13 @@ function formatCacheCountdown(session: LiveSessionInfo, nowMs: number): string {
 }
 
 function formatCacheExpiryTooltip(session: LiveSessionInfo, nowMs: number): string {
+  if (session.cachePaused) {
+    return 'Cache countdown is paused at 5 minutes while Claude is working. It will restart from the next user or Claude message.';
+  }
+  if (!session.cacheExpiresAtMs || !session.cacheLastActivityAtMs) {
+    return 'No prompt cache has been created for this session yet.';
+  }
+
   const expiresAt = new Date(session.cacheExpiresAtMs);
   const lastActivityAt = new Date(session.cacheLastActivityAtMs);
   const time = Number.isNaN(expiresAt.getTime())
@@ -121,6 +136,7 @@ function LiveSessionsNav({ pathname }: { pathname: string }) {
             const isActive = pathname === href;
             const preview = session.lastPreview || session.statusReason;
             const effectiveNowMs = nowMs || session.updatedAtMs;
+            const hasCacheExpiry = session.cacheExpiresAtMs != null && session.cacheLastActivityAtMs != null;
             return (
               <Link
                 key={`${session.metadataFilePath}-${session.sessionId}`}
@@ -140,28 +156,41 @@ function LiveSessionsNav({ pathname }: { pathname: string }) {
                     <span className="shrink-0 rounded-full border border-border/50 px-1 py-0 text-[8px] uppercase leading-3 text-muted-foreground">
                       {session.status}
                     </span>
+                    {session.status === 'busy' && (
+                      <LiveWorkingIndicator
+                        activeToolName={session.activeToolName}
+                        busySinceAtMs={session.busySinceAtMs}
+                        compact
+                      />
+                    )}
                   </span>
                   <span className="mt-0.5 block truncate text-[10px] leading-3 text-muted-foreground">
                     {preview}
                   </span>
                   <span className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[9px] leading-3 text-muted-foreground/80">
                     <span className="truncate">{formatLiveRelativeTime(session.lastActivityAt)}</span>
-                    <span className="shrink-0 opacity-50">·</span>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className={cn(
-                          'shrink-0 rounded-full border px-1 py-0 leading-3',
-                          session.cacheExpiresAtMs <= effectiveNowMs
-                            ? 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300'
-                            : 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300',
-                        )}>
-                          {formatCacheCountdown(session, effectiveNowMs)}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="right" className="max-w-[240px]">
-                        {formatCacheExpiryTooltip(session, effectiveNowMs)}
-                      </TooltipContent>
-                    </Tooltip>
+                    {hasCacheExpiry && (
+                      <>
+                        <span className="shrink-0 opacity-50">·</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className={cn(
+                              'shrink-0 rounded-full border px-1 py-0 leading-3',
+                              session.cachePaused
+                                ? 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300'
+                                : session.cacheExpiresAtMs! <= effectiveNowMs
+                                ? 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300'
+                                : 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300',
+                            )}>
+                              {formatCacheCountdown(session, effectiveNowMs)}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-[240px]">
+                            {formatCacheExpiryTooltip(session, effectiveNowMs)}
+                          </TooltipContent>
+                        </Tooltip>
+                      </>
+                    )}
                   </span>
                 </span>
               </Link>
@@ -175,7 +204,7 @@ function LiveSessionsNav({ pathname }: { pathname: string }) {
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { data: sourceInfo } = useSWR('/api/data-source', fetcher, { refreshInterval: 5000 });
+  const { data: sourceInfo } = useSWR<DataSourceInfo>('/api/data-source', fetcher, { refreshInterval: 5000 });
   const { resolvedTheme, setTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
 
@@ -188,8 +217,8 @@ export function Sidebar() {
           <Terminal className="h-4 w-4 text-primary-foreground" />
         </div>
         <div>
-          <h1 className="text-sm font-semibold tracking-tight">Claude Code</h1>
-          <p className="text-[10px] text-muted-foreground">Analytics Dashboard</p>
+          <h1 className="text-sm font-semibold tracking-tight">Claud-ometer</h1>
+          <p className="text-[10px] text-muted-foreground">Agent Analytics</p>
         </div>
       </div>
 
@@ -235,7 +264,7 @@ export function Sidebar() {
           </div>
         ) : (
           <p className="text-[10px] text-muted-foreground">
-            Reading from ~/.claude/
+            Reading {sourceInfo?.agents?.map(getAgentLabel).join(' + ') || 'Claude'} data
           </p>
         )}
       </div>

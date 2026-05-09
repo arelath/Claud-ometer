@@ -1,18 +1,22 @@
 import { NextResponse } from 'next/server';
 import archiver from 'archiver';
 import fs from 'fs';
-import path from 'path';
 import os from 'os';
 import { PassThrough } from 'stream';
 import { apiError, withErrorHandler } from '@/lib/api-route';
+import { AGENT_ARCHIVE_ROOT, type AgentArchiveMeta, countClaudeData, countCodexData, toZipPath } from '@/lib/agent-data/archive';
+import { getAgentDataDir, getSelectedAgents } from '@/lib/agent-data/data-source';
+import { addClaudeDataToArchive } from '@/lib/agent-data/providers/claude/export';
+import { addCodexDataToArchive } from '@/lib/agent-data/providers/codex/export';
 
 export const dynamic = 'force-dynamic';
 
 export const GET = withErrorHandler(async () => {
-  const claudeDir = path.join(os.homedir(), '.claude');
+  const agents = getSelectedAgents();
+  const availableAgents = agents.filter(agent => fs.existsSync(getAgentDataDir(agent)));
 
-  if (!fs.existsSync(claudeDir)) {
-    apiError('No Claude data found', 404);
+  if (availableAgents.length === 0) {
+    apiError('No selected agent data found', 404);
   }
 
     const passthrough = new PassThrough();
@@ -24,69 +28,28 @@ export const GET = withErrorHandler(async () => {
 
     archive.pipe(passthrough);
 
-    // Add stats-cache.json
-    const statsPath = path.join(claudeDir, 'stats-cache.json');
-    if (fs.existsSync(statsPath)) {
-      archive.file(statsPath, { name: 'claude-data/stats-cache.json' });
+    const agentCounts: AgentArchiveMeta['agentCounts'] = {};
+    if (availableAgents.includes('claude')) {
+      const claudeDir = getAgentDataDir('claude');
+      addClaudeDataToArchive(archive, claudeDir, toZipPath(AGENT_ARCHIVE_ROOT, 'claude'));
+      agentCounts.claude = countClaudeData(claudeDir);
     }
-
-    // Add history.jsonl
-    const historyPath = path.join(claudeDir, 'history.jsonl');
-    if (fs.existsSync(historyPath)) {
-      archive.file(historyPath, { name: 'claude-data/history.jsonl' });
-    }
-
-    // Add settings.json
-    const settingsPath = path.join(claudeDir, 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      archive.file(settingsPath, { name: 'claude-data/settings.json' });
-    }
-
-    // Add all project session JSONL files
-    const projectsDir = path.join(claudeDir, 'projects');
-    if (fs.existsSync(projectsDir)) {
-      const projects = fs.readdirSync(projectsDir);
-      for (const project of projects) {
-        const projectPath = path.join(projectsDir, project);
-        if (!fs.statSync(projectPath).isDirectory()) continue;
-
-        const files = fs.readdirSync(projectPath);
-        for (const file of files) {
-          if (file.endsWith('.jsonl')) {
-            archive.file(path.join(projectPath, file), {
-              name: `claude-data/projects/${project}/${file}`,
-            });
-          }
-        }
-
-        // Add memory directory if exists
-        const memoryDir = path.join(projectPath, 'memory');
-        if (fs.existsSync(memoryDir)) {
-          archive.directory(memoryDir, `claude-data/projects/${project}/memory`);
-        }
-      }
-    }
-
-    // Add plans
-    const plansDir = path.join(claudeDir, 'plans');
-    if (fs.existsSync(plansDir)) {
-      archive.directory(plansDir, 'claude-data/plans');
-    }
-
-    // Add todos
-    const todosDir = path.join(claudeDir, 'todos');
-    if (fs.existsSync(todosDir)) {
-      archive.directory(todosDir, 'claude-data/todos');
+    if (availableAgents.includes('codex')) {
+      const codexDir = getAgentDataDir('codex');
+      addCodexDataToArchive(archive, codexDir, toZipPath(AGENT_ARCHIVE_ROOT, 'codex'));
+      agentCounts.codex = countCodexData(codexDir);
     }
 
     // Add export metadata
-    const meta = {
+    const meta: AgentArchiveMeta = {
+      exportVersion: 2,
       exportedAt: new Date().toISOString(),
       exportedFrom: os.hostname(),
-      claudeVersion: 'unknown',
       platform: process.platform,
+      agents: availableAgents,
+      agentCounts,
     };
-    archive.append(JSON.stringify(meta, null, 2), { name: 'claude-data/export-meta.json' });
+    archive.append(JSON.stringify(meta, null, 2), { name: toZipPath(AGENT_ARCHIVE_ROOT, 'export-meta.json') });
 
     archive.finalize();
 
@@ -98,7 +61,7 @@ export const GET = withErrorHandler(async () => {
     const buffer = Buffer.concat(chunks);
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `claude-code-data-${timestamp}.zip`;
+    const filename = `agent-data-${timestamp}.zip`;
 
   return new NextResponse(buffer, {
     headers: {

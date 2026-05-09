@@ -1,10 +1,12 @@
 import { CostsClient } from '@/components/pages/costs-client';
-import { getDashboardStats, getProjects } from '@/lib/claude-data/reader';
+import { getActiveProviders } from '@/lib/agent-data/registry';
+import { mergeDashboardStats, sortProjectsByLastActive } from '@/lib/agent-data/aggregate';
 
 export default async function CostsPage() {
+  const providers = getActiveProviders();
   const [stats, projects] = await Promise.all([
-    getDashboardStats(),
-    getProjects(),
+    Promise.all(providers.map(provider => provider.getDashboardStats())).then(mergeDashboardStats),
+    Promise.all(providers.map(provider => provider.getProjects())).then(results => sortProjectsByLastActive(results.flat())),
   ]);
 
   return <CostsClient initialStats={stats} initialProjects={projects} />;

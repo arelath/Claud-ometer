@@ -1,6 +1,6 @@
 # Claud-ometer
 
-A local-first analytics dashboard for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Reads directly from `~/.claude/` to give you full visibility into your usage, costs, sessions, and projects — no cloud, no telemetry, just your data.
+A local-first analytics dashboard for Claude Code and Codex-style agent sessions. Reads directly from local agent data directories such as `~/.claude/` and `~/.codex/` to give you visibility into usage, costs, sessions, and projects — no cloud, no telemetry, just your data.
 
 ![Overview Dashboard](./screenshots/overview.png)
 
@@ -8,7 +8,7 @@ A local-first analytics dashboard for [Claude Code](https://docs.anthropic.com/e
 
 **Dashboard Overview** — Total sessions, messages, tokens, and estimated costs at a glance. Usage-over-time charts, model breakdown donut, GitHub-style activity heatmap, and peak hours distribution.
 
-**Projects** — See all your Claude Code projects with session counts, token usage, cost estimates, and last activity. Drill into any project to see its sessions and most-used tools.
+**Projects** — See all tracked agent projects with session counts, token usage, cost estimates, provider badges, and last activity. Drill into any project to see its sessions and most-used tools.
 
 ![Projects](./screenshots/projects.png)
 
@@ -16,7 +16,7 @@ A local-first analytics dashboard for [Claude Code](https://docs.anthropic.com/e
 
 ![Sessions](./screenshots/sessions.png)
 
-**Session Detail** — Full conversation replay with user prompts and Claude responses, tool call badges, token-per-message counts, and a sidebar with token breakdown, tools used, compaction timeline, and metadata.
+**Session Detail** — Full conversation replay with user prompts and assistant responses, tool call badges, token-per-message counts, and a sidebar with token breakdown, tools used, compaction timeline, provider ids, and metadata.
 
 ![Session Detail](./screenshots/session-detail.png)
 
@@ -24,7 +24,7 @@ A local-first analytics dashboard for [Claude Code](https://docs.anthropic.com/e
 
 ![Cost Analytics](./screenshots/costs.png)
 
-**Data Export/Import** — Export all your Claude Code data as a ZIP. Import it on another machine to view the same dashboard. Toggle between live and imported data sources.
+**Data Export/Import** — Export selected Claude and Codex data as a ZIP. Import it on another machine to view the same dashboard. Toggle between live and imported data sources, and select Claude, Codex, or both where data is available.
 
 ![Data Management](./screenshots/data.png)
 
@@ -32,11 +32,14 @@ A local-first analytics dashboard for [Claude Code](https://docs.anthropic.com/e
 
 | Source | Path | Contains |
 |--------|------|----------|
-| Session logs | `~/.claude/projects/<project>/<session>.jsonl` | Every message, tool call, token usage, model, timestamps, compaction events |
-| Stats cache | `~/.claude/stats-cache.json` | Pre-computed daily activity, model usage, hourly distribution |
-| History | `~/.claude/history.jsonl` | Every prompt you've typed with project context |
-| Plans | `~/.claude/plans/*.md` | Implementation plans from sessions |
-| Todos | `~/.claude/todos/*.json` | Task lists from sessions |
+| Claude session logs | `~/.claude/projects/<project>/<session>.jsonl` | Messages, tool calls, token usage, model, timestamps, compaction events |
+| Claude stats cache | `~/.claude/stats-cache.json` | Pre-computed daily activity, model usage, hourly distribution |
+| Claude history | `~/.claude/history.jsonl` | Prompts with project context |
+| Claude plans/todos | `~/.claude/plans/*.md`, `~/.claude/todos/*.json` | Implementation plans and task lists from sessions |
+| Codex rollout logs | `~/.codex/sessions/**/*.jsonl` | Codex turns, reasoning summaries, shell/apply_patch activity, token counts, compactions |
+| Codex session index | `~/.codex/session_index.jsonl` | Optional session title hints |
+
+Codex support is historical/read-only in this version. Claude live sessions and resume continue to work, but Codex live input and Codex resume are intentionally unavailable until the CLI semantics are stable enough to wire safely.
 
 ## Quick Start
 
@@ -47,13 +50,13 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The dashboard reads from your local `~/.claude/` directory automatically.
+Open [http://localhost:3000](http://localhost:3000). The dashboard detects local `~/.claude/` and `~/.codex/` directories automatically and defaults to Claude when both are present.
 
 ## Desktop App
 
 Claud-ometer can also be packaged as a Windows desktop app with Electron. The Electron shell starts the existing Next.js standalone server on a local port, opens it in a desktop window, and shuts the server down when the app exits.
 
-The packaged app still reads live Claude Code data from `~/.claude/`. Imported desktop data is stored in the Electron user data directory instead of the install folder.
+The packaged app still reads live local agent data from `~/.claude/` and `~/.codex/`. Imported desktop data is stored in the Electron user data directory instead of the install folder.
 
 ### Desktop Development
 
@@ -162,7 +165,7 @@ Current release caveats: the Windows app is unsigned and uses the default Electr
 - **Lucide** icons
 - **Electron** + **electron-builder** for Windows desktop packaging
 
-No database required. Reads `~/.claude/` files directly via Node.js API routes.
+No database required. Reads local agent files directly via Node.js API routes.
 
 ## Project Structure
 
@@ -186,10 +189,14 @@ src/
 │   ├── cards/                   # Stat cards
 │   └── layout/                  # Sidebar
 ├── lib/
+│   ├── agent-data/              # Provider registry, route ids, archive helpers
+│   │   └── providers/
+│   │       ├── claude/           # Claude provider adapter
+│   │       └── codex/            # Codex discovery, parsing, stats, export
 │   ├── claude-data/
-│   │   ├── types.ts             # TypeScript interfaces
-│   │   ├── reader.ts            # File parsers + aggregation
-│   │   └── data-source.ts       # Live vs imported source
+│   │   ├── types.ts             # Shared dashboard interfaces
+│   │   ├── reader.ts            # Claude file parsers + aggregation
+│   │   └── data-source.ts       # Compatibility exports for data source helpers
 │   ├── hooks.ts                 # SWR hooks
 │   └── format.ts                # Number/date formatters
 └── config/
@@ -208,9 +215,12 @@ docs/
 Export your data to share across machines or keep as a backup:
 
 1. Go to the **Data** page in the sidebar
-2. Click **Export as ZIP** to download all your Claude Code data
-3. On another machine, upload the ZIP via **Import** to view the dashboard with that data
-4. Toggle between **Live** (reads ~/.claude/) and **Imported** data at any time
+2. Select Claude, Codex, or all detected agents
+3. Click **Export as ZIP** to download selected safe session data
+4. On another machine, upload the ZIP via **Import** to view the dashboard with that data
+5. Toggle between **Live** and **Imported** data at any time
+
+Codex exports include rollout JSONL files plus `session_index.jsonl`/`version.json` when present. They intentionally exclude `auth.json`, capability/session ids, sandbox/temp folders, SQLite/log files, plugin caches, and skill caches.
 
 ## License
 

@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { apiError, withErrorHandler } from '@/lib/api-route';
+import { getAppSettings } from '@/lib/claude-data/app-settings';
 import { getActiveDataSource } from '@/lib/claude-data/data-source';
 import { getLiveSessionById } from '@/lib/claude-data/live-sessions';
 import { sendTextToManagedClaudeSession } from '@/lib/claude-data/managed-pty';
-import { sendTextToTmuxLiveSession } from '@/lib/claude-data/tmux-live-input';
+import { parseRouteId } from '@/lib/agent-data/route-id';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,12 +15,17 @@ export const POST = withErrorHandler(async (
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> => {
   const { id } = await params;
+  const parsed = parseRouteId(id);
+  if (parsed.agentKind === 'codex') {
+    apiError('Codex live input is not supported yet.', 501);
+  }
+  const nativeId = parsed.nativeId;
 
   if (getActiveDataSource() !== 'live') {
     apiError('Sending input is only available when viewing live data.', 409);
   }
 
-  const session = getLiveSessionById(id);
+  const session = getLiveSessionById(nativeId);
   if (!session) apiError('Live session not found.', 404);
   if (session.status === 'busy') apiError('Claude is busy in this session.', 409);
 
@@ -28,15 +34,15 @@ export const POST = withErrorHandler(async (
   if (!text) apiError('Message text is required.', 400);
   if (text.length > MAX_INPUT_LENGTH) apiError(`Message text must be ${MAX_INPUT_LENGTH} characters or fewer.`, 413);
 
-  try {
-    const managed = sendTextToManagedClaudeSession(session.sessionId, text);
-    if (managed) {
-      return NextResponse.json({ ok: true, target: 'managed-pty', managed });
-    }
-
-    const target = await sendTextToTmuxLiveSession(session, text);
-    return NextResponse.json({ ok: true, target, mode: 'tmux' });
-  } catch (error) {
-    apiError(error instanceof Error ? error.message : 'Failed to send input to the live session.', 409);
+  const transport = getAppSettings();
+  if (transport.resumeTransport === 'msys2-launch') {
+    apiError('MSYS2 launch mode uses the opened Claude window for input.', 409);
   }
+
+  const managed = sendTextToManagedClaudeSession(session.sessionId, text);
+  if (managed) {
+    return NextResponse.json({ ok: true, target: 'managed-pty', managed });
+  }
+
+  apiError('No managed PTY session was found for this live session.', 409);
 }, 'Error sending input to live session', 'Failed to send input to live session');

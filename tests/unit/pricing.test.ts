@@ -58,11 +58,39 @@ describe('pricing helpers', () => {
     expect(getModelDisplayName('claude-opus-4-7')).toBe('Opus');
     expect(getModelDisplayName('synthetic-fixture')).toBe('Synthetic');
     expect(getModelDisplayName('custom-model')).toBe('custom-model');
+    expect(getModelDisplayName('gpt-5.5')).toBe('gpt-5.5');
 
     expect(getModelColor('claude-opus-4-7')).toBe('#D4764E');
     expect(getModelColor('claude-sonnet-4-6')).toBe('#6B8AE6');
     expect(getModelColor('claude-haiku-4-5')).toBe('#5CB87A');
     expect(getModelColor('synthetic-fixture')).toBe('#7A7A7A');
     expect(getModelColor('custom-model')).toBe('#888888');
+    expect(getModelColor('gpt-5.5')).toBe('#10A37F');
+  });
+
+  it('assigns distinct colors to common OpenAI model families', () => {
+    const models = [
+      'gpt-5.5',
+      'gpt-5.5-pro',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.3-codex',
+      'gpt-5.2',
+      'gpt-5.1-codex-max',
+      'gpt-4o',
+      'gpt-4.1-mini',
+      'o3',
+      'o1-pro',
+    ];
+    const colors = models.map(getModelColor);
+
+    expect(new Set(colors).size).toBe(models.length);
+    expect(getModelColor('gpt-5.5-2026-04-23')).toBe(getModelColor('gpt-5.5'));
+    expect(getModelColor('gpt-5.4-mini-2026-03-17')).toBe(getModelColor('gpt-5.4-mini'));
+  });
+
+  it('resolves OpenAI model ids with dots and hyphens without Claude family matching', () => {
+    expect(getModelPricing('gpt-5.5')?.provider).toBe('openai');
+    expect(calculateCost('gpt-5.5', 1_000_000, 1_000_000, 0, 0, 'api')).toBeGreaterThan(0);
   });
 });

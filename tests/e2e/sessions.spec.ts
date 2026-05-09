@@ -5,7 +5,7 @@ test('sessions page supports search and navigation to session detail', async ({ 
   await page.goto('/sessions');
 
   await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
-  await expect(page.locator(`a[href="/sessions/${fixtureSessionIds[0]}"]`)).toBeVisible();
+  await expect(page.locator(`main a[href="/sessions/${fixtureSessionIds[0]}"]`)).toBeVisible();
 
   const search = page.getByPlaceholder('Search across all session messages...');
   await search.fill('Context Builder');
@@ -13,7 +13,7 @@ test('sessions page supports search and navigation to session detail', async ({ 
   await expect(page).toHaveURL(/\/sessions\?q=Context\+Builder|\/sessions\?q=Context%20Builder/);
   await expect(page.getByText(/sessions? matching "Context Builder"/i)).toBeVisible();
 
-  const filteredResult = page.locator('a[href^="/sessions/"]').first();
+  const filteredResult = page.locator('main a[href^="/sessions/"]').first();
   await expect(filteredResult).toBeVisible();
   await filteredResult.click();
   await expect(page).toHaveURL(/\/sessions\/.+/);

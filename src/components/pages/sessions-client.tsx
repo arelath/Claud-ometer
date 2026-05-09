@@ -10,11 +10,31 @@ import { formatCost, formatDuration, timeAgo, formatTokens } from '@/lib/format'
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ResumeSessionButton } from '@/components/session/resume-session-button';
+import { LiveWorkingIndicator } from '@/components/session/live-working-indicator';
+import { AgentBadge } from '@/components/agent-badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Radio, Search, X } from 'lucide-react';
 import Link from 'next/link';
 
 function LiveSessionStatus({ session }: { session: LiveSessionInfo }) {
+  if (session.status === 'busy') {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <LiveWorkingIndicator
+              activeToolName={session.activeToolName}
+              busySinceAtMs={session.busySinceAtMs}
+              compact
+              className="min-w-[78px] justify-center"
+            />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{session.statusReason}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -112,7 +132,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
               </div>
             ) : sessions.map(session => {
               const liveSession = liveSessionsById.get(session.id);
-              const canResume = sourceInfo?.active === 'live' && !liveSession;
+              const canResume = sourceInfo?.active === 'live' && !liveSession && session.agentKind !== 'codex';
               return (
                 <div
                   key={session.id}
@@ -128,6 +148,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
                           <FolderKanban className="h-3.5 w-3.5 text-muted-foreground" />
                           {session.projectName}
                         </span>
+                        {session.agentKind && <AgentBadge agentKind={session.agentKind} className="text-[10px] px-1.5 py-0" />}
                         {[...new Set(session.models)].map(model => (
                           <Badge key={model} variant="secondary" className="text-[10px] px-1.5 py-0">
                             {model}
@@ -171,10 +192,10 @@ export function SessionsClient({ initialSessions, initialQuery }: {
                       />
                     ) : null}
                   </div>
-                  <Link href={`/sessions/${session.id}`} className="ml-1 flex-shrink-0 text-right">
+                  <div className="ml-1 flex-shrink-0 text-right">
                     <p className="text-sm font-semibold">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
                     <p className="text-[10px] text-muted-foreground">{timeAgo(session.timestamp)}</p>
-                  </Link>
+                  </div>
                 </div>
               );
             })}

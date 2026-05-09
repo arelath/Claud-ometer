@@ -1,4 +1,5 @@
 import type { CostMode } from '@/config/pricing';
+import type { AgentKind } from '@/lib/agent-data/types';
 
 /** Cost estimates in all three modes */
 export type CostEstimates = Record<CostMode, number>;
@@ -22,6 +23,7 @@ export interface ModelUsage {
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
+  reasoningOutputTokens?: number;
   costUSD: number;
   contextWindow: number;
   maxOutputTokens: number;
@@ -124,6 +126,9 @@ export interface TokenUsage {
 
 export interface ProjectInfo {
   id: string;
+  agentKind?: AgentKind;
+  nativeId?: string;
+  routeId?: string;
   name: string;
   path: string;
   sessionCount: number;
@@ -144,8 +149,15 @@ export interface CompactionInfo {
 
 export interface SessionInfo {
   id: string;
+  agentKind?: AgentKind;
+  nativeId?: string;
+  routeId?: string;
   projectId: string;
+  nativeProjectId?: string;
+  projectRouteId?: string;
   projectName: string;
+  title?: string;
+  sourceFilePath?: string;
   timestamp: string;
   duration: number;
   messageCount: number;
@@ -171,6 +183,9 @@ export type LiveSessionStatus = 'busy' | 'idle' | 'unknown';
 
 export interface LiveSessionInfo {
   id: string;
+  agentKind?: AgentKind;
+  nativeId?: string;
+  routeId?: string;
   sessionId: string;
   metadataFilePath: string;
   transcriptFilePath?: string;
@@ -183,13 +198,16 @@ export interface LiveSessionInfo {
   startedAt: string;
   lastActivityAt: string;
   updatedAtMs: number;
-  cacheLastActivityAt: string;
-  cacheLastActivityAtMs: number;
-  cacheExpiresAt: string;
-  cacheExpiresAtMs: number;
+  cacheLastActivityAt?: string;
+  cacheLastActivityAtMs?: number;
+  cacheExpiresAt?: string;
+  cacheExpiresAtMs?: number;
+  cachePaused?: boolean;
   status: LiveSessionStatus;
   rawStatus?: string;
   statusReason: string;
+  busySinceAt?: string;
+  busySinceAtMs?: number;
   messageCount: number;
   toolCallCount: number;
   lastPreview: string;
@@ -213,6 +231,10 @@ export interface SessionDetail extends SessionInfo {
   isLive?: boolean;
   liveStatus?: LiveSessionStatus;
   liveStatusReason?: string;
+  liveBusySinceAt?: string;
+  liveBusySinceAtMs?: number;
+  liveActiveToolName?: string;
+  liveCachePaused?: boolean;
   liveMetadataRevision?: string;
   liveTranscriptRevision?: string;
   liveMetadataFilePath?: string;

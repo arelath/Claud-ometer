@@ -109,7 +109,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
           {modeLabel.description}.{' '}
           {costMode === 'api' && 'This shows what your usage would cost at published API rates — typically 5-8x higher than subscription billing.'}
           {costMode === 'conservative' && 'Cache tokens are discounted but not eliminated. This is an upper-bound estimate for subscription users.'}
-          {costMode === 'subscription' && 'Cache tokens are heavily discounted to approximate real Claude Code plan billing. Best match for $100/mo + overage plans.'}
+          {costMode === 'subscription' && 'Cache tokens are heavily discounted to approximate subscription-style CLI billing where cache reads are not charged like fresh input tokens.'}
         </div>
       </div>
 
@@ -273,7 +273,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
             </table>
           </div>
           <p className="mt-2 text-[10px] text-muted-foreground">
-            Rates are generated from LiteLLM pricing data, refreshed {pricingUpdatedAt}. Claude Code subscription billing differs significantly — cache tokens are not billed at full API rates.
+            Rates are generated from LiteLLM pricing data, refreshed {pricingUpdatedAt}. CLI subscription billing can differ significantly from API rates, especially for cached tokens.
           </p>
         </CardContent>
       </Card>

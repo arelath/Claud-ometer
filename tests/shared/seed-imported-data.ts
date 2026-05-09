@@ -8,6 +8,7 @@ export const fixtureSessionIds = [
 
 export const toolPairFixtureSessionId = '00000000-0000-4000-8000-00000000e2e1';
 export const filteredToolCollapseFixtureSessionId = '00000000-0000-4000-8000-00000000e2e2';
+export const codexFixtureSessionId = '00000000-0000-0000-0000-000000000001';
 
 const seededSessionIds = [
   ...fixtureSessionIds,
@@ -21,6 +22,62 @@ function getFixtureSessionPath(sessionId: string): string {
 
 function writeJsonl(filePath: string, rows: unknown[]): void {
   fs.writeFileSync(filePath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`);
+}
+
+function copyDirectory(sourceDir: string, targetDir: string): void {
+  if (!fs.existsSync(sourceDir)) return;
+  fs.rmSync(targetDir, { recursive: true, force: true });
+  fs.cpSync(sourceDir, targetDir, { recursive: true });
+}
+
+function seedProviderAwareImport(importDir: string, claudeDataDir: string): void {
+  const agentRoot = path.join(importDir, 'agent-data');
+  copyDirectory(claudeDataDir, path.join(agentRoot, 'claude'));
+  copyDirectory(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), path.join(agentRoot, 'codex'));
+
+  fs.writeFileSync(
+    path.join(agentRoot, 'export-meta.json'),
+    JSON.stringify({
+      exportVersion: 2,
+      exportedAt: '2026-05-03T00:00:00.000Z',
+      exportedFrom: 'Fixture data',
+      platform: process.platform,
+      agents: ['claude', 'codex'],
+      agentCounts: {
+        claude: { projectCount: seededSessionIds.length, sessionCount: seededSessionIds.length },
+        codex: { projectCount: 1, sessionCount: 1 },
+      },
+    }, null, 2),
+  );
+
+  fs.writeFileSync(
+    path.join(importDir, 'source-settings.json'),
+    JSON.stringify({ agents: ['claude'] }, null, 2),
+  );
+}
+
+export function seedLiveAgentHomes(rootDir: string): void {
+  fs.rmSync(rootDir, { recursive: true, force: true });
+  const importDir = path.join(rootDir, 'import-seed');
+  seedImportedData(importDir);
+  copyDirectory(path.join(importDir, 'agent-data', 'claude'), path.join(rootDir, '.claude'));
+  copyDirectory(path.join(importDir, 'agent-data', 'codex'), path.join(rootDir, '.codex'));
+
+  const liveSessionsDir = path.join(rootDir, '.claude', 'sessions');
+  fs.mkdirSync(liveSessionsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(liveSessionsDir, 'live-session-1.json'),
+    JSON.stringify({
+      sessionId: fixtureSessionIds[0],
+      cwd: 'D:/dev/research/Claud-ometer',
+      status: 'idle',
+      version: '2.1.126',
+      kind: 'interactive',
+      entrypoint: 'cli',
+      startedAt: '2026-05-08T12:00:00.000Z',
+      updatedAt: '2026-05-08T12:05:00.000Z',
+    }, null, 2),
+  );
 }
 
 function buildSyntheticSession(sessionId: string, index: number): unknown[] {
@@ -424,9 +481,15 @@ function seedSyntheticImportedData(importDir: string): void {
       sessionCount: seededSessionIds.length,
       fileCount: seededSessionIds.length + 1,
       totalSize,
+      agents: ['claude', 'codex'],
+      agentCounts: {
+        claude: { projectCount: seededSessionIds.length, sessionCount: seededSessionIds.length },
+        codex: { projectCount: 1, sessionCount: 1 },
+      },
     }, null, 2),
   );
 
+  seedProviderAwareImport(importDir, claudeDataDir);
   fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 }
 
@@ -488,8 +551,14 @@ export function seedImportedData(importDir: string): void {
       sessionCount: fixtureSessionIds.length + 2,
       fileCount: fixtureSessionIds.length + 3,
       totalSize,
+      agents: ['claude', 'codex'],
+      agentCounts: {
+        claude: { projectCount: fixtureSessionIds.length + 2, sessionCount: fixtureSessionIds.length + 2 },
+        codex: { projectCount: 1, sessionCount: 1 },
+      },
     }, null, 2),
   );
 
+  seedProviderAwareImport(importDir, claudeDataDir);
   fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 }

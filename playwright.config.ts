@@ -2,9 +2,11 @@ import path from 'path';
 import { defineConfig, devices } from '@playwright/test';
 
 const e2eImportDir = path.resolve(__dirname, '.test-artifacts', 'e2e-import');
+const e2eHomeDir = path.resolve(__dirname, '.test-artifacts', 'e2e-home');
 
 export default defineConfig({
   testDir: './tests/e2e',
+  workers: 1,
   timeout: 60_000,
   expect: {
     timeout: 10_000,
@@ -33,6 +35,10 @@ export default defineConfig({
       HOSTNAME: '127.0.0.1',
       PORT: '3005',
       CLAUD_OMETER_IMPORT_DIR: e2eImportDir,
+      CLAUD_OMETER_CLAUDE_DIR: path.join(e2eHomeDir, '.claude'),
+      CLAUD_OMETER_CODEX_DIR: path.join(e2eHomeDir, '.codex'),
+      CLAUD_OMETER_LIVE_SESSIONS_DIR: path.join(e2eHomeDir, '.claude', 'sessions'),
+      CLAUD_OMETER_LIVE_PROJECTS_DIR: path.join(e2eHomeDir, '.claude', 'projects'),
     },
   },
   projects: [

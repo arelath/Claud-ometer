@@ -297,16 +297,28 @@ function readTranscriptPreview(filePath: string | null): TranscriptPreviewCacheE
   return { ...value, signature };
 }
 
-function getCacheLastActivityAtMs(preview: TranscriptPreviewCacheEntry['value'], fallbackMs: number): number {
-  return preview.cacheLastActivityAtMs || fallbackMs;
+function getEffectiveCacheExpiresAtMs(cacheLastActivityAtMs: number, status: LiveSessionStatus, nowMs: number): number {
+  if (status === 'busy') return nowMs + CACHE_TTL_MS;
+  return cacheLastActivityAtMs + CACHE_TTL_MS;
+}
+
+function getBusySinceAtMs(status: LiveSessionStatus, previous: LiveSessionInfo | null | undefined, fallbackMs: number): number | undefined {
+  if (status !== 'busy') return undefined;
+  if (previous?.status === 'busy' && previous.busySinceAtMs) return previous.busySinceAtMs;
+  return fallbackMs;
 }
 
 function refreshLiveSessionTranscriptInfo(value: LiveSessionInfo): LiveSessionInfo {
+  const nowMs = Date.now();
   const transcriptFilePath = findTranscriptFileForSessionId(value.sessionId) || undefined;
   const preview = readTranscriptPreview(transcriptFilePath || null);
   const mappedStatus = mapStatus(value.rawStatus);
-  const cacheLastActivityAtMs = getCacheLastActivityAtMs(preview, value.updatedAtMs);
-  const cacheExpiresAtMs = cacheLastActivityAtMs + CACHE_TTL_MS;
+  const cacheLastActivityAtMs = preview.cacheLastActivityAtMs || undefined;
+  const cacheExpiresAtMs = cacheLastActivityAtMs
+    ? getEffectiveCacheExpiresAtMs(cacheLastActivityAtMs, mappedStatus.status, nowMs)
+    : undefined;
+  const cachePaused = cacheLastActivityAtMs ? mappedStatus.status === 'busy' : undefined;
+  const busySinceAtMs = getBusySinceAtMs(mappedStatus.status, value, value.updatedAtMs || nowMs);
 
   if (
     value.transcriptFilePath === transcriptFilePath
@@ -318,6 +330,8 @@ function refreshLiveSessionTranscriptInfo(value: LiveSessionInfo): LiveSessionIn
     && value.statusReason === mappedStatus.reason
     && value.cacheLastActivityAtMs === cacheLastActivityAtMs
     && value.cacheExpiresAtMs === cacheExpiresAtMs
+    && value.cachePaused === cachePaused
+    && value.busySinceAtMs === busySinceAtMs
   ) {
     return value;
   }
@@ -331,10 +345,13 @@ function refreshLiveSessionTranscriptInfo(value: LiveSessionInfo): LiveSessionIn
     activeToolName: mappedStatus.status === 'busy' ? preview.activeToolName : undefined,
     status: mappedStatus.status,
     statusReason: mappedStatus.reason,
-    cacheLastActivityAt: toIsoString(cacheLastActivityAtMs),
+    cacheLastActivityAt: cacheLastActivityAtMs ? toIsoString(cacheLastActivityAtMs) : undefined,
     cacheLastActivityAtMs,
-    cacheExpiresAt: toIsoString(cacheExpiresAtMs),
+    cacheExpiresAt: cacheExpiresAtMs ? toIsoString(cacheExpiresAtMs) : undefined,
     cacheExpiresAtMs,
+    cachePaused,
+    busySinceAt: busySinceAtMs ? toIsoString(busySinceAtMs) : undefined,
+    busySinceAtMs,
     transcriptRevision: preview.signature,
   };
 }
@@ -370,11 +387,18 @@ function parseLiveSessionFile(filePath: string, nowMs = Date.now()): LiveSession
     const mappedStatus = mapStatus(rawStatus);
     const transcriptFilePath = findTranscriptFileForSessionId(sessionId) || undefined;
     const preview = readTranscriptPreview(transcriptFilePath || null);
-    const cacheLastActivityAtMs = getCacheLastActivityAtMs(preview, updatedAtMs);
-    const cacheExpiresAtMs = cacheLastActivityAtMs + CACHE_TTL_MS;
+    const cacheLastActivityAtMs = preview.cacheLastActivityAtMs || undefined;
+    const cacheExpiresAtMs = cacheLastActivityAtMs
+      ? getEffectiveCacheExpiresAtMs(cacheLastActivityAtMs, mappedStatus.status, nowMs)
+      : undefined;
+    const cachePaused = cacheLastActivityAtMs ? mappedStatus.status === 'busy' : undefined;
+    const busySinceAtMs = getBusySinceAtMs(mappedStatus.status, previousValid, updatedAtMs || nowMs);
 
     const value: LiveSessionInfo = {
       id: sessionId,
+      agentKind: 'claude',
+      nativeId: sessionId,
+      routeId: `claude:${sessionId}`,
       sessionId,
       metadataFilePath: filePath,
       transcriptFilePath,
@@ -387,13 +411,16 @@ function parseLiveSessionFile(filePath: string, nowMs = Date.now()): LiveSession
       startedAt: toIsoString(startedAtMs),
       lastActivityAt: toIsoString(updatedAtMs || stat.mtimeMs || nowMs),
       updatedAtMs,
-      cacheLastActivityAt: toIsoString(cacheLastActivityAtMs),
+      cacheLastActivityAt: cacheLastActivityAtMs ? toIsoString(cacheLastActivityAtMs) : undefined,
       cacheLastActivityAtMs,
-      cacheExpiresAt: toIsoString(cacheExpiresAtMs),
+      cacheExpiresAt: cacheExpiresAtMs ? toIsoString(cacheExpiresAtMs) : undefined,
       cacheExpiresAtMs,
+      cachePaused,
       status: mappedStatus.status,
       rawStatus,
       statusReason: mappedStatus.reason,
+      busySinceAt: busySinceAtMs ? toIsoString(busySinceAtMs) : undefined,
+      busySinceAtMs,
       messageCount: preview.messageCount,
       toolCallCount: preview.toolCallCount,
       lastPreview: preview.lastPreview,

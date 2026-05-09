@@ -1,7 +1,8 @@
 import { ProjectsClient } from '@/components/pages/projects-client';
-import { getProjects } from '@/lib/claude-data/reader';
+import { getActiveProviders } from '@/lib/agent-data/registry';
+import { sortProjectsByLastActive } from '@/lib/agent-data/aggregate';
 
 export default async function ProjectsPage() {
-  const projects = await getProjects();
+  const projects = sortProjectsByLastActive((await Promise.all(getActiveProviders().map(provider => provider.getProjects()))).flat());
   return <ProjectsClient initialProjects={projects} />;
 }
