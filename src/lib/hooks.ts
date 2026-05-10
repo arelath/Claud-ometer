@@ -1,5 +1,6 @@
 import useSWR from 'swr';
 import type { AgentKind } from '@/lib/agent-data/types';
+import type { SessionIndexState } from '@/lib/agent-data/indexer';
 import type { DashboardStats, LiveSessionInfo, ProjectInfo, SessionInfo, SessionDetail } from '@/lib/claude-data/types';
 
 export interface DataSourceInfo {
@@ -18,6 +19,23 @@ export interface DataSourceInfo {
     agents?: AgentKind[];
     agentCounts?: Partial<Record<AgentKind, { projectCount: number; sessionCount: number }>>;
   } | null;
+}
+
+export interface CacheStatus {
+  status: SessionIndexState;
+  cachePath: string;
+  exists: boolean;
+  generatedAt: string;
+  summaryCount: number;
+  activeProviders: AgentKind[];
+  sourceCount: number;
+  validCount: number;
+  staleCount: number;
+  missingCount: number;
+  unindexedCount: number;
+  refreshStartedAt?: string;
+  refreshCompletedAt?: string;
+  refreshError?: string;
 }
 
 const fetcher = (url: string) => fetch(url).then(r => {
@@ -60,4 +78,15 @@ export function useLiveSessions() {
 
 export function useLiveSessionBinding(sessionId: string) {
   return useSWR<LiveSessionInfo | null>(`/api/live-sessions/by-session/${sessionId}`, fetcher, { refreshInterval: 1000 });
+}
+
+export function useCacheStatus() {
+  return useSWR<CacheStatus>('/api/cache', fetcher, {
+    refreshInterval: (latestData) => {
+      if (!latestData) return 2000;
+      return latestData.status === 'refreshing' || latestData.status === 'stale' || latestData.status === 'empty'
+        ? 2000
+        : 15000;
+    },
+  });
 }

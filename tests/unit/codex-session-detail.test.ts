@@ -64,6 +64,78 @@ describe('Codex session detail parser', () => {
     ]));
   });
 
+  it('deduplicates paired Codex compaction records', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-05-08T10:00:00.000Z', type: 'session_meta', payload: { id: 'compacted', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:02.000Z', type: 'compacted', payload: {} },
+      { timestamp: '2026-05-08T10:00:02.004Z', type: 'event_msg', payload: { kind: 'context_compacted', trigger: 'manual', pre_tokens: 120000 } },
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/compacted.jsonl', records);
+    const compactionMessages = parsed.detail.messages.filter(message => message.content === 'Context compacted');
+
+    expect(parsed.detail.compaction.compactions).toBe(1);
+    expect(parsed.detail.compaction.compactionTimestamps).toHaveLength(1);
+    expect(compactionMessages).toHaveLength(1);
+    expect(compactionMessages[0].blocks?.[0].details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'trigger', value: 'manual' }),
+    ]));
+  });
+
+  it('attaches Codex last-token usage and cost to the assistant turn', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-05-08T10:00:00.000Z', type: 'session_meta', payload: { id: 'window', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo' } },
+      {
+        timestamp: '2026-05-08T10:00:02.000Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] },
+      },
+      {
+        timestamp: '2026-05-08T10:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          kind: 'token_count',
+          info: {
+            last_token_usage: {
+              input_tokens: 100,
+              cached_input_tokens: 80,
+              output_tokens: 12,
+              reasoning_output_tokens: 4,
+            },
+            total_token_usage: {
+              input_tokens: 900,
+              cached_input_tokens: 700,
+              output_tokens: 120,
+              reasoning_output_tokens: 40,
+            },
+          },
+        },
+      },
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/window.jsonl', records);
+    const assistant = parsed.detail.messages.find(message => message.role === 'assistant' && message.content === 'done');
+
+    expect(assistant?.promptBreakdown).toMatchObject({
+      totalTokens: 100,
+      conversationTokens: 20,
+      cacheReadTokens: 80,
+    });
+    expect(assistant?.usage).toMatchObject({
+      input_tokens: 20,
+      cache_read_input_tokens: 80,
+      output_tokens: 12,
+      cache_creation_input_tokens: 0,
+    });
+    expect(assistant?.estimatedCosts?.api).toBeGreaterThan(0);
+    expect(parsed.info.totalInputTokens).toBe(200);
+    expect(parsed.info.totalCacheReadTokens).toBe(700);
+  });
+
   it('feeds Codex apply_patch artifacts into the Changes diff summary', async () => {
     const reader = await loadReader();
     const detail = await reader.getSessionDetail('00000000-0000-0000-0000-000000000001');

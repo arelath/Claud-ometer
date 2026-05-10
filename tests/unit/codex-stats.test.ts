@@ -32,7 +32,7 @@ describe('Codex stats', () => {
 
     expect(stats.totalSessions).toBe(1);
     expect(stats.totalMessages).toBe(3);
-    expect(stats.totalTokens).toBe(198);
+    expect(stats.totalTokens).toBe(168);
     expect(stats.dailyActivity).toEqual([{
       date: '2026-05-08',
       messageCount: 3,
@@ -40,8 +40,8 @@ describe('Codex stats', () => {
       toolCallCount: 2,
     }]);
     expect(stats.modelUsage['gpt-5.5']).toMatchObject({
-      inputTokens: 150,
-      outputTokens: 23,
+      inputTokens: 125,
+      outputTokens: 18,
       cacheReadInputTokens: 25,
       cacheCreationInputTokens: 0,
       reasoningOutputTokens: 5,
@@ -79,10 +79,10 @@ describe('Codex stats', () => {
       timestamp: `2026-05-08T10:01:0${index}.000Z`,
     })));
 
-    expect(direct.info.totalInputTokens).toBe(10);
-    expect(direct.info.totalOutputTokens).toBe(4);
+    expect(direct.info.totalInputTokens).toBe(8);
+    expect(direct.info.totalOutputTokens).toBe(3);
     expect(direct.info.totalCacheReadTokens).toBe(2);
     expect(missing.info.totalInputTokens).toBe(0);
-    expect(buildCodexDashboardStats([direct, missing]).totalTokens).toBe(16);
+    expect(buildCodexDashboardStats([direct, missing]).totalTokens).toBe(13);
   });
 });

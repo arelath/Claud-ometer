@@ -82,6 +82,7 @@ function buildWindowMeterSnapshot(messages: SessionMessageDisplay[]): MeterSnaps
       { key: 'system', label: 'System', value: currentBreakdown.systemTokens, color: '#888780' },
       { key: 'files', label: 'Files', value: currentBreakdown.filesTokens, color: '#BA7517' },
       { key: 'conversation', label: 'Conversation', value: currentBreakdown.conversationTokens, color: '#378ADD' },
+      { key: 'cache-read', label: 'Cache read', value: currentBreakdown.cacheReadTokens || 0, color: '#A855F7' },
       { key: 'thinking', label: 'Thinking', value: currentBreakdown.thinkingTokens, color: '#D97706' },
       { key: 'tools', label: 'Tools', value: currentBreakdown.toolTokens, color: '#0F766E' },
       { key: 'other', label: 'Other', value: currentBreakdown.otherTokens, color: '#5DCAA5' },
@@ -101,7 +102,8 @@ export function ContextWindowMeter({
   const [mode, setMode] = useState<TokenMeterMode>('usage');
   const usageSnapshot = useMemo(() => buildUsageMeterSnapshot(session), [session]);
   const windowSnapshot = useMemo(() => buildWindowMeterSnapshot(messages), [messages]);
-  const snapshot = mode === 'window' && windowSnapshot ? windowSnapshot : usageSnapshot;
+  const activeMode = mode === 'window' && windowSnapshot ? 'window' : 'usage';
+  const snapshot = activeMode === 'window' ? windowSnapshot! : usageSnapshot;
   if (snapshot.total === 0) return null;
 
   const percents = getMeterPercents(snapshot.segments.map(segment => segment.value));
@@ -113,7 +115,7 @@ export function ContextWindowMeter({
           <div>
             <div className="text-xs font-medium text-foreground">Token usage</div>
             <div className="mt-0.5 text-[10px] text-muted-foreground">
-              {mode === 'window' ? 'Prompt composition before the latest assistant response' : 'Actual session token totals'}
+              {activeMode === 'window' ? 'Prompt composition before the latest assistant response' : 'Actual session token totals'}
             </div>
           </div>
           <div className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 p-0.5">
@@ -129,9 +131,11 @@ export function ContextWindowMeter({
             <button
               type="button"
               onClick={() => setMode('window')}
+              disabled={!windowSnapshot}
               className={`rounded-full px-2 py-0.5 text-[10px] transition-colors ${
-                mode === 'window' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                activeMode === 'window' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:text-muted-foreground'
               }`}
+              title={windowSnapshot ? undefined : 'No current prompt breakdown is available for this session'}
             >
               Window
             </button>

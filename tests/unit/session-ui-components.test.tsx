@@ -268,10 +268,11 @@ describe('session UI building blocks', () => {
             content: 'Done',
             timestamp: '2026-05-08T12:00:00.000Z',
             promptBreakdown: {
-              totalTokens: 500,
+              totalTokens: 575,
               systemTokens: 100,
               conversationTokens: 150,
               filesTokens: 200,
+              cacheReadTokens: 75,
               thinkingTokens: 25,
               toolTokens: 20,
               otherTokens: 5,
@@ -314,6 +315,9 @@ describe('session UI building blocks', () => {
 
     expect(screen.getByText('Token usage')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Window' }));
+    expect(screen.getByText('current prompt')).toBeInTheDocument();
+    expect(screen.getByText('575 total')).toBeInTheDocument();
+    expect(screen.getAllByText('Cache read').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText('app.ts'));
     fireEvent.click(screen.getByText('Copy all'));
     expect(openDiff).toHaveBeenCalledWith('D:/repo/src/app.ts');

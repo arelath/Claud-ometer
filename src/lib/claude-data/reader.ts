@@ -10,6 +10,7 @@ import type {
   SessionMessage,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
+  SessionPromptTokenBreakdown,
   SessionToolCallDisplay,
   DashboardStats,
   DailyActivity,
@@ -391,6 +392,19 @@ class SessionParser {
   }
 }
 
+function buildPromptBreakdownOrUndefined(
+  totals: ReturnType<typeof zeroPromptTokenTotals>,
+  usage: TokenUsage | undefined,
+  sessionId: string,
+  timestamp: string | undefined,
+): SessionPromptTokenBreakdown | undefined {
+  try {
+    return buildPromptBreakdown(totals, usage, sessionId, timestamp);
+  } catch {
+    return undefined;
+  }
+}
+
 async function parseSessionFileUncached(filePath: string, projectId: string, projectName: string): Promise<ParsedSessionInfo> {
   const sessionId = path.basename(filePath, '.jsonl');
   const parser = new SessionParser(sessionId, projectId, projectName);
@@ -529,7 +543,7 @@ export async function getSessionDetailFromFile(filePath: string, projectId: stri
       }
 
       if (msg.type === 'assistant' && msg.message?.content) {
-        const promptBreakdown = buildPromptBreakdown(
+        const promptBreakdown = buildPromptBreakdownOrUndefined(
           contextTotals,
           msg.message.usage as TokenUsage | undefined,
           sessionId,

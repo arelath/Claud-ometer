@@ -60,12 +60,14 @@ describe('provider API routes', () => {
   });
 
   it('returns Codex projects, sessions, details, and stats through provider routes', async () => {
-    const [{ GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
+    const [{ POST: rebuildCache }, { GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
+      import('@/app/api/cache/route'),
       import('@/app/api/projects/route'),
       import('@/app/api/sessions/route'),
       import('@/app/api/sessions/[id]/route'),
       import('@/app/api/stats/route'),
     ]);
+    await rebuildCache();
 
     const projects = await (await getProjects(new Request('http://localhost/api/projects?agent=codex'))).json();
     const sessions = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex'))).json();
@@ -90,12 +92,14 @@ describe('provider API routes', () => {
     process.env.CLAUD_OMETER_AGENTS = 'claude,codex';
     vi.resetModules();
 
-    const [{ GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
+    const [{ POST: rebuildCache }, { GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
+      import('@/app/api/cache/route'),
       import('@/app/api/projects/route'),
       import('@/app/api/sessions/route'),
       import('@/app/api/sessions/[id]/route'),
       import('@/app/api/stats/route'),
     ]);
+    await rebuildCache();
 
     const projects = await (await getProjects(new Request('http://localhost/api/projects?agent=all'))).json();
     const search = await (await getSessions(new Request('http://localhost/api/sessions?q=Context%20Builder&agent=all&limit=5'))).json();

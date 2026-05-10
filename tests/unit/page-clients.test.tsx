@@ -19,11 +19,13 @@ const hookState = vi.hoisted(() => ({
   sessionsLoading: false,
   liveSessions: [] as LiveSessionInfo[],
   dataSource: { active: 'live', hasImportedData: false, importMeta: null },
+  cacheStatus: { status: 'fresh' },
   replace: vi.fn(),
   searchParams: '',
 }));
 
 vi.mock('@/lib/hooks', () => ({
+  useCacheStatus: () => ({ data: hookState.cacheStatus }),
   useDataSourceInfo: () => ({ data: hookState.dataSource }),
   useLiveSessions: () => ({ data: hookState.liveSessions }),
   useProjectSessions: (_projectId: string, fallbackData?: SessionInfo[]) => ({
@@ -187,6 +189,9 @@ describe('page client components', () => {
 
     expect(screen.getByText('Cost Analytics')).toBeInTheDocument();
     expect(screen.getByText('Cache Savings')).toBeInTheDocument();
+    expect(screen.getByText('Input Tokens')).toBeInTheDocument();
+    expect(screen.getByText('1.3K')).toBeInTheDocument();
+    expect(screen.getByText('fresh + cache read')).toBeInTheDocument();
     expect(screen.getByText('Estimated Cost by Project')).toBeInTheDocument();
     expect(screen.getByTestId('cost-chart')).toHaveTextContent('cost 1');
   });

@@ -221,6 +221,7 @@ export interface SessionPromptTokenBreakdown {
   systemTokens: number;
   conversationTokens: number;
   filesTokens: number;
+  cacheReadTokens?: number;
   thinkingTokens: number;
   toolTokens: number;
   otherTokens: number;

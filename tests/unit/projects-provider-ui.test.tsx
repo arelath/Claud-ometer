@@ -7,6 +7,7 @@ import { CostModeProvider } from '@/lib/cost-mode-context';
 import type { ProjectInfo, SessionInfo } from '@/lib/claude-data/types';
 
 vi.mock('@/lib/hooks', () => ({
+  useCacheStatus: () => ({ data: { status: 'fresh' } }),
   useProjects: (fallbackData?: ProjectInfo[]) => ({ data: fallbackData, isLoading: false }),
   useProjectSessions: (_projectId: string, fallbackData?: SessionInfo[]) => ({ data: fallbackData, isLoading: false }),
 }));

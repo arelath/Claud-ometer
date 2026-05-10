@@ -16,6 +16,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/lib/hooks', () => ({
+  useCacheStatus: () => ({ data: { status: 'fresh' } }),
   useDataSourceInfo: () => ({ data: { active: 'live', agents: ['claude', 'codex'], detectedAgents: ['claude', 'codex'], hasImportedData: false, importMeta: null } }),
   useLiveSessions: () => ({ data: [] }),
   useSessions: (_limit?: number, _offset?: number, _query?: string, fallbackData?: SessionInfo[]) => ({

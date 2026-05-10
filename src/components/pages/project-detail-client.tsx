@@ -1,18 +1,25 @@
 'use client';
 
-import { useProjectSessions } from '@/lib/hooks';
+import { useEffect } from 'react';
+import { useCacheStatus, useProjectSessions } from '@/lib/hooks';
 import type { SessionInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { formatCost, formatDuration, timeAgo } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AgentBadge } from '@/components/agent-badge';
+import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { ArrowLeft, Clock, GitBranch, MessageSquare, Wrench } from 'lucide-react';
 import Link from 'next/link';
 
-export function ProjectDetailClient({ projectId, initialSessions }: { projectId: string; initialSessions: SessionInfo[] }) {
-  const { data: sessions, isLoading } = useProjectSessions(projectId, initialSessions);
+export function ProjectDetailClient({ projectId, initialSessions }: { projectId: string; initialSessions?: SessionInfo[] }) {
+  const { data: sessions, isLoading, mutate } = useProjectSessions(projectId, initialSessions);
+  const { data: cacheStatus } = useCacheStatus();
   const { pickCost } = useCostMode();
+
+  useEffect(() => {
+    if (cacheStatus?.refreshCompletedAt) void mutate();
+  }, [cacheStatus?.refreshCompletedAt, mutate]);
 
   const projectName = sessions?.[0]?.projectName || projectId.split('-').pop() || projectId;
 
@@ -59,6 +66,7 @@ export function ProjectDetailClient({ projectId, initialSessions }: { projectId:
           <p className="text-sm text-muted-foreground">{sessions.length} sessions</p>
         </div>
       </div>
+      <CacheRefreshStatus status={cacheStatus} />
 
       <div className="grid grid-cols-4 gap-4">
         <Card className="border-border/50 shadow-sm">

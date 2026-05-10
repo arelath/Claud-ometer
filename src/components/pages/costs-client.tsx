@@ -1,6 +1,7 @@
 'use client';
 
-import { useStats, useProjects } from '@/lib/hooks';
+import { useEffect } from 'react';
+import { useCacheStatus, useStats, useProjects } from '@/lib/hooks';
 import type { DashboardStats, ProjectInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { CostModeSelector } from '@/components/cost-mode-selector';
@@ -16,15 +17,23 @@ import {
 } from '@/config/pricing';
 import { Coins, TrendingUp, Zap, Database, Info } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { Separator } from '@/components/ui/separator';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 
-export function CostsClient({ initialStats, initialProjects }: { initialStats: DashboardStats; initialProjects: ProjectInfo[] }) {
-  const { data: stats, isLoading: statsLoading } = useStats(initialStats);
-  const { data: projects, isLoading: projectsLoading } = useProjects(initialProjects);
+export function CostsClient({ initialStats, initialProjects }: { initialStats?: DashboardStats; initialProjects?: ProjectInfo[] }) {
+  const { data: stats, isLoading: statsLoading, mutate: mutateStats } = useStats(initialStats);
+  const { data: projects, isLoading: projectsLoading, mutate: mutateProjects } = useProjects(initialProjects);
+  const { data: cacheStatus } = useCacheStatus();
   const { costMode, pickCost, label: modeLabel } = useCostMode();
+
+  useEffect(() => {
+    if (!cacheStatus?.refreshCompletedAt) return;
+    void mutateStats();
+    void mutateProjects();
+  }, [cacheStatus?.refreshCompletedAt, mutateProjects, mutateStats]);
 
   if (statsLoading || projectsLoading || !stats || !projects) {
     return (
@@ -62,6 +71,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
   });
 
   const totalCost = pickCost(stats.estimatedCosts, stats.estimatedCost);
+  const totalPromptInputTokens = totalInputTokens + totalCacheReadTokens;
 
   // Cost by project
   const projectCosts = projects
@@ -100,6 +110,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
         </div>
         <CostModeSelector />
       </div>
+      <CacheRefreshStatus status={cacheStatus} />
 
       {/* Mode explainer */}
       <div className="flex items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-4 py-3">
@@ -128,7 +139,8 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats: D
         />
         <StatCard
           title="Input Tokens"
-          value={formatTokens(totalInputTokens)}
+          value={formatTokens(totalPromptInputTokens)}
+          subtitle="fresh + cache read"
           icon={TrendingUp}
         />
         <StatCard

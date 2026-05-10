@@ -26,8 +26,8 @@ vi.mock('@/components/pages/dashboard-client', () => ({
 }));
 
 vi.mock('@/components/pages/costs-client', () => ({
-  CostsClient: ({ initialStats, initialProjects }: { initialStats: DashboardStats; initialProjects: ProjectInfo[] }) => (
-    <div>Costs client {initialStats.totalTokens} {initialProjects.length}</div>
+  CostsClient: ({ initialStats, initialProjects }: { initialStats?: DashboardStats; initialProjects?: ProjectInfo[] }) => (
+    <div>Costs client {initialStats?.totalTokens ?? 'client-fetch'} {initialProjects?.length ?? 'client-fetch'}</div>
   ),
 }));
 
@@ -38,8 +38,8 @@ vi.mock('@/components/pages/projects-client', () => ({
 }));
 
 vi.mock('@/components/pages/project-detail-client', () => ({
-  ProjectDetailClient: ({ projectId, initialSessions }: { projectId: string; initialSessions: SessionInfo[] }) => (
-    <div>Project detail client {projectId} {initialSessions.length}</div>
+  ProjectDetailClient: ({ projectId, initialSessions }: { projectId: string; initialSessions?: SessionInfo[] }) => (
+    <div>Project detail client {projectId} {initialSessions?.length ?? 'client-fetch'}</div>
   ),
 }));
 
@@ -117,7 +117,7 @@ describe('Next app page wrappers', () => {
     readerState.searchSessions.mockResolvedValue([{ ...session, id: 'session-search' }]);
   });
 
-  it('renders dashboard as a client-fetching shell and loads costs server data', async () => {
+  it('renders dashboard, costs, and projects as client-fetching shells', async () => {
     const DashboardPage = (await import('@/app/page')).default;
     const CostsPage = (await import('@/app/costs/page')).default;
     const ProjectsPage = (await import('@/app/projects/page')).default;
@@ -126,20 +126,21 @@ describe('Next app page wrappers', () => {
     expect(readerState.getDashboardStats).not.toHaveBeenCalled();
     expect(screen.getByText('Dashboard client client-fetch')).toBeInTheDocument();
 
-    render(await CostsPage());
-    expect(screen.getByText('Costs client 150 1')).toBeInTheDocument();
+    render(<CostsPage />);
+    expect(readerState.getProjects).not.toHaveBeenCalled();
+    expect(screen.getByText('Costs client client-fetch client-fetch')).toBeInTheDocument();
 
     render(await ProjectsPage());
     expect(screen.getByText('Projects client client-fetch')).toBeInTheDocument();
   });
 
-  it('decodes project ids before loading project sessions', async () => {
+  it('decodes project ids without eager-loading project sessions', async () => {
     const ProjectDetailPage = (await import('@/app/projects/[id]/page')).default;
 
     render(await ProjectDetailPage({ params: Promise.resolve({ id: 'D%3A%5Cdev%5CClaudometer' }) }));
 
-    expect(readerState.getProjectSessions).toHaveBeenCalledWith('D:\\dev\\Claudometer');
-    expect(screen.getByText('Project detail client D:\\dev\\Claudometer 1')).toBeInTheDocument();
+    expect(readerState.getProjectSessions).not.toHaveBeenCalled();
+    expect(screen.getByText('Project detail client D:\\dev\\Claudometer client-fetch')).toBeInTheDocument();
   });
 
   it('renders the sessions shell without eager-loading large server data', async () => {

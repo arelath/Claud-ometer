@@ -6,6 +6,7 @@ import type {
   SessionInfo,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
+  SessionPromptTokenBreakdown,
   TokenUsage,
 } from '@/lib/claude-data/types';
 import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
@@ -34,6 +35,10 @@ interface CodexTokenUsage {
   reasoning_output_tokens?: number;
 }
 
+type CodexCompactionSource = 'context_compacted' | 'compacted';
+
+const CODEX_COMPACTION_DUPLICATE_WINDOW_MS = 1000;
+
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -43,6 +48,11 @@ function getTimestamp(record: CodexEnvelope, payload: Record<string, unknown> | 
   return getOptionalString(record as unknown as Record<string, unknown>, 'timestamp')
     || getOptionalString(payload, 'timestamp')
     || new Date(0).toISOString();
+}
+
+function parseTimestampMs(timestamp: string): number | null {
+  const ms = new Date(timestamp).getTime();
+  return Number.isNaN(ms) ? null : ms;
 }
 
 function getContentText(content: unknown): string {
@@ -104,13 +114,66 @@ function getTokenUsageFromCountPayload(payload: Record<string, unknown>): CodexT
   return parseTokenUsage(info?.total_token_usage ?? payload.total_token_usage);
 }
 
+function getLastTokenUsageFromCountPayload(payload: Record<string, unknown>): CodexTokenUsage | null {
+  const info = asRecord(payload.info);
+  const source = info?.last_token_usage ?? payload.last_token_usage;
+  if (!source) return null;
+  return parseTokenUsage(source);
+}
+
 function toClaudeUsage(usage: CodexTokenUsage): TokenUsage {
+  const rawInputTokens = Math.max(usage.input_tokens || 0, 0);
+  const rawCacheReadTokens = Math.max(usage.cached_input_tokens || 0, 0);
+  const reasoningOutputTokens = Math.max(usage.reasoning_output_tokens || 0, 0);
+  const outputTokens = Math.max(usage.output_tokens || 0, reasoningOutputTokens);
+  // Codex total input includes cached input, and reasoning output is a detail of output.
+  const freshInputTokens = rawCacheReadTokens <= rawInputTokens
+    ? rawInputTokens - rawCacheReadTokens
+    : rawInputTokens;
+
   return {
-    input_tokens: usage.input_tokens || 0,
-    output_tokens: (usage.output_tokens || 0) + (usage.reasoning_output_tokens || 0),
+    input_tokens: freshInputTokens,
+    output_tokens: outputTokens,
     cache_creation_input_tokens: 0,
-    cache_read_input_tokens: usage.cached_input_tokens || 0,
+    cache_read_input_tokens: rawCacheReadTokens,
   };
+}
+
+function buildCodexPromptBreakdown(usage: CodexTokenUsage): SessionPromptTokenBreakdown | null {
+  const rawInputTokens = Math.max(usage.input_tokens || 0, 0);
+  if (rawInputTokens === 0) return null;
+
+  const cacheReadTokens = Math.min(Math.max(usage.cached_input_tokens || 0, 0), rawInputTokens);
+  return {
+    totalTokens: rawInputTokens,
+    systemTokens: 0,
+    conversationTokens: rawInputTokens - cacheReadTokens,
+    filesTokens: 0,
+    cacheReadTokens,
+    thinkingTokens: 0,
+    toolTokens: 0,
+    otherTokens: 0,
+  };
+}
+
+function attachCodexTurnUsage(message: SessionMessageDisplay, usage: CodexTokenUsage, model: string): void {
+  const normalizedUsage = toClaudeUsage(usage);
+  const hasTokens = normalizedUsage.input_tokens > 0
+    || normalizedUsage.output_tokens > 0
+    || normalizedUsage.cache_read_input_tokens > 0
+    || normalizedUsage.cache_creation_input_tokens > 0;
+  if (!hasTokens) return;
+
+  message.usage = normalizedUsage;
+  message.estimatedCosts = model === 'unknown'
+    ? zeroCosts()
+    : calculateCostAllModes(
+      model,
+      normalizedUsage.input_tokens,
+      normalizedUsage.output_tokens,
+      normalizedUsage.cache_creation_input_tokens,
+      normalizedUsage.cache_read_input_tokens,
+    );
 }
 
 function getProjectNativeId(cwd: string, fallbackFilePath: string): string {
@@ -165,6 +228,48 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
   let finalTokenUsage: CodexTokenUsage = {};
   let compactions = 0;
   const compactionTimestamps: string[] = [];
+  const compactionEvents: Array<{ time: number; source: CodexCompactionSource; messageIndex: number }> = [];
+  let lastAssistantMessageIndex: number | null = null;
+
+  const pushAssistantMessage = (message: SessionMessageDisplay) => {
+    messages.push(message);
+    lastAssistantMessageIndex = messages.length - 1;
+  };
+
+  const recordCompaction = (
+    timestamp: string,
+    source: CodexCompactionSource,
+    details: Array<{ key: string; value: string }> = [],
+  ) => {
+    const time = parseTimestampMs(timestamp);
+    const duplicate = time == null
+      ? undefined
+      : compactionEvents.find(event => (
+          event.source !== source
+          && Math.abs(event.time - time) <= CODEX_COMPACTION_DUPLICATE_WINDOW_MS
+        ));
+
+    if (duplicate) {
+      if (details.length > 0) {
+        const existingMessage = messages[duplicate.messageIndex];
+        existingMessage.blocks = [makeEventBlock('Context compacted', 'Context compacted', details)];
+      }
+      return;
+    }
+
+    compactions++;
+    compactionTimestamps.push(timestamp);
+    messages.push({
+      role: 'system',
+      content: 'Context compacted',
+      timestamp,
+      blocks: [makeEventBlock('Context compacted', 'Context compacted', details)],
+      isMeta: true,
+    });
+    if (time != null) {
+      compactionEvents.push({ time, source, messageIndex: messages.length - 1 });
+    }
+  };
 
   for (const record of records) {
     const payload = asRecord(record.payload) || {};
@@ -206,7 +311,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
         } else if (role === 'assistant') {
           if (!shouldSkipDuplicateAssistant(seenAssistantText, text)) {
             assistantMessageCount++;
-            messages.push({ role: 'assistant', content: text, timestamp, model });
+            pushAssistantMessage({ role: 'assistant', content: text, timestamp, model });
           }
         } else if (role === 'developer' || role === 'system') {
           messages.push({
@@ -222,7 +327,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
 
       if (kind === 'reasoning') {
         const summary = getReasoningText(payload);
-        messages.push({
+        pushAssistantMessage({
           role: 'assistant',
           content: '',
           timestamp,
@@ -286,7 +391,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
 
       if (kind === 'agent_reasoning') {
         const summary = getReasoningText(payload);
-        messages.push({
+        pushAssistantMessage({
           role: 'assistant',
           content: '',
           timestamp,
@@ -308,13 +413,22 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
         if (text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
           assistantMessageCount++;
           searchableParts.push(text);
-          messages.push({ role: 'assistant', content: text, timestamp, model });
+          pushAssistantMessage({ role: 'assistant', content: text, timestamp, model });
         }
         continue;
       }
 
       if (kind === 'token_count') {
         finalTokenUsage = getTokenUsageFromCountPayload(payload);
+        const lastTokenUsage = getLastTokenUsageFromCountPayload(payload);
+        if (lastTokenUsage && lastAssistantMessageIndex != null) {
+          const targetMessage = messages[lastAssistantMessageIndex];
+          attachCodexTurnUsage(targetMessage, lastTokenUsage, targetMessage.model || model);
+          const promptBreakdown = buildCodexPromptBreakdown(lastTokenUsage);
+          if (promptBreakdown) {
+            targetMessage.promptBreakdown = promptBreakdown;
+          }
+        }
         continue;
       }
 
@@ -334,18 +448,14 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
       }
 
       if (kind === 'context_compacted') {
-        compactions++;
-        compactionTimestamps.push(timestamp);
-        messages.push({
-          role: 'system',
-          content: 'Context compacted',
+        recordCompaction(
           timestamp,
-          blocks: [makeEventBlock('Context compacted', 'Context compacted', [
+          'context_compacted',
+          [
             { key: 'trigger', value: getOptionalString(payload, 'trigger') || 'unknown' },
             { key: 'pre_tokens', value: String(payload.pre_tokens || '') },
-          ])],
-          isMeta: true,
-        });
+          ],
+        );
         continue;
       }
 
@@ -363,15 +473,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
     }
 
     if (record.type === 'compacted') {
-      compactions++;
-      compactionTimestamps.push(timestamp);
-      messages.push({
-        role: 'system',
-        content: 'Context compacted',
-        timestamp,
-        blocks: [makeEventBlock('Context compacted', 'Context compacted', [])],
-        isMeta: true,
-      });
+      recordCompaction(timestamp, 'compacted');
     }
   }
 

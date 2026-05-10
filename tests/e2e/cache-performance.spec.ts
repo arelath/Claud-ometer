@@ -16,6 +16,10 @@ test('summary cache can be cleared, rebuilt, and reused for aggregate pages', as
   const stats = await page.request.get('/api/stats?agent=all');
   expect(stats.ok()).toBe(true);
 
+  await expect.poll(async () => {
+    const status = await (await page.request.get('/api/cache')).json();
+    return status.exists && status.summaryCount > 0 && status.validCount > 0;
+  }, { timeout: 15_000 }).toBe(true);
   const status = await (await page.request.get('/api/cache')).json();
   expect(status.exists).toBe(true);
   expect(status.summaryCount).toBeGreaterThan(0);

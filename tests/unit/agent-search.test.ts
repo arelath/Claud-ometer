@@ -23,7 +23,9 @@ describe('agent search', () => {
   });
 
   it('searches Codex text, Claude text, tool text, and merged provider results', async () => {
+    const { POST: rebuildCache } = await import('@/app/api/cache/route');
     const { GET } = await import('@/app/api/sessions/route');
+    await rebuildCache();
 
     const codexOnly = await (await GET(new Request('http://localhost/api/sessions?q=fixture%20user%20text&agent=codex'))).json();
     expect(codexOnly).toHaveLength(1);

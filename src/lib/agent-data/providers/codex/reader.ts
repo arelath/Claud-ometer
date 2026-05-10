@@ -16,7 +16,7 @@ import { buildCodexDashboardStats } from './stats';
 
 const parsedCache = new AgentDataCache<CodexParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v1';
+export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v3';
 
 async function parseDiscoveredSession(fileInfo: CodexSessionFileInfo): Promise<CodexParsedSession> {
   const signature = getFileSignature(fileInfo.filePath);

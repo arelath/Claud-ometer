@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const provider = { kind: 'claude' };
+const provider = {
+  kind: 'claude',
+  parserVersion: 'parser-v1',
+  discoverSessionSources: vi.fn(),
+  buildSessionSummary: vi.fn(),
+};
 const status = {
   cachePath: 'D:/cache/agent-session-summary-v1.json',
   exists: true,

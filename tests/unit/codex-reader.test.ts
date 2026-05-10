@@ -53,9 +53,9 @@ describe('Codex reader', () => {
     expect(detail).toMatchObject({
       id: 'codex:00000000-0000-0000-0000-000000000001',
       toolCallCount: 2,
-      totalInputTokens: 150,
+      totalInputTokens: 125,
       totalCacheReadTokens: 25,
-      totalOutputTokens: 23,
+      totalOutputTokens: 18,
       messageCount: 3,
     });
   });

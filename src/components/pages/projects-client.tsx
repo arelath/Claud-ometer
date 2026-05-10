@@ -1,18 +1,25 @@
 'use client';
 
-import { useProjects } from '@/lib/hooks';
+import { useEffect } from 'react';
+import { useCacheStatus, useProjects } from '@/lib/hooks';
 import type { ProjectInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { formatTokens, formatCost, timeAgo } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AgentBadge } from '@/components/agent-badge';
+import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { FolderKanban, MessageSquare, Clock, Layers } from 'lucide-react';
 import Link from 'next/link';
 
 export function ProjectsClient({ initialProjects }: { initialProjects?: ProjectInfo[] }) {
-  const { data: projects, isLoading } = useProjects(initialProjects);
+  const { data: projects, isLoading, mutate } = useProjects(initialProjects);
+  const { data: cacheStatus } = useCacheStatus();
   const { pickCost } = useCostMode();
+
+  useEffect(() => {
+    if (cacheStatus?.refreshCompletedAt) void mutate();
+  }, [cacheStatus?.refreshCompletedAt, mutate]);
 
   if (isLoading || !projects) {
     return (
@@ -31,6 +38,7 @@ export function ProjectsClient({ initialProjects }: { initialProjects?: ProjectI
         <h1 className="text-xl font-bold tracking-tight">Projects</h1>
         <p className="text-sm text-muted-foreground">{projects.length} projects tracked</p>
       </div>
+      <CacheRefreshStatus status={cacheStatus} />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         {projects.map(project => (

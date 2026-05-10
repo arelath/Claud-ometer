@@ -1,6 +1,7 @@
 'use client';
 
-import { useStats } from '@/lib/hooks';
+import { useEffect } from 'react';
+import { useCacheStatus, useStats } from '@/lib/hooks';
 import type { DashboardStats } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { CostModeSelector } from '@/components/cost-mode-selector';
@@ -21,11 +22,17 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AgentBadge } from '@/components/agent-badge';
+import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import Link from 'next/link';
 
 export function DashboardClient({ initialStats }: { initialStats?: DashboardStats }) {
-  const { data: stats, isLoading } = useStats(initialStats);
+  const { data: stats, isLoading, mutate } = useStats(initialStats);
+  const { data: cacheStatus } = useCacheStatus();
   const { pickCost, label: modeLabel } = useCostMode();
+
+  useEffect(() => {
+    if (cacheStatus?.refreshCompletedAt) void mutate();
+  }, [cacheStatus?.refreshCompletedAt, mutate]);
 
   if (isLoading || !stats) {
     return (
@@ -47,6 +54,7 @@ export function DashboardClient({ initialStats }: { initialStats?: DashboardStat
         </div>
         <CostModeSelector />
       </div>
+      <CacheRefreshStatus status={cacheStatus} />
 
       {/* Hero Stats */}
       <div className="grid grid-cols-4 gap-4">

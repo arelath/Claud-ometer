@@ -287,4 +287,65 @@ describe('reader synthetic display parsing', () => {
     expect(await reader.searchSessions('', 5)).toEqual([]);
     expect(await reader.getSessionDetail('missing')).toBeNull();
   });
+
+  it('keeps tool calls when prompt breakdown estimation exceeds reported usage', async () => {
+    writeSession([
+      {
+        type: 'user',
+        sessionId,
+        timestamp: '2026-05-08T12:00:00.000Z',
+        cwd: 'D:/dev/Synthetic',
+        message: {
+          role: 'user',
+          content: 'This deliberately long prompt has more than one token, so the synthetic usage below cannot cover the estimated prompt breakdown.',
+        },
+      },
+      {
+        type: 'assistant',
+        sessionId,
+        uuid: 'assistant-write',
+        timestamp: '2026-05-08T12:00:01.000Z',
+        message: {
+          id: 'assistant-write',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'write-1',
+              name: 'Write',
+              input: {
+                file_path: 'src/generated.md',
+                content: '# Generated\n\nbody',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const reader = await import('@/lib/claude-data/reader');
+    const { getSessionDiffSummary } = await import('@/lib/session-diff');
+    const detail = await reader.getSessionDetail(sessionId);
+    const writeTool = detail?.messages.flatMap(message => message.toolCalls || []).find(tool => tool.name === 'Write');
+    const diffSummary = getSessionDiffSummary(detail?.messages || []);
+
+    expect(writeTool?.artifact).toMatchObject({
+      kind: 'diff',
+      newText: '# Generated\n\nbody',
+    });
+    expect(diffSummary).toMatchObject({
+      fileCount: 1,
+      editCount: 1,
+      addedLines: 3,
+    });
+    expect(diffSummary.files[0].path).toBe('src/generated.md');
+  });
 });

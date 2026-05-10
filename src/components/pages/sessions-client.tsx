@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useDataSourceInfo, useLiveSessions, useSessions } from '@/lib/hooks';
+import { useCacheStatus, useDataSourceInfo, useLiveSessions, useSessions } from '@/lib/hooks';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useCostMode } from '@/lib/cost-mode-context';
 import type { LiveSessionInfo, SessionInfo } from '@/lib/claude-data/types';
@@ -13,6 +13,7 @@ import { ResumeSessionButton } from '@/components/session/resume-session-button'
 import { LiveWorkingIndicator } from '@/components/session/live-working-indicator';
 import { AgentBadge } from '@/components/agent-badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Radio, Search, X } from 'lucide-react';
 import Link from 'next/link';
 
@@ -60,9 +61,10 @@ export function SessionsClient({ initialSessions, initialQuery }: {
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || initialQuery || '');
   const debouncedQuery = useDebounce(searchQuery, 300);
   const fallbackData = initialSessions && debouncedQuery === (initialQuery || '') ? initialSessions : undefined;
-  const { data: sessions, isLoading } = useSessions(100, 0, debouncedQuery, fallbackData);
+  const { data: sessions, isLoading, mutate } = useSessions(100, 0, debouncedQuery, fallbackData);
   const { data: liveSessions } = useLiveSessions();
   const { data: sourceInfo } = useDataSourceInfo();
+  const { data: cacheStatus } = useCacheStatus();
   const { pickCost } = useCostMode();
   const liveSessionsById = useMemo(() => {
     const map = new Map((liveSessions || []).map(session => [session.sessionId, session]));
@@ -79,6 +81,10 @@ export function SessionsClient({ initialSessions, initialQuery }: {
     const qs = params.toString();
     router.replace(qs ? `/sessions?${qs}` : '/sessions', { scroll: false });
   }, [debouncedQuery, router]);
+
+  useEffect(() => {
+    if (cacheStatus?.refreshCompletedAt) void mutate();
+  }, [cacheStatus?.refreshCompletedAt, mutate]);
 
   if (isLoading || !sessions) {
     return (
@@ -102,6 +108,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
           </p>
         </div>
       </div>
+      <CacheRefreshStatus status={cacheStatus} />
 
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
