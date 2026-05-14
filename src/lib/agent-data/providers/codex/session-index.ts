@@ -80,7 +80,7 @@ export function readCodexSessionTitleHints(indexPath = getCodexSessionIndexPath(
   return hints;
 }
 
-async function readSessionFileInfo(filePath: string, titleHints: Map<string, string>): Promise<CodexSessionFileInfo> {
+function readSessionFileInfo(filePath: string, titleHints: Map<string, string>): CodexSessionFileInfo {
   const fileSignature = getFileSignature(filePath);
   const fallbackTimestamp = fallbackDateFromPath(filePath);
   const mtimeTimestamp = fileSignature.mtimeMs > 0 ? new Date(fileSignature.mtimeMs).toISOString() : fallbackTimestamp;
@@ -174,7 +174,7 @@ export async function discoverCodexSessionFiles(): Promise<CodexSessionFileInfo[
   if (cached?.signature === signature) return cached.value;
 
   const titleHints = readCodexSessionTitleHints(indexPath);
-  const value = await Promise.all(files.map(filePath => readSessionFileInfo(filePath, titleHints)));
+  const value = files.map(filePath => readSessionFileInfo(filePath, titleHints));
   value.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   discoveryCache.set(codexDir, { signature, value });
   return value;

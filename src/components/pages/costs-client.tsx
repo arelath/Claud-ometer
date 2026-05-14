@@ -19,13 +19,15 @@ import { Coins, TrendingUp, Zap, Database, Info } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { Separator } from '@/components/ui/separator';
+import { TimeRangeControl, useAnalyticsTimeRange } from '@/components/time-range-control';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 
 export function CostsClient({ initialStats, initialProjects }: { initialStats?: DashboardStats; initialProjects?: ProjectInfo[] }) {
-  const { data: stats, isLoading: statsLoading, mutate: mutateStats } = useStats(initialStats);
-  const { data: projects, isLoading: projectsLoading, mutate: mutateProjects } = useProjects(initialProjects);
+  const timeRange = useAnalyticsTimeRange();
+  const { data: stats, isLoading: statsLoading, mutate: mutateStats } = useStats(initialStats, timeRange.apiParams);
+  const { data: projects, isLoading: projectsLoading, mutate: mutateProjects } = useProjects(initialProjects, timeRange.apiParams);
   const { data: cacheStatus } = useCacheStatus();
   const { costMode, pickCost, label: modeLabel } = useCostMode();
 
@@ -88,27 +90,33 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
     }));
 
   // Model cost breakdown
-  const modelCosts = Object.entries(stats.modelUsage).map(([model, usage]) => ({
-    name: getModelDisplayName(model),
-    model,
-    cost: pickCost(usage.estimatedCosts, usage.estimatedCost),
-    color: getModelColor(model),
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheRead: usage.cacheReadInputTokens,
-    cacheWrite: usage.cacheCreationInputTokens,
-  }));
+  const modelCosts = Object.entries(stats.modelUsage)
+    .map(([model, usage]) => ({
+      name: getModelDisplayName(model),
+      model,
+      tokens: getUsageTokenTotal(usage),
+      cost: pickCost(usage.estimatedCosts, usage.estimatedCost),
+      color: getModelColor(model),
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheRead: usage.cacheReadInputTokens,
+      cacheWrite: usage.cacheCreationInputTokens,
+    }))
+    .filter(item => item.tokens > 0);
   const pricingRows = getPricingReferenceEntries();
   const pricingUpdatedAt = new Date(LITELLM_PRICING_SOURCE.updatedAt).toLocaleDateString();
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Cost Analytics</h1>
           <p className="text-sm text-muted-foreground">Estimated usage costs — not actual billing</p>
         </div>
-        <CostModeSelector />
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          <TimeRangeControl value={timeRange.value} onChange={timeRange.setValue} />
+          <CostModeSelector />
+        </div>
       </div>
       <CacheRefreshStatus status={cacheStatus} />
 
@@ -206,27 +214,31 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
           </CardHeader>
           <CardContent className="pt-0">
             <div className="space-y-4">
-              {modelCosts.map(item => (
-                <div key={item.model} className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="h-3 w-3 rounded-full"
-                        style={{ backgroundColor: item.color }}
-                      />
-                      <span className="text-sm font-semibold">{item.name}</span>
+              {modelCosts.length === 0 ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">No token usage yet</div>
+              ) : (
+                modelCosts.map(item => (
+                  <div key={item.model} className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-3 w-3 rounded-full"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="text-sm font-semibold">{item.name}</span>
+                      </div>
+                      <span className="text-sm font-bold">{formatCost(item.cost)}</span>
                     </div>
-                    <span className="text-sm font-bold">{formatCost(item.cost)}</span>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground pl-5">
+                      <span>Input: {formatTokens(item.inputTokens)}</span>
+                      <span>Output: {formatTokens(item.outputTokens)}</span>
+                      <span>Cache Read: {formatTokens(item.cacheRead)}</span>
+                      <span>Cache Write: {formatTokens(item.cacheWrite)}</span>
+                    </div>
+                    <Separator />
                   </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground pl-5">
-                    <span>Input: {formatTokens(item.inputTokens)}</span>
-                    <span>Output: {formatTokens(item.outputTokens)}</span>
-                    <span>Cache Read: {formatTokens(item.cacheRead)}</span>
-                    <span>Cache Write: {formatTokens(item.cacheWrite)}</span>
-                  </div>
-                  <Separator />
-                </div>
-              ))}
+                ))
+              )}
             </div>
 
             {/* Cache Efficiency */}
@@ -297,6 +309,13 @@ function formatProvider(provider: string | undefined): string {
   if (provider === 'anthropic') return 'Anthropic';
   if (provider === 'openai') return 'OpenAI';
   return provider ?? 'Unknown';
+}
+
+function getUsageTokenTotal(usage: DashboardStats['modelUsage'][string]): number {
+  return usage.inputTokens
+    + usage.outputTokens
+    + usage.cacheReadInputTokens
+    + usage.cacheCreationInputTokens;
 }
 
 function formatRate(rate: number): string {

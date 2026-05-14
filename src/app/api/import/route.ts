@@ -9,6 +9,8 @@ import {
   LEGACY_CLAUDE_ARCHIVE_ROOT,
   countClaudeData,
   countCodexData,
+  countCopilotData,
+  countCursorData,
   getSafeImportTarget,
   type AgentArchiveMeta,
 } from '@/lib/agent-data/archive';
@@ -86,6 +88,12 @@ export const POST = withErrorHandler(async (request: Request) => {
     }
     if (!agentCounts.codex && agents.includes('codex')) {
       agentCounts.codex = countCodexData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'codex'));
+    }
+    if (!agentCounts.copilot && agents.includes('copilot')) {
+      agentCounts.copilot = countCopilotData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'copilot'));
+    }
+    if (!agentCounts.cursor && agents.includes('cursor')) {
+      agentCounts.cursor = countCursorData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'cursor'));
     }
     const projectCount = Object.values(agentCounts).reduce((sum, count) => sum + (count?.projectCount || 0), 0);
     const sessionCount = Object.values(agentCounts).reduce((sum, count) => sum + (count?.sessionCount || 0), 0);

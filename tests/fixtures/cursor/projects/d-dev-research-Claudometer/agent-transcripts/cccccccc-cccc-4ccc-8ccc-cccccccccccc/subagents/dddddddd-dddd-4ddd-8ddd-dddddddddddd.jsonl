@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"This subagent transcript should not appear as a top-level session."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Subagent detail is intentionally excluded in v1."}]}}

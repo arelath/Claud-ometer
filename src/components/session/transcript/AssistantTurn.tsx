@@ -34,8 +34,6 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
   const unpairedTools = msg.toolCalls || [];
   const fallbackSummary = (() => {
     if (msg.content) return null;
-    const firstThink = thinkingBlocks.find(block => block.summary)?.summary;
-    if (firstThink) return firstThink;
     if (unpairedTools.length === 1) {
       const tool = unpairedTools[0];
       const path = findDetail(tool.details, [...ANTHROPIC_FILE_DETAIL_KEYS])?.value;

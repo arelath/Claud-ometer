@@ -24,7 +24,7 @@ interface MemoEntry {
 
 const memo = new Map<string, MemoEntry>();
 const inflight = new Map<string, Promise<CachedSessionSummary[]>>();
-const SUMMARY_BUILD_CONCURRENCY = 4;
+const SUMMARY_BUILD_CONCURRENCY = 1;
 
 function providerHasSummarySupport(provider: AgentDataProvider): boolean {
   return Boolean(provider.parserVersion && provider.discoverSessionSources && provider.buildSessionSummary);

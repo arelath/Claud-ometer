@@ -9,6 +9,7 @@ import { startMsys2ClaudeResume } from '@/lib/claude-data/msys2-launch';
 import { getSessionDetail } from '@/lib/claude-data/reader';
 import { isValidResumeSessionId } from '@/lib/claude-data/resume-session';
 import { parseRouteId } from '@/lib/agent-data/route-id';
+import { getAgentLabel } from '@/lib/agent-data/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,8 +19,8 @@ export const POST = withErrorHandler(async (
 ): Promise<Response> => {
   const { id } = await params;
   const parsed = parseRouteId(id);
-  if (parsed.agentKind === 'codex') {
-    apiError('Codex resume is not supported yet.', 501);
+  if (parsed.agentKind && parsed.agentKind !== 'claude') {
+    apiError(`${getAgentLabel(parsed.agentKind)} resume is not supported yet.`, 501);
   }
   const nativeId = parsed.nativeId;
 

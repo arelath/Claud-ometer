@@ -209,6 +209,11 @@ export function Sidebar() {
   const isDark = resolvedTheme === 'dark';
 
   const isImported = sourceInfo?.active === 'imported';
+  const activeAgentLabel = sourceInfo
+    ? sourceInfo.agents.length > 0
+      ? `Reading ${sourceInfo.agents.map(getAgentLabel).join(' + ')} data`
+      : 'No agent data selected'
+    : 'Loading agent data';
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-60 flex-col border-r border-border bg-card">
@@ -264,7 +269,7 @@ export function Sidebar() {
           </div>
         ) : (
           <p className="text-[10px] text-muted-foreground">
-            Reading {sourceInfo?.agents?.map(getAgentLabel).join(' + ') || 'Claude'} data
+            {activeAgentLabel}
           </p>
         )}
       </div>

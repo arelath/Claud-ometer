@@ -57,22 +57,25 @@ describe('provider selection UI', () => {
     expect(screen.getAllByLabelText('Codex agent').length).toBeGreaterThan(0);
     expect(screen.getByText('Claude data detected')).toBeInTheDocument();
     expect(screen.getByText('Codex data detected')).toBeInTheDocument();
-    expect(screen.getByText('Use all detected agents')).toBeInTheDocument();
+    expect(screen.getByText('Enable all detected')).toBeInTheDocument();
+    expect(screen.getByText('Disable all')).toBeInTheDocument();
     expect(screen.getByText('mixed fixture')).toBeInTheDocument();
+    expect(screen.getByLabelText('Toggle Claude data')).toBeChecked();
+    expect(screen.getByLabelText('Toggle Codex data')).not.toBeChecked();
 
-    fireEvent.click(screen.getByText('Codex data detected'));
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledWith('/api/data-source', expect.objectContaining({
-        method: 'PUT',
-        body: JSON.stringify({ source: 'imported', agents: ['codex'] }),
-      }));
-    });
-
-    fireEvent.click(screen.getByText('Use all detected agents'));
+    fireEvent.click(screen.getByLabelText('Toggle Codex data'));
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith('/api/data-source', expect.objectContaining({
         method: 'PUT',
         body: JSON.stringify({ source: 'imported', agents: ['claude', 'codex'] }),
+      }));
+    });
+
+    fireEvent.click(screen.getByText('Disable all'));
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/data-source', expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ source: 'imported', agents: [] }),
       }));
     });
   });

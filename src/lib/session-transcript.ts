@@ -1,5 +1,5 @@
 import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
-import type { SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
+import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
 import { detailMatchesKey } from '@/lib/string-utils';
 
 export type FilterPreset = 'narrative' | 'tools' | 'all';
@@ -75,6 +75,77 @@ function mergeAssistantRun(run: { message: SessionMessageDisplay; index: number 
     blocks: blocks.length > 0 ? blocks : undefined,
     isMeta: run.some(({ message }) => Boolean(message.isMeta)),
   };
+}
+
+function normalizeReasoningKeyPart(value: string | undefined): string {
+  return (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function getThinkingBlockKey(block: SessionMessageBlockDisplay): string | null {
+  if (block.type !== 'thinking') return null;
+  const summary = normalizeReasoningKeyPart(block.summary);
+  const content = normalizeReasoningKeyPart(block.content);
+  if (!summary && !content) return null;
+  return `${summary}\0${content}`;
+}
+
+function collapseRepeatedThinkingBlocks(
+  message: SessionMessageDisplay,
+  seenThinking: Set<string>,
+): SessionMessageDisplay {
+  const blocks = message.blocks;
+  if (!blocks || blocks.length === 0) return message;
+
+  let changed = false;
+  const nextBlocks = blocks.filter(block => {
+    const key = getThinkingBlockKey(block);
+    if (!key) return true;
+    if (seenThinking.has(key)) {
+      changed = true;
+      return false;
+    }
+    seenThinking.add(key);
+    return true;
+  });
+
+  if (!changed) return message;
+  return {
+    ...message,
+    blocks: nextBlocks.length > 0 ? nextBlocks : undefined,
+  };
+}
+
+function collapseRepeatedAssistantReasoning(group: Extract<GroupedItem, { type: 'assistant' }>): Extract<GroupedItem, { type: 'assistant' }> {
+  const seenThinking = new Set<string>();
+  const message = collapseRepeatedThinkingBlocks(group.message, seenThinking);
+  let changed = message !== group.message;
+
+  const toolPairs = group.toolPairs.map(pair => {
+    if (!pair.toolUse) return pair;
+    const toolUseMessage = collapseRepeatedThinkingBlocks(pair.toolUse.message, seenThinking);
+    if (toolUseMessage === pair.toolUse.message) return pair;
+    changed = true;
+    return {
+      ...pair,
+      toolUse: {
+        ...pair.toolUse,
+        message: toolUseMessage,
+      },
+    };
+  });
+
+  if (!changed) return group;
+  return {
+    ...group,
+    message,
+    toolPairs,
+  };
+}
+
+function collapseRepeatedReasoningInToolsView(groups: GroupedItem[]): GroupedItem[] {
+  return groups.map(group => (
+    group.type === 'assistant' ? collapseRepeatedAssistantReasoning(group) : group
+  ));
 }
 
 function parseTimestampMs(timestamp?: string): number | null {
@@ -553,7 +624,7 @@ export function buildTranscriptItems(
     messages.map((message, index) => ({ message, index })).filter(({ message }) => messagePassesPreset(message, preset)),
   );
   const baseGroups = preset === 'tools'
-    ? mergeAdjacentAssistantGroups(groupedMessages)
+    ? collapseRepeatedReasoningInToolsView(mergeAdjacentAssistantGroups(groupedMessages))
     : groupedMessages;
   const groups = insertCompactionMarkers(baseGroups, compactionTimestamps);
   return groups.filter(group => itemMatchesToolFilter(group, toolFilter));

@@ -1,0 +1,1 @@
+Tool sidecar files are intentionally excluded from the first Cursor export.

@@ -19,17 +19,19 @@ function formatTokens(n: number): string {
 
 export function ModelBreakdown({ data }: ModelBreakdownProps) {
   const { pickCost } = useCostMode();
-  const chartData = Object.entries(data).map(([model, usage]) => ({
-    name: getModelDisplayName(model),
-    model,
-    tokens: usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
-    cost: pickCost(usage.estimatedCosts, usage.estimatedCost),
-    color: getModelColor(model),
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheRead: usage.cacheReadInputTokens,
-    cacheWrite: usage.cacheCreationInputTokens,
-  }));
+  const chartData = Object.entries(data)
+    .map(([model, usage]) => ({
+      name: getModelDisplayName(model),
+      model,
+      tokens: getUsageTokenTotal(usage),
+      cost: pickCost(usage.estimatedCosts, usage.estimatedCost),
+      color: getModelColor(model),
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheRead: usage.cacheReadInputTokens,
+      cacheWrite: usage.cacheCreationInputTokens,
+    }))
+    .filter(item => item.tokens > 0);
 
   const totalTokens = chartData.reduce((sum, d) => sum + d.tokens, 0);
 
@@ -39,58 +41,71 @@ export function ModelBreakdown({ data }: ModelBreakdownProps) {
         <CardTitle className="text-sm font-semibold">Model Usage</CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="flex items-center gap-6">
-          <div className="h-[180px] w-[180px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={chartData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={80}
-                  dataKey="tokens"
-                  strokeWidth={2}
-                  stroke="var(--card)"
-                >
-                  {chartData.map((entry, i) => (
-                    <Cell key={i} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(value) => formatTokens(Number(value))}
-                  contentStyle={{
-                    backgroundColor: 'var(--card)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+        {chartData.length === 0 ? (
+          <div className="flex h-[180px] items-center justify-center text-sm text-muted-foreground">
+            No token usage yet
           </div>
-          <div className="flex-1 space-y-3">
-            {chartData.map(item => (
-              <div key={item.model} className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="h-2.5 w-2.5 rounded-full"
-                      style={{ backgroundColor: item.color }}
-                    />
-                    <span className="text-sm font-medium">{item.name}</span>
+        ) : (
+          <div className="flex items-center gap-6">
+            <div className="h-[180px] w-[180px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={chartData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={55}
+                    outerRadius={80}
+                    dataKey="tokens"
+                    strokeWidth={2}
+                    stroke="var(--card)"
+                  >
+                    {chartData.map((entry, i) => (
+                      <Cell key={i} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value) => formatTokens(Number(value))}
+                    contentStyle={{
+                      backgroundColor: 'var(--card)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex-1 space-y-3">
+              {chartData.map(item => (
+                <div key={item.model} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: item.color }}
+                      />
+                      <span className="text-sm font-medium">{item.name}</span>
+                    </div>
+                    <span className="text-sm font-semibold">${item.cost.toFixed(2)}</span>
                   </div>
-                  <span className="text-sm font-semibold">${item.cost.toFixed(2)}</span>
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>{formatTokens(item.tokens)} tokens</span>
+                    <span>{totalTokens > 0 ? ((item.tokens / totalTokens) * 100).toFixed(0) : 0}%</span>
+                  </div>
                 </div>
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>{formatTokens(item.tokens)} tokens</span>
-                  <span>{totalTokens > 0 ? ((item.tokens / totalTokens) * 100).toFixed(0) : 0}%</span>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );
+}
+
+function getUsageTokenTotal(usage: ModelUsage): number {
+  return usage.inputTokens
+    + usage.outputTokens
+    + usage.cacheReadInputTokens
+    + usage.cacheCreationInputTokens;
 }

@@ -54,6 +54,31 @@ describe('Codex session detail parser', () => {
     expect(detail?.messages.some(message => message.content.includes('Tests passed from response output'))).toBe(false);
   });
 
+  it('builds Codex cache summaries without rendering full transcript details', async () => {
+    const reader = await loadReader();
+
+    const [source] = await reader.discoverSessionSummarySources();
+    const summary = await reader.buildSessionSummary(source);
+
+    expect(summary).toMatchObject({
+      provider: 'codex',
+      nativeId: '00000000-0000-0000-0000-000000000001',
+      messageCount: 3,
+      userMessageCount: 2,
+      assistantMessageCount: 1,
+      toolCallCount: 2,
+      tokenTotals: {
+        input: 125,
+        output: 18,
+        cacheRead: 25,
+        cacheWrite: 0,
+        reasoningOutput: 5,
+      },
+      compaction: { compactions: 1 },
+    });
+    expect(summary.searchTextPreview).toContain('fixture user text');
+  });
+
   it('renders errors and compactions as visible system events', async () => {
     const reader = await loadReader();
     const detail = await reader.getSessionDetail('00000000-0000-0000-0000-000000000001');
@@ -120,6 +145,7 @@ describe('Codex session detail parser', () => {
     const parsed = parseCodexRecords('D:/repo/window.jsonl', records);
     const assistant = parsed.detail.messages.find(message => message.role === 'assistant' && message.content === 'done');
 
+    expect((parsed as unknown as { records?: unknown }).records).toBeUndefined();
     expect(assistant?.promptBreakdown).toMatchObject({
       totalTokens: 100,
       conversationTokens: 20,

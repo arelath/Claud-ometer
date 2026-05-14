@@ -18,7 +18,7 @@ import {
   ArrowRightLeft,
 } from 'lucide-react';
 import type { AgentKind } from '@/lib/agent-data/types';
-import { getAgentLabel } from '@/lib/agent-data/types';
+import { AGENT_KINDS, getAgentLabel } from '@/lib/agent-data/types';
 import { AgentBadge } from '@/components/agent-badge';
 
 const fetcher = (url: string) => fetch(url).then(r => r.json());
@@ -135,7 +135,6 @@ export default function DataPage() {
   }, [mutateSource]);
 
   const handleSetAgents = useCallback(async (agents: AgentKind[]) => {
-    if (agents.length === 0) return;
     setMessage(null);
     try {
       const res = await fetch('/api/data-source', {
@@ -146,11 +145,37 @@ export default function DataPage() {
       if (!res.ok) throw new Error('Failed to switch agents');
       mutateSource();
       mutate(() => true);
-      setMessage({ type: 'success', text: `Selected ${agents.map(getAgentLabel).join(' + ')} data.` });
+      setMessage({
+        type: 'success',
+        text: agents.length > 0
+          ? `Selected ${agents.map(getAgentLabel).join(' + ')} data.`
+          : 'No agent sources selected. Dashboard will show no sessions.',
+      });
     } catch {
       setMessage({ type: 'error', text: 'Failed to switch selected agents.' });
     }
   }, [mutateSource, sourceInfo?.active]);
+
+  const selectableAgents = AGENT_KINDS;
+  const selectedAgents = sourceInfo?.agents || [];
+  const detectedAgents = sourceInfo?.detectedAgents || [];
+  const selectedAgentCount = selectedAgents.length;
+  const selectedAgentNames = selectedAgents.map(getAgentLabel).join(' + ');
+  const allDetectedSelected = detectedAgents.length > 0
+    && detectedAgents.every(agent => selectedAgents.includes(agent))
+    && selectedAgents.every(agent => detectedAgents.includes(agent));
+  const hasSelectedAgents = selectedAgents.length > 0;
+
+  const toggleAgent = useCallback((agent: AgentKind) => {
+    const current = sourceInfo?.agents || [];
+    const nextSet = new Set(current);
+    if (nextSet.has(agent)) {
+      nextSet.delete(agent);
+    } else {
+      nextSet.add(agent);
+    }
+    handleSetAgents(AGENT_KINDS.filter(item => nextSet.has(item)));
+  }, [handleSetAgents, sourceInfo?.agents]);
 
   return (
     <div className="space-y-6">
@@ -235,59 +260,82 @@ export default function DataPage() {
 
       <Card className="border-border/50 shadow-sm">
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">Agent Sources</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-sm font-semibold">Agent Sources</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">Toggle each detected provider independently.</p>
+            </div>
+            <Badge variant={selectedAgentCount > 0 ? 'default' : 'secondary'}>
+              {selectedAgentCount > 0 ? `${selectedAgentCount} selected` : 'None selected'}
+            </Badge>
+          </div>
         </CardHeader>
-        <CardContent className="pt-0">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {(['claude', 'codex'] as AgentKind[]).map(agent => {
-              const detected = Boolean(sourceInfo?.detectedAgents?.includes(agent));
-              const selected = Boolean(sourceInfo?.agents?.includes(agent));
+        <CardContent className="pt-0 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={detectedAgents.length === 0 || allDetectedSelected}
+              onClick={() => handleSetAgents(detectedAgents)}
+              className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Enable all detected
+            </button>
+            <button
+              type="button"
+              disabled={selectedAgentCount === 0}
+              onClick={() => handleSetAgents([])}
+              className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Disable all
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {selectableAgents.map(agent => {
+              const detected = detectedAgents.includes(agent);
+              const selected = selectedAgents.includes(agent);
+              const canToggle = detected || selected;
               return (
-                <button
+                <label
                   key={agent}
-                  type="button"
-                  disabled={!detected}
-                  onClick={() => handleSetAgents([agent])}
-                  className={`flex items-center justify-between rounded-lg border-2 p-3 text-left transition-all ${
-                    selected && sourceInfo?.agents?.length === 1
+                  className={`flex min-h-24 items-center justify-between gap-3 rounded-lg border-2 p-3 text-left transition-all ${
+                    selected
                       ? 'border-primary bg-primary/5'
-                      : detected
+                      : canToggle
                         ? 'border-border hover:border-primary/50'
                         : 'border-border/50 opacity-50 cursor-not-allowed'
                   }`}
                 >
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <AgentBadge agentKind={agent} />
                     <p className="text-xs text-muted-foreground">
-                      {detected ? `${getAgentLabel(agent)} data detected` : `${getAgentLabel(agent)} not found`}
+                      {detected
+                        ? `${getAgentLabel(agent)} data detected`
+                        : selected
+                          ? `${getAgentLabel(agent)} selected but not detected`
+                          : `${getAgentLabel(agent)} not found`}
                     </p>
                   </div>
-                  {selected && sourceInfo?.agents?.length === 1 && <CheckCircle2 className="h-4 w-4 text-primary" />}
-                </button>
+                  <input
+                    type="checkbox"
+                    aria-label={`Toggle ${getAgentLabel(agent)} data`}
+                    checked={selected}
+                    disabled={!canToggle}
+                    onChange={() => toggleAgent(agent)}
+                    className="h-4 w-4 shrink-0 accent-primary"
+                  />
+                </label>
               );
             })}
-            <button
-              type="button"
-              disabled={(sourceInfo?.detectedAgents?.length || 0) < 2}
-              onClick={() => handleSetAgents(['claude', 'codex'])}
-              className={`flex items-center justify-between rounded-lg border-2 p-3 text-left transition-all ${
-                sourceInfo?.agents?.length === 2
-                  ? 'border-primary bg-primary/5'
-                  : (sourceInfo?.detectedAgents?.length || 0) >= 2
-                    ? 'border-border hover:border-primary/50'
-                    : 'border-border/50 opacity-50 cursor-not-allowed'
-              }`}
-            >
-              <div className="space-y-1">
-                <div className="flex gap-1">
-                  <AgentBadge agentKind="claude" />
-                  <AgentBadge agentKind="codex" />
-                </div>
-                <p className="text-xs text-muted-foreground">Use all detected agents</p>
-              </div>
-              {sourceInfo?.agents?.length === 2 && <CheckCircle2 className="h-4 w-4 text-primary" />}
-            </button>
           </div>
+          {selectedAgentCount === 0 ? (
+            <div className="rounded-lg border border-border bg-accent/40 px-3 py-2 text-xs text-muted-foreground">
+              No agent sources are selected. Dashboard, session, project, and stats views will show empty results until at least one source is enabled.
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">
+              Reading {selectedAgentNames} data.
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -305,6 +353,11 @@ export default function DataPage() {
               Download selected agent data as a ZIP archive. Includes safe session logs and metadata.
               Load it on another machine or keep as a backup.
             </p>
+            {!hasSelectedAgents && (
+              <p className="rounded-md bg-accent/50 px-3 py-2 text-xs text-muted-foreground">
+                Select at least one agent source before exporting.
+              </p>
+            )}
             <div className="rounded-lg bg-accent/50 p-3 space-y-1.5">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Includes</p>
               <div className="grid grid-cols-2 gap-1 text-xs">
@@ -318,7 +371,7 @@ export default function DataPage() {
             </div>
             <button
               onClick={handleExport}
-              disabled={exporting}
+              disabled={exporting || !hasSelectedAgents}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {exporting ? (

@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Add a compact Cursor fixture for the dashboard."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I will add a small fixture and make sure the parser keeps the conversation readable."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"Also include multiple content blocks."},{"type":"text","text":"This should remain in order."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"The parser now joins multiple text blocks without losing provider identity."}]}}

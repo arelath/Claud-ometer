@@ -30,6 +30,36 @@ const CODEX_EXCLUDED_DIRS = new Set([
   'skills',
 ]);
 
+const COPILOT_EXCLUDED_NAMES = new Set([
+  'api.json',
+  'codebase-external.sqlite',
+  'local-index.db',
+  'workspace-chunks.db',
+]);
+
+const COPILOT_EXCLUDED_DIRS = new Set([
+  'debug-logs',
+  'memory-tool',
+]);
+
+const CURSOR_EXCLUDED_NAMES = new Set([
+  'ai-code-tracking.db',
+  'state.vscdb',
+  'state.vscdb.options.json',
+  'storage.json',
+  'settings.json',
+]);
+
+const CURSOR_EXCLUDED_DIRS = new Set([
+  'agent-tools',
+  'assets',
+  'cache',
+  'extensions',
+  'History',
+  'mcps',
+  'subagents',
+]);
+
 export function toZipPath(...parts: string[]): string {
   return parts.join('/').replace(/\\/g, '/').replace(/\/+/g, '/');
 }
@@ -40,6 +70,23 @@ export function isExcludedCodexExportPath(relativePath: string): boolean {
   if (CODEX_EXCLUDED_NAMES.has(fileName)) return true;
   if (fileName.endsWith('.sqlite') || fileName.endsWith('.sqlite3') || fileName.endsWith('.db')) return true;
   return parts.some(part => CODEX_EXCLUDED_DIRS.has(part));
+}
+
+export function isExcludedCopilotExportPath(relativePath: string): boolean {
+  const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  const fileName = parts.at(-1) || '';
+  if (COPILOT_EXCLUDED_NAMES.has(fileName)) return true;
+  if (fileName.endsWith('.sqlite') || fileName.endsWith('.sqlite3') || fileName.endsWith('.db')) return true;
+  if (/embeddings/i.test(fileName)) return true;
+  return parts.some(part => COPILOT_EXCLUDED_DIRS.has(part));
+}
+
+export function isExcludedCursorExportPath(relativePath: string): boolean {
+  const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  const fileName = parts.at(-1) || '';
+  if (CURSOR_EXCLUDED_NAMES.has(fileName)) return true;
+  if (fileName.endsWith('.sqlite') || fileName.endsWith('.sqlite3') || fileName.endsWith('.db')) return true;
+  return parts.some(part => CURSOR_EXCLUDED_DIRS.has(part));
 }
 
 export function getSafeImportTarget(importDir: string, relativePath: string): string | null {
@@ -133,4 +180,100 @@ export function countCodexData(codexDir: string): { projectCount: number; sessio
   }
 
   return { projectCount: projectIds.size, sessionCount };
+}
+
+function getCopilotWorkspaceStorageDir(copilotDir: string): string {
+  return path.basename(copilotDir).toLowerCase() === 'workspacestorage'
+    ? copilotDir
+    : path.join(copilotDir, 'workspaceStorage');
+}
+
+function isCopilotChatSessionPrefix(filePath: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.allocUnsafe(32 * 1024);
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      return /GitHub Copilot|copilot\//i.test(buffer.subarray(0, bytesRead).toString('utf-8'));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+export function countCopilotData(copilotDir: string): { projectCount: number; sessionCount: number } {
+  const workspaceStorageDir = getCopilotWorkspaceStorageDir(copilotDir);
+  if (!fs.existsSync(workspaceStorageDir)) return { projectCount: 0, sessionCount: 0 };
+
+  let projectCount = 0;
+  let sessionCount = 0;
+
+  for (const workspace of fs.readdirSync(workspaceStorageDir, { withFileTypes: true })) {
+    if (!workspace.isDirectory()) continue;
+    const sessionIds = new Set<string>();
+    const workspaceDir = path.join(workspaceStorageDir, workspace.name);
+    const transcriptsDir = path.join(workspaceStorageDir, workspace.name, 'GitHub.copilot-chat', 'transcripts');
+    if (fs.existsSync(transcriptsDir)) {
+      for (const entry of fs.readdirSync(transcriptsDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          sessionIds.add(path.basename(entry.name, '.jsonl'));
+        }
+      }
+    }
+
+    const chatSessionsDir = path.join(workspaceDir, 'chatSessions');
+    if (fs.existsSync(chatSessionsDir)) {
+      for (const entry of fs.readdirSync(chatSessionsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+        const filePath = path.join(chatSessionsDir, entry.name);
+        if (isCopilotChatSessionPrefix(filePath)) {
+          sessionIds.add(path.basename(entry.name, '.jsonl'));
+        }
+      }
+    }
+
+    const workspaceSessions = sessionIds.size;
+    if (workspaceSessions === 0) continue;
+    projectCount++;
+    sessionCount += workspaceSessions;
+  }
+
+  return { projectCount, sessionCount };
+}
+
+function getCursorProjectsDir(cursorDir: string): string {
+  return path.basename(cursorDir).toLowerCase() === 'projects'
+    ? cursorDir
+    : path.join(cursorDir, 'projects');
+}
+
+export function countCursorData(cursorDir: string): { projectCount: number; sessionCount: number } {
+  const projectsDir = getCursorProjectsDir(cursorDir);
+  if (!fs.existsSync(projectsDir)) return { projectCount: 0, sessionCount: 0 };
+
+  let projectCount = 0;
+  let sessionCount = 0;
+
+  for (const project of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const transcriptsDir = path.join(projectsDir, project.name, 'agent-transcripts');
+    if (!fs.existsSync(transcriptsDir)) continue;
+
+    let projectSessions = 0;
+    for (const session of fs.readdirSync(transcriptsDir, { withFileTypes: true })) {
+      if (!session.isDirectory()) continue;
+      const sessionDir = path.join(transcriptsDir, session.name);
+      if (fs.readdirSync(sessionDir, { withFileTypes: true }).some(entry => entry.isFile() && entry.name.endsWith('.jsonl'))) {
+        projectSessions++;
+      }
+    }
+
+    if (projectSessions === 0) continue;
+    projectCount++;
+    sessionCount += projectSessions;
+  }
+
+  return { projectCount, sessionCount };
 }

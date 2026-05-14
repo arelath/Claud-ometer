@@ -54,11 +54,15 @@ function renderWithTooltip(ui: React.ReactElement) {
   return render(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
-function dataSource(active: 'live' | 'imported' = 'imported') {
+function dataSource(
+  active: 'live' | 'imported' = 'imported',
+  agents: Array<'claude' | 'codex' | 'copilot' | 'cursor'> = ['claude'],
+  detectedAgents: Array<'claude' | 'codex' | 'copilot' | 'cursor'> = ['claude', 'codex'],
+) {
   return {
     active,
-    agents: ['claude'],
-    detectedAgents: ['claude', 'codex'],
+    agents,
+    detectedAgents,
     hasImportedData: true,
     importMeta: {
       importedAt: '2026-05-08T12:00:00.000Z',
@@ -157,6 +161,39 @@ describe('data, settings, and layout surfaces', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/import', { method: 'DELETE' });
     expect(appState.swrMutate).toHaveBeenCalled();
     expect(appState.globalMutate).toHaveBeenCalled();
+  });
+
+  it('toggles agent sources independently and allows all sources to be disabled', async () => {
+    appState.data.set('/api/data-source', dataSource(
+      'live',
+      ['claude', 'cursor'],
+      ['claude', 'codex', 'copilot', 'cursor'],
+    ));
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    render(<DataPage />);
+
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    expect(screen.getByLabelText('Toggle Claude data')).toBeChecked();
+    expect(screen.getByLabelText('Toggle Cursor data')).toBeChecked();
+    expect(screen.getByLabelText('Toggle Codex data')).not.toBeChecked();
+
+    fireEvent.click(screen.getByLabelText('Toggle Codex data'));
+    await screen.findByText('Selected Claude + Codex + Cursor data.');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/data-source', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ source: 'live', agents: ['claude', 'codex', 'cursor'] }),
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable all' }));
+    await screen.findByText('No agent sources selected. Dashboard will show no sessions.');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/data-source', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ source: 'live', agents: [] }),
+    }));
   });
 
   it('downloads exports and reports export failures', async () => {

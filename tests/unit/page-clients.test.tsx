@@ -20,6 +20,7 @@ const hookState = vi.hoisted(() => ({
   liveSessions: [] as LiveSessionInfo[],
   dataSource: { active: 'live', hasImportedData: false, importMeta: null },
   cacheStatus: { status: 'fresh' },
+  pathname: '/',
   replace: vi.fn(),
   searchParams: '',
 }));
@@ -36,9 +37,14 @@ vi.mock('@/lib/hooks', () => ({
     data: hookState.projects ?? fallbackData,
     isLoading: hookState.projectsLoading,
   }),
-  useSessions: (_limit?: number, _offset?: number, _query?: string, fallbackData?: SessionInfo[]) => ({
-    data: hookState.sessions ?? fallbackData,
+  useSessions: (limit = 50, offset = 0, _query?: string, fallbackData?: SessionInfo[]) => ({
+    data: hookState.sessions
+      ? { sessions: hookState.sessions.slice(offset, offset + limit), total: hookState.sessions.length, limit, offset }
+      : fallbackData
+        ? { sessions: fallbackData.slice(offset, offset + limit), total: fallbackData.length, limit, offset }
+        : undefined,
     isLoading: hookState.sessionsLoading,
+    mutate: vi.fn(),
   }),
   useStats: (fallbackData?: DashboardStats) => ({
     data: hookState.stats ?? fallbackData,
@@ -47,6 +53,7 @@ vi.mock('@/lib/hooks', () => ({
 }));
 
 vi.mock('next/navigation', () => ({
+  usePathname: () => hookState.pathname,
   useRouter: () => ({ replace: hookState.replace }),
   useSearchParams: () => new URLSearchParams(hookState.searchParams),
 }));
@@ -166,6 +173,30 @@ const stats: DashboardStats = {
       estimatedCost: 1.25,
       estimatedCosts: costs(5, 2.5, 1.25),
     },
+    unknown: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUSD: 0,
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      webSearchRequests: 0,
+      estimatedCost: 0,
+      estimatedCosts: costs(0, 0, 0),
+    },
+    '<synthetic>': {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUSD: 0,
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      webSearchRequests: 0,
+      estimatedCost: 0,
+      estimatedCosts: costs(0, 0, 0),
+    },
   },
   hourCounts: { '12': 1 },
   firstSessionDate: '2026-05-08',
@@ -179,6 +210,7 @@ describe('page client components', () => {
     renderWithProviders(<DashboardClient initialStats={stats} />);
 
     expect(screen.getByText('Overview')).toBeInTheDocument();
+    expect(screen.getByText('All history')).toBeInTheDocument();
     expect(screen.getByText('Total Sessions')).toBeInTheDocument();
     expect(screen.getByText('Claudometer')).toBeInTheDocument();
     expect(screen.getByTestId('usage-chart')).toHaveTextContent('usage 1');
@@ -188,11 +220,14 @@ describe('page client components', () => {
     renderWithProviders(<CostsClient initialStats={stats} initialProjects={[project]} />);
 
     expect(screen.getByText('Cost Analytics')).toBeInTheDocument();
+    expect(screen.getByText('All history')).toBeInTheDocument();
     expect(screen.getByText('Cache Savings')).toBeInTheDocument();
     expect(screen.getByText('Input Tokens')).toBeInTheDocument();
     expect(screen.getByText('1.3K')).toBeInTheDocument();
     expect(screen.getByText('fresh + cache read')).toBeInTheDocument();
     expect(screen.getByText('Estimated Cost by Project')).toBeInTheDocument();
+    expect(screen.queryByText('unknown')).not.toBeInTheDocument();
+    expect(screen.queryByText('Synthetic')).not.toBeInTheDocument();
     expect(screen.getByTestId('cost-chart')).toHaveTextContent('cost 1');
   });
 

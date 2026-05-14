@@ -211,7 +211,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                       tone={compactionCount > 0 ? 'warn' : 'good'}
                     />
                   )}
-                  {sourceInfo?.active === 'live' && !session.isLive && session.agentKind !== 'codex' && (
+                  {sourceInfo?.active === 'live' && !session.isLive && (!session.agentKind || session.agentKind === 'claude') && (
                     <ResumeSessionButton sessionId={session.id} showLabel />
                   )}
                 </div>

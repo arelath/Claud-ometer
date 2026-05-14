@@ -6,9 +6,11 @@ import {
 } from './session-summary-store';
 import {
   readSessionSummaryCache,
+  sourceSummaryCacheKey,
+  summaryCacheKey,
   type SessionSummaryCacheStatus,
 } from './session-summary-cache';
-import type { CachedSessionSummary } from './session-summary';
+import { sortSummariesByTimestamp, type CachedSessionSummary } from './session-summary';
 
 export type SessionIndexState = 'fresh' | 'stale' | 'refreshing' | 'empty' | 'error';
 
@@ -53,6 +55,13 @@ function getRuntimeState(providers: AgentDataProvider[]): RuntimeState {
   return state;
 }
 
+function readIndexedSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
+  const providerKinds = new Set(supportedProviders(providers).map(provider => provider.kind));
+  return readSessionSummaryCache().summaries
+    .filter(summary => providerKinds.has(summary.provider))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
 function summarizeStatus(cacheStatus: SessionSummaryCacheStatus, state: RuntimeState): Pick<SessionIndexStatus, 'status' | 'unindexedCount'> {
   const unindexedCount = Math.max(cacheStatus.sourceCount - cacheStatus.validCount - cacheStatus.staleCount, 0);
   if (state.refreshPromise) return { status: 'refreshing', unindexedCount };
@@ -65,11 +74,44 @@ function summarizeStatus(cacheStatus: SessionSummaryCacheStatus, state: RuntimeS
 }
 
 export function getIndexedSessionSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
-  const providerKinds = new Set(supportedProviders(providers).map(provider => provider.kind));
+  const summaries = readIndexedSummaries(providers);
   ensureSessionIndexRefresh(providers);
-  return readSessionSummaryCache().summaries
-    .filter(summary => providerKinds.has(summary.provider))
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return summaries;
+}
+
+async function getLightweightFallbackSummaries(
+  providers: AgentDataProvider[],
+  cachedSummaries: CachedSessionSummary[],
+): Promise<CachedSessionSummary[]> {
+  const fallbackProviders = supportedProviders(providers)
+    .filter(provider => provider.discoverSessionSources && provider.buildLightweightSessionSummary);
+  if (fallbackProviders.length === 0) return [];
+
+  const cachedByKey = new Map(cachedSummaries.map(summary => [summaryCacheKey(summary), summary]));
+  const fallbackSummaries: CachedSessionSummary[] = [];
+
+  for (const provider of fallbackProviders) {
+    const sources = await provider.discoverSessionSources!();
+    for (const source of sources) {
+      if (cachedByKey.has(sourceSummaryCacheKey(source))) continue;
+      fallbackSummaries.push(provider.buildLightweightSessionSummary!(source));
+    }
+  }
+
+  return fallbackSummaries;
+}
+
+export async function getIndexedSessionSummariesWithFallbacks(providers: AgentDataProvider[]): Promise<CachedSessionSummary[]> {
+  const summaries = readIndexedSummaries(providers);
+  ensureSessionIndexRefresh(providers);
+
+  const fallbackSummaries = await getLightweightFallbackSummaries(providers, summaries);
+  if (fallbackSummaries.length === 0) return summaries;
+
+  const merged = new Map<string, CachedSessionSummary>();
+  for (const summary of summaries) merged.set(summaryCacheKey(summary), summary);
+  for (const summary of fallbackSummaries) merged.set(summaryCacheKey(summary), summary);
+  return sortSummariesByTimestamp(Array.from(merged.values()));
 }
 
 export function ensureSessionIndexRefresh(providers: AgentDataProvider[]): void {

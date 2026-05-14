@@ -17,7 +17,11 @@ export function CostChart({ data }: CostChartProps) {
   const { costMode } = useCostMode();
 
   const allModels = new Set<string>();
-  data.forEach(d => Object.keys(d.tokensByModel).forEach(m => allModels.add(m)));
+  data.forEach(d => {
+    Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
+      if (tokens > 0) allModels.add(model);
+    });
+  });
 
   const chartData = data.map(d => {
     const entry: Record<string, unknown> = {

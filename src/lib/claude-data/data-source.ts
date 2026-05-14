@@ -9,6 +9,7 @@ export {
   getImportMeta,
   getLiveClaudeDir,
   getLiveCodexDir,
+  getLiveCopilotDir,
   getSelectedAgents,
   hasImportedData,
   setDataSource,

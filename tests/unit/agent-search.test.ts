@@ -43,5 +43,10 @@ describe('agent search', () => {
       toolPairFixtureSessionId,
     ]));
     expect(combined.length).toBeLessThanOrEqual(5);
+
+    const pagedCombined = await (await GET(new Request('http://localhost/api/sessions?q=Context%20Builder&agent=all&limit=1&offset=1&includeTotal=1'))).json();
+    expect(pagedCombined.total).toBeGreaterThanOrEqual(2);
+    expect(pagedCombined.sessions).toHaveLength(1);
+    expect(pagedCombined.offset).toBe(1);
   });
 });

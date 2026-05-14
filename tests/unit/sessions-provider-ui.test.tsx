@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { SessionsClient } from '@/components/pages/sessions-client';
 import { CostModeProvider } from '@/lib/cost-mode-context';
@@ -8,21 +8,30 @@ import type { SessionInfo } from '@/lib/claude-data/types';
 
 const navState = vi.hoisted(() => ({
   replace: vi.fn(),
+  searchParams: '',
+}));
+
+const hookCalls = vi.hoisted(() => ({
+  sessions: [] as Array<{ limit: number; offset: number; query: string }>,
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: navState.replace }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(navState.searchParams),
 }));
 
 vi.mock('@/lib/hooks', () => ({
   useCacheStatus: () => ({ data: { status: 'fresh' } }),
   useDataSourceInfo: () => ({ data: { active: 'live', agents: ['claude', 'codex'], detectedAgents: ['claude', 'codex'], hasImportedData: false, importMeta: null } }),
   useLiveSessions: () => ({ data: [] }),
-  useSessions: (_limit?: number, _offset?: number, _query?: string, fallbackData?: SessionInfo[]) => ({
-    data: fallbackData,
-    isLoading: false,
-  }),
+  useSessions: (limit = 50, offset = 0, query = '', fallbackData?: SessionInfo[]) => {
+    hookCalls.sessions.push({ limit, offset, query });
+    return {
+      data: fallbackData ? { sessions: fallbackData.slice(offset, offset + limit), total: fallbackData.length, limit, offset } : undefined,
+      isLoading: false,
+      mutate: vi.fn(),
+    };
+  },
 }));
 
 vi.mock('@/components/session/resume-session-button', () => ({
@@ -75,6 +84,8 @@ function renderSessions(sessions: SessionInfo[]) {
 
 describe('sessions provider UI', () => {
   it('shows provider badges, qualified links, and hides Codex resume controls', () => {
+    navState.searchParams = '';
+    hookCalls.sessions = [];
     renderSessions([
       session('claude-session', 'claude'),
       session('codex:codex-session', 'codex'),
@@ -85,5 +96,29 @@ describe('sessions provider UI', () => {
     expect(screen.getByRole('link', { name: /Codex Project/i })).toHaveAttribute('href', '/sessions/codex:codex-session');
     expect(screen.getByText('Resume claude-session')).toBeInTheDocument();
     expect(screen.queryByText('Resume codex:codex-session')).not.toBeInTheDocument();
+  });
+
+  it('requests the second 50-session page from the sessions API', () => {
+    navState.searchParams = 'page=2';
+    hookCalls.sessions = [];
+
+    renderSessions([session('second-page-session', 'claude')]);
+
+    expect(hookCalls.sessions.at(-1)).toMatchObject({ limit: 50, offset: 50, query: '' });
+  });
+
+  it('renders 50-session pagination controls and links to the next page', () => {
+    navState.searchParams = '';
+    navState.replace.mockClear();
+    hookCalls.sessions = [];
+
+    renderSessions(Array.from({ length: 51 }, (_, index) => session(`session-${index + 1}`, 'claude')));
+
+    expect(screen.getByText('Showing 1-50 of 51')).toBeInTheDocument();
+    expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Next/i }));
+
+    expect(navState.replace).toHaveBeenCalledWith('/sessions?page=2', { scroll: false });
   });
 });

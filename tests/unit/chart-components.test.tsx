@@ -59,15 +59,19 @@ const dailyActivity = [
 const dailyModelTokens = [
   {
     date: '2026-05-06',
-    tokensByModel: { 'claude-opus-4': 1200 },
-    costsByModel: { 'claude-opus-4': { api: 1.2, conservative: 0.8, subscription: 0.4 } },
+    tokensByModel: { 'claude-opus-4': 1200, unknown: 0 },
+    costsByModel: {
+      'claude-opus-4': { api: 1.2, conservative: 0.8, subscription: 0.4 },
+      unknown: { api: 0, conservative: 0, subscription: 0 },
+    },
   },
   {
     date: '2026-05-07',
-    tokensByModel: { 'claude-opus-4': 2400, 'claude-sonnet-4': 900 },
+    tokensByModel: { 'claude-opus-4': 2400, 'claude-sonnet-4': 900, '<synthetic>': 0 },
     costsByModel: {
       'claude-opus-4': { api: 2.4, conservative: 1.5, subscription: 0.9 },
       'claude-sonnet-4': { api: 0.4, conservative: 0.3, subscription: 0.2 },
+      '<synthetic>': { api: 0, conservative: 0, subscription: 0 },
     },
   },
 ];
@@ -101,7 +105,10 @@ describe('chart components', () => {
     renderWithProviders(<CostChart data={dailyModelTokens} />);
 
     expect(screen.getByText('Estimated Usage Over Time')).toBeInTheDocument();
-    expect(screen.getAllByTestId('mock-recharts-part').some(node => node.getAttribute('data-key') === 'Opus')).toBe(true);
+    const areaKeys = screen.getAllByTestId('mock-recharts-part').map(node => node.getAttribute('data-key'));
+    expect(areaKeys).toContain('Opus');
+    expect(areaKeys).not.toContain('unknown');
+    expect(areaKeys).not.toContain('Synthetic');
   });
 
   it('renders model usage rows and percentages', () => {
@@ -132,6 +139,30 @@ describe('chart components', () => {
             estimatedCost: 0.25,
             estimatedCosts: { api: 0.5, conservative: 0.35, subscription: 0.25 },
           },
+          unknown: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costUSD: 0,
+            contextWindow: 0,
+            maxOutputTokens: 0,
+            webSearchRequests: 0,
+            estimatedCost: 0,
+            estimatedCosts: { api: 0, conservative: 0, subscription: 0 },
+          },
+          '<synthetic>': {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costUSD: 0,
+            contextWindow: 0,
+            maxOutputTokens: 0,
+            webSearchRequests: 0,
+            estimatedCost: 0,
+            estimatedCosts: { api: 0, conservative: 0, subscription: 0 },
+          },
         }}
       />,
     );
@@ -139,6 +170,8 @@ describe('chart components', () => {
     expect(screen.getByText('Model Usage')).toBeInTheDocument();
     expect(screen.getByText('Opus')).toBeInTheDocument();
     expect(screen.getByText('Sonnet')).toBeInTheDocument();
+    expect(screen.queryByText('unknown')).not.toBeInTheDocument();
+    expect(screen.queryByText('Synthetic')).not.toBeInTheDocument();
     expect(screen.getByText('$1.00')).toBeInTheDocument();
   });
 });

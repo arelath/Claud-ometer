@@ -1,0 +1,7 @@
+{"type":"session.start","data":{"sessionId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","version":1,"producer":"copilot-agent","copilotVersion":"0.46.2","vscodeVersion":"1.118.1","startTime":"2026-05-03T23:50:00.000Z"},"id":"start","timestamp":"2026-05-03T23:50:00.000Z","parentId":null}
+{"type":"user.message","data":{"content":"First Copilot request."},"id":"user-1","timestamp":"2026-05-03T23:50:01.000Z","parentId":"start"}
+{"type":"assistant.message","data":{"messageId":"assistant-1a","content":"Preparing the first answer."},"id":"assistant-1a","timestamp":"2026-05-03T23:50:02.000Z","parentId":"user-1"}
+{"type":"assistant.message","data":{"messageId":"assistant-1b","content":"First answer is ready."},"id":"assistant-1b","timestamp":"2026-05-03T23:50:03.000Z","parentId":"assistant-1a"}
+{"type":"user.message","data":{"content":"Second Copilot request."},"id":"user-2","timestamp":"2026-05-03T23:50:04.000Z","parentId":"assistant-1b"}
+{"type":"assistant.message","data":{"messageId":"assistant-2a","content":"Preparing the second answer."},"id":"assistant-2a","timestamp":"2026-05-03T23:50:05.000Z","parentId":"user-2"}
+{"type":"assistant.message","data":{"messageId":"assistant-2b","content":"Second answer is ready."},"id":"assistant-2b","timestamp":"2026-05-03T23:50:06.000Z","parentId":"assistant-2a"}

@@ -5,6 +5,7 @@ import { getActiveDataSource } from '@/lib/claude-data/data-source';
 import { getLiveSessionById } from '@/lib/claude-data/live-sessions';
 import { sendTextToManagedClaudeSession } from '@/lib/claude-data/managed-pty';
 import { parseRouteId } from '@/lib/agent-data/route-id';
+import { getAgentLabel } from '@/lib/agent-data/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,8 +17,8 @@ export const POST = withErrorHandler(async (
 ): Promise<Response> => {
   const { id } = await params;
   const parsed = parseRouteId(id);
-  if (parsed.agentKind === 'codex') {
-    apiError('Codex live input is not supported yet.', 501);
+  if (parsed.agentKind && parsed.agentKind !== 'claude') {
+    apiError(`${getAgentLabel(parsed.agentKind)} live input is not supported yet.`, 501);
   }
   const nativeId = parsed.nativeId;
 

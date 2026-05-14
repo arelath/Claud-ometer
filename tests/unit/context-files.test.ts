@@ -156,6 +156,85 @@ describe('context file helpers', () => {
     expect(getContextLoadedLineCount(groups.inContext[0])).toBe(22);
   });
 
+  it('treats Codex PowerShell Get-Content shell commands as files in context', () => {
+    const filePath = 'D:\\dev\\research\\DeepFlowTest\\Docs\\reviews\\missingFeature3.md';
+    const groups = getContextFileGroups([
+      message({
+        toolCalls: [
+          {
+            name: 'shell_command',
+            id: 'shell-1',
+            summary: `Get-Content -Path "${filePath}"`,
+            details: [
+              detail('tool_use_id', 'shell-1'),
+              detail('command', `Get-Content -Path "${filePath}"`),
+              detail('status', 'success'),
+            ],
+          },
+        ],
+      }),
+      message({
+        role: 'tool-result',
+        blocks: [
+          {
+            type: 'tool-result',
+            title: 'exec_command_end',
+            summary: 'exit code 0',
+            details: [
+              detail('tool_use_id', 'shell-1'),
+              detail('status', 'success'),
+            ],
+            content: ['# Missing Feature 3', '', 'Review notes.'].join('\n'),
+          },
+        ],
+      }),
+    ]);
+
+    expect(groups.referenced).toEqual([]);
+    expect(groups.inContext).toHaveLength(1);
+    expect(groups.inContext[0]).toMatchObject({
+      fullPath: filePath,
+      fileName: 'missingFeature3.md',
+      loadedLines: '3',
+      messageIndexes: [0, 1],
+    });
+    expect(getContextLoadedLineCount(groups.inContext[0])).toBe(3);
+  });
+
+  it('recognizes literal path and positional shell reads without counting non-read commands', () => {
+    const literalPath = 'D:\\repo\\space dir\\notes.md';
+    const positionalPath = 'src/config/app.json';
+    const groups = getContextFileGroups([
+      message({
+        toolCalls: [
+          {
+            name: 'shell_command',
+            id: 'shell-literal',
+            summary: `Get-Content -LiteralPath '${literalPath}' -Raw`,
+            details: [detail('command', `Get-Content -LiteralPath '${literalPath}' -Raw`)],
+          },
+          {
+            name: 'shell_command',
+            id: 'shell-positional',
+            summary: `cat ${positionalPath}`,
+            details: [detail('command', `cat ${positionalPath}`)],
+          },
+          {
+            name: 'shell_command',
+            id: 'shell-list',
+            summary: 'Get-ChildItem src/config',
+            details: [detail('command', 'Get-ChildItem src/config')],
+          },
+        ],
+      }),
+    ]);
+
+    expect(groups.referenced.map(file => file.fullPath)).toEqual([
+      positionalPath,
+      literalPath,
+    ]);
+  });
+
   it('formats copy-all path text in the rendered file order', () => {
     const groups = getContextFileGroups([
       message({

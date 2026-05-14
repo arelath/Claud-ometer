@@ -11,7 +11,7 @@ export const GET = withErrorHandler(async (
 ): Promise<Response> => {
   const { id } = await params;
   const parsed = parseRouteId(id);
-  if (parsed.agentKind === 'codex') apiError('Codex live sessions are not supported yet.', 404);
+  if (parsed.agentKind && parsed.agentKind !== 'claude') apiError(`${parsed.agentKind} live sessions are not supported yet.`, 404);
   const session = getLiveSessionById(parsed.nativeId);
   if (!session) apiError('Live session not found', 404);
   return NextResponse.json(session);

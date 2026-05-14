@@ -7,6 +7,7 @@ import {
   writeDataToManagedClaudeSession,
 } from '@/lib/claude-data/managed-pty';
 import { parseRouteId } from '@/lib/agent-data/route-id';
+import { getAgentLabel } from '@/lib/agent-data/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,8 +19,8 @@ export const GET = withErrorHandler(async (
 ): Promise<Response> => {
   const { id } = await params;
   const parsed = parseRouteId(id);
-  if (parsed.agentKind === 'codex') {
-    apiError('Codex terminal output is not supported yet.', 501);
+  if (parsed.agentKind && parsed.agentKind !== 'claude') {
+    apiError(`${getAgentLabel(parsed.agentKind)} terminal output is not supported yet.`, 501);
   }
   const ptySession = getManagedClaudeSession(parsed.nativeId);
   if (ptySession) return NextResponse.json({ ...ptySession, transport: 'managed-pty' });
@@ -32,8 +33,8 @@ export const POST = withErrorHandler(async (
 ): Promise<Response> => {
   const { id } = await params;
   const parsed = parseRouteId(id);
-  if (parsed.agentKind === 'codex') {
-    apiError('Codex terminal input is not supported yet.', 501);
+  if (parsed.agentKind && parsed.agentKind !== 'claude') {
+    apiError(`${getAgentLabel(parsed.agentKind)} terminal input is not supported yet.`, 501);
   }
   const nativeId = parsed.nativeId;
   const body = await request.json().catch(() => null);

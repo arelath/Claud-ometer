@@ -26,10 +26,11 @@ describe('lib hook URL builders', () => {
     hooks.useLiveSessions();
     hooks.useLiveSessionBinding('session-1');
 
+    const fallbackPage = { sessions: [], total: 0, limit: 25, offset: 10 };
     expect(swrMock).toHaveBeenNthCalledWith(1, '/api/stats', expect.any(Function), { fallbackData: fallback });
     expect(swrMock).toHaveBeenNthCalledWith(2, '/api/projects', expect.any(Function), { fallbackData: [] });
-    expect(swrMock).toHaveBeenNthCalledWith(3, '/api/sessions?limit=25&offset=10', expect.any(Function), { fallbackData: [] });
-    expect(swrMock).toHaveBeenNthCalledWith(4, '/api/sessions?q=hello%20world&limit=25', expect.any(Function), { fallbackData: [] });
+    expect(swrMock).toHaveBeenNthCalledWith(3, '/api/sessions?limit=25&offset=10&includeTotal=1', expect.any(Function), { fallbackData: fallbackPage });
+    expect(swrMock).toHaveBeenNthCalledWith(4, '/api/sessions?q=hello%20world&limit=25&offset=10&includeTotal=1', expect.any(Function), { fallbackData: fallbackPage });
     expect(swrMock).toHaveBeenNthCalledWith(5, '/api/sessions?projectId=project-1', expect.any(Function), { fallbackData: [] });
     expect(swrMock).toHaveBeenNthCalledWith(6, '/api/sessions/session-1', expect.any(Function), { refreshInterval: expect.any(Function) });
     expect(swrMock).toHaveBeenNthCalledWith(7, '/api/data-source', expect.any(Function), { refreshInterval: 5000 });
@@ -51,5 +52,16 @@ describe('lib hook URL builders', () => {
 
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     await expect(fetcher('/api/stats')).resolves.toEqual({ ok: true });
+  });
+
+  it('builds filtered analytics SWR keys', async () => {
+    const hooks = await import('@/lib/hooks');
+    const range = { start: '2026-04-01', end: '2026-05-01' };
+
+    hooks.useStats({ totalSessions: 99 } as never, range);
+    hooks.useProjects([], range);
+
+    expect(swrMock).toHaveBeenNthCalledWith(1, '/api/stats?start=2026-04-01&end=2026-05-01', expect.any(Function), { fallbackData: undefined });
+    expect(swrMock).toHaveBeenNthCalledWith(2, '/api/projects?start=2026-04-01&end=2026-05-01', expect.any(Function), { fallbackData: undefined });
   });
 });

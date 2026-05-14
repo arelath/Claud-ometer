@@ -14,8 +14,10 @@ import { LiveWorkingIndicator } from '@/components/session/live-working-indicato
 import { AgentBadge } from '@/components/agent-badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { CacheRefreshStatus } from '@/components/cache-refresh-status';
-import { Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Radio, Search, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Radio, Search, X } from 'lucide-react';
 import Link from 'next/link';
+
+const SESSIONS_PAGE_SIZE = 50;
 
 function LiveSessionStatus({ session }: { session: LiveSessionInfo }) {
   if (session.status === 'busy') {
@@ -52,6 +54,12 @@ function LiveSessionStatus({ session }: { session: LiveSessionInfo }) {
   );
 }
 
+function parsePageNumber(value: string | null): number {
+  const parsed = Number.parseInt(value || '', 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return parsed;
+}
+
 export function SessionsClient({ initialSessions, initialQuery }: {
   initialSessions?: SessionInfo[];
   initialQuery?: string;
@@ -60,12 +68,19 @@ export function SessionsClient({ initialSessions, initialQuery }: {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || initialQuery || '');
   const debouncedQuery = useDebounce(searchQuery, 300);
-  const fallbackData = initialSessions && debouncedQuery === (initialQuery || '') ? initialSessions : undefined;
-  const { data: sessions, isLoading, mutate } = useSessions(100, 0, debouncedQuery, fallbackData);
+  const currentPage = parsePageNumber(searchParams.get('page'));
+  const offset = (currentPage - 1) * SESSIONS_PAGE_SIZE;
+  const fallbackData = initialSessions && currentPage === 1 && debouncedQuery === (initialQuery || '') ? initialSessions : undefined;
+  const { data: sessionPage, isLoading, mutate } = useSessions(SESSIONS_PAGE_SIZE, offset, debouncedQuery, fallbackData);
   const { data: liveSessions } = useLiveSessions();
   const { data: sourceInfo } = useDataSourceInfo();
   const { data: cacheStatus } = useCacheStatus();
   const { pickCost } = useCostMode();
+  const sessions = sessionPage?.sessions;
+  const totalSessions = sessionPage?.total ?? sessions?.length ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalSessions / SESSIONS_PAGE_SIZE));
+  const showingStart = totalSessions === 0 ? 0 : Math.min(offset + 1, totalSessions);
+  const showingEnd = sessions ? Math.min(offset + sessions.length, totalSessions) : 0;
   const liveSessionsById = useMemo(() => {
     const map = new Map((liveSessions || []).map(session => [session.sessionId, session]));
     return map;
@@ -73,11 +88,14 @@ export function SessionsClient({ initialSessions, initialQuery }: {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const urlQuery = params.get('q') || '';
+    if (urlQuery === debouncedQuery) return;
     if (debouncedQuery) {
       params.set('q', debouncedQuery);
     } else {
       params.delete('q');
     }
+    params.delete('page');
     const qs = params.toString();
     router.replace(qs ? `/sessions?${qs}` : '/sessions', { scroll: false });
   }, [debouncedQuery, router]);
@@ -85,6 +103,30 @@ export function SessionsClient({ initialSessions, initialQuery }: {
   useEffect(() => {
     if (cacheStatus?.refreshCompletedAt) void mutate();
   }, [cacheStatus?.refreshCompletedAt, mutate]);
+
+  useEffect(() => {
+    if (!sessionPage || totalSessions === 0 || currentPage <= totalPages) return;
+    goToPage(totalPages);
+    // goToPage intentionally reads current browser search params.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, sessionPage, totalPages, totalSessions]);
+
+  function goToPage(page: number) {
+    const nextPage = Math.max(1, Math.min(page, totalPages));
+    const params = new URLSearchParams(window.location.search);
+    if (debouncedQuery) {
+      params.set('q', debouncedQuery);
+    } else {
+      params.delete('q');
+    }
+    if (nextPage > 1) {
+      params.set('page', String(nextPage));
+    } else {
+      params.delete('page');
+    }
+    const qs = params.toString();
+    router.replace(qs ? `/sessions?${qs}` : '/sessions', { scroll: false });
+  }
 
   if (isLoading || !sessions) {
     return (
@@ -103,7 +145,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
         <div>
           <h1 className="text-xl font-bold tracking-tight">Sessions</h1>
           <p className="text-sm text-muted-foreground">
-            {sessions.length} session{sessions.length !== 1 ? 's' : ''}
+            {totalSessions} session{totalSessions !== 1 ? 's' : ''}
             {debouncedQuery && ` matching "${debouncedQuery}"`}
           </p>
         </div>
@@ -129,6 +171,37 @@ export function SessionsClient({ initialSessions, initialQuery }: {
         )}
       </div>
 
+      {totalSessions > SESSIONS_PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/50 bg-card px-4 py-3">
+          <p className="text-sm text-muted-foreground">
+            Showing {showingStart}-{showingEnd} of {totalSessions}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => goToPage(currentPage - 1)}
+              disabled={currentPage <= 1}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted/50 disabled:pointer-events-none disabled:opacity-50"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </button>
+            <span className="min-w-20 text-center text-sm text-muted-foreground">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => goToPage(currentPage + 1)}
+              disabled={currentPage >= totalPages}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted/50 disabled:pointer-events-none disabled:opacity-50"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <Card className="border-border/50 shadow-sm">
         <CardContent className="p-0">
           <div className="divide-y divide-border/50">
@@ -139,7 +212,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
               </div>
             ) : sessions.map(session => {
               const liveSession = liveSessionsById.get(session.id);
-              const canResume = sourceInfo?.active === 'live' && !liveSession && session.agentKind !== 'codex';
+              const canResume = sourceInfo?.active === 'live' && !liveSession && (!session.agentKind || session.agentKind === 'claude');
               return (
                 <div
                   key={session.id}

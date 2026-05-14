@@ -23,10 +23,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AgentBadge } from '@/components/agent-badge';
 import { CacheRefreshStatus } from '@/components/cache-refresh-status';
+import { TimeRangeControl, useAnalyticsTimeRange } from '@/components/time-range-control';
 import Link from 'next/link';
 
 export function DashboardClient({ initialStats }: { initialStats?: DashboardStats }) {
-  const { data: stats, isLoading, mutate } = useStats(initialStats);
+  const timeRange = useAnalyticsTimeRange();
+  const { data: stats, isLoading, mutate } = useStats(initialStats, timeRange.apiParams);
   const { data: cacheStatus } = useCacheStatus();
   const { pickCost, label: modeLabel } = useCostMode();
 
@@ -47,12 +49,15 @@ export function DashboardClient({ initialStats }: { initialStats?: DashboardStat
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Overview</h1>
           <p className="text-sm text-muted-foreground">Your agent usage at a glance</p>
         </div>
-        <CostModeSelector />
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          <TimeRangeControl value={timeRange.value} onChange={timeRange.setValue} />
+          <CostModeSelector />
+        </div>
       </div>
       <CacheRefreshStatus status={cacheStatus} />
 
@@ -93,7 +98,11 @@ export function DashboardClient({ initialStats }: { initialStats?: DashboardStat
       {/* Charts Row 2 */}
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2">
-          <ActivityHeatmap data={stats.dailyActivity} />
+          <ActivityHeatmap
+            data={stats.dailyActivity}
+            startDate={timeRange.value.preset === 'all' ? stats.firstSessionDate : timeRange.value.start}
+            endDate={timeRange.value.preset === 'all' ? undefined : timeRange.value.end}
+          />
         </div>
         <PeakHours data={stats.hourCounts} />
       </div>

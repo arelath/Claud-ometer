@@ -82,6 +82,18 @@ describe('agent provider registry', () => {
     expect(getProvider('codex')?.kind).toBe('codex');
   });
 
+  it('returns the Copilot provider after registration', async () => {
+    const { getProvider } = await import('@/lib/agent-data/registry');
+
+    expect(getProvider('copilot')?.kind).toBe('copilot');
+  });
+
+  it('returns the Cursor provider after registration', async () => {
+    const { getProvider } = await import('@/lib/agent-data/registry');
+
+    expect(getProvider('cursor')?.kind).toBe('cursor');
+  });
+
   it('resolves legacy unqualified session ids to Claude', async () => {
     const { resolveSessionProvider } = await import('@/lib/agent-data/registry');
 

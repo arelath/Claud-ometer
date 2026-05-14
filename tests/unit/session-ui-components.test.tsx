@@ -480,7 +480,7 @@ describe('session UI building blocks', () => {
     );
 
     expect(screen.getByText('3 tool calls - Read, Grep, Bash')).toBeInTheDocument();
-    expect(screen.getAllByText('silent reasoning').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('silent reasoning')).toHaveLength(1);
     expect(screen.getByText('Context Window Compaction')).toBeInTheDocument();
     expect(screen.getAllByText('L12-?').length).toBeGreaterThan(0);
     expect(screen.getAllByText('in *.ts').length).toBeGreaterThan(0);

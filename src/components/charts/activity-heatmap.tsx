@@ -3,22 +3,27 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { DailyActivity } from '@/lib/claude-data/types';
-import { addDays, format, startOfWeek, subWeeks } from 'date-fns';
+import { addDays, endOfWeek, format, parseISO, startOfWeek, subWeeks } from 'date-fns';
 
 interface ActivityHeatmapProps {
   data: DailyActivity[];
+  startDate?: string;
+  endDate?: string;
 }
 
-export function ActivityHeatmap({ data }: ActivityHeatmapProps) {
+export function ActivityHeatmap({ data, startDate: selectedStartDate, endDate: selectedEndDate }: ActivityHeatmapProps) {
   const activityMap = new Map(data.map(d => [d.date, d.messageCount]));
   const maxMessages = Math.max(...data.map(d => d.messageCount), 1);
 
   const today = new Date();
-  const startDate = startOfWeek(subWeeks(today, 23), { weekStartsOn: 0 });
+  const rangeStart = selectedStartDate ? parseISO(selectedStartDate) : startOfWeek(subWeeks(today, 23), { weekStartsOn: 0 });
+  const rangeEnd = selectedEndDate ? parseISO(selectedEndDate) : today;
+  const startDate = startOfWeek(rangeStart, { weekStartsOn: 0 });
+  const endDate = endOfWeek(rangeEnd, { weekStartsOn: 0 });
 
   const weeks: Date[][] = [];
   let currentDate = startDate;
-  for (let w = 0; w < 24; w++) {
+  while (currentDate <= endDate) {
     const week: Date[] = [];
     for (let d = 0; d < 7; d++) {
       week.push(currentDate);
@@ -44,7 +49,7 @@ export function ActivityHeatmap({ data }: ActivityHeatmapProps) {
         <CardTitle className="text-sm font-semibold">Activity</CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="flex gap-1">
+        <div className="flex gap-1 overflow-x-auto pb-1">
           <div className="flex flex-col gap-1 pr-1.5 pt-0">
             {dayLabels.map((label, i) => (
               <div key={i} className="flex h-[13px] items-center">
@@ -58,13 +63,13 @@ export function ActivityHeatmap({ data }: ActivityHeatmapProps) {
                 {week.map((day, di) => {
                   const dateStr = format(day, 'yyyy-MM-dd');
                   const count = activityMap.get(dateStr) || 0;
-                  const isFuture = day > today;
+                  const isOutsideRange = day < rangeStart || day > rangeEnd || day > today;
                   return (
                     <Tooltip key={di}>
                       <TooltipTrigger asChild>
                         <div
                           className={`h-[13px] w-[13px] rounded-sm ${
-                            isFuture ? 'bg-transparent' : getIntensity(count)
+                            isOutsideRange ? 'bg-transparent' : getIntensity(count)
                           } transition-colors`}
                         />
                       </TooltipTrigger>

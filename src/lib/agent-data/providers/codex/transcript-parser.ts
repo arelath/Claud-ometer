@@ -17,15 +17,41 @@ import {
   buildCodexToolResultBlock,
   isCodexEnrichedToolResult,
 } from './tool-parser';
-import { forEachCodexJsonlLine } from './io';
+import { forEachCodexJsonlLineSync } from './io';
 import type { CodexSessionFileInfo } from './session-index';
 
 export interface CodexParsedSession {
   info: SessionInfo;
   detail: SessionDetail;
-  records: CodexEnvelope[];
   searchableText: string;
   reasoningOutputTokens: number;
+}
+
+export interface CodexParsedSessionSummary {
+  nativeId: string;
+  title?: string;
+  cwd: string;
+  gitBranch: string;
+  version: string;
+  model: string;
+  models: string[];
+  createdAt: string;
+  updatedAt: string;
+  duration: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  messageCount: number;
+  toolCallCount: number;
+  tokenUsage: TokenUsage;
+  reasoningOutputTokens: number;
+  toolsUsed: Record<string, number>;
+  compaction: {
+    compactions: number;
+    microcompactions: number;
+    totalTokensSaved: number;
+    compactionTimestamps: string[];
+  };
+  searchTextPreview: string;
 }
 
 interface CodexTokenUsage {
@@ -38,6 +64,8 @@ interface CodexTokenUsage {
 type CodexCompactionSource = 'context_compacted' | 'compacted';
 
 const CODEX_COMPACTION_DUPLICATE_WINDOW_MS = 1000;
+const SUMMARY_SEARCH_PREVIEW_LIMIT = 8 * 1024;
+const SUMMARY_SEARCH_PART_LIMIT = 256;
 
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = record?.[key];
@@ -190,6 +218,27 @@ function makeEventBlock(title: string, summary: string, details: Array<{ key: st
   };
 }
 
+function createBoundedSearchCollector() {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  let length = 0;
+
+  return {
+    add(value: string | undefined) {
+      const normalized = value?.trim();
+      if (!normalized || length >= SUMMARY_SEARCH_PREVIEW_LIMIT || parts.length >= SUMMARY_SEARCH_PART_LIMIT || seen.has(normalized)) return;
+      seen.add(normalized);
+      const remaining = SUMMARY_SEARCH_PREVIEW_LIMIT - length;
+      const clipped = normalized.length > remaining ? normalized.slice(0, remaining) : normalized;
+      parts.push(clipped);
+      length += clipped.length + 1;
+    },
+    value() {
+      return parts.join('\n').toLowerCase();
+    },
+  };
+}
+
 function shouldSkipDuplicateAssistant(seen: Set<string>, text: string): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) return false;
@@ -200,10 +249,198 @@ function shouldSkipDuplicateAssistant(seen: Set<string>, text: string): boolean 
 
 export async function readCodexRecords(filePath: string): Promise<CodexEnvelope[]> {
   const records: CodexEnvelope[] = [];
-  await forEachCodexJsonlLine(filePath, record => {
+  forEachCodexJsonlLineSync(filePath, record => {
     records.push(record);
   });
   return records;
+}
+
+function getSummaryToolName(payload: Record<string, unknown>): string {
+  return getOptionalString(payload, 'name') || getOptionalString(payload, 'type') || 'tool_call';
+}
+
+export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexSessionFileInfo): CodexParsedSessionSummary {
+  const search = createBoundedSearchCollector();
+  const seenAssistantText = new Set<string>();
+  const toolsUsed: Record<string, number> = {};
+  const modelsSet = new Set<string>();
+
+  let nativeId = fileInfo?.nativeId || path.basename(filePath, '.jsonl');
+  let cwd = fileInfo?.cwd || '';
+  let gitBranch = fileInfo?.gitBranch || '';
+  let version = fileInfo?.version || '';
+  let model = fileInfo?.model || 'unknown';
+  let firstTimestamp = fileInfo?.createdAt || '';
+  let lastTimestamp = fileInfo?.updatedAt || '';
+  let userMessageCount = 0;
+  let assistantMessageCount = 0;
+  let toolCallCount = 0;
+  let finalTokenUsage: CodexTokenUsage = {};
+  let compactions = 0;
+  const compactionTimestamps: string[] = [];
+  const compactionEvents: Array<{ time: number; source: CodexCompactionSource }> = [];
+
+  const recordCompaction = (timestamp: string, source: CodexCompactionSource) => {
+    const time = parseTimestampMs(timestamp);
+    const duplicate = time == null
+      ? undefined
+      : compactionEvents.find(event => (
+          event.source !== source
+          && Math.abs(event.time - time) <= CODEX_COMPACTION_DUPLICATE_WINDOW_MS
+        ));
+    if (duplicate) return;
+
+    compactions++;
+    compactionTimestamps.push(timestamp);
+    if (time != null) compactionEvents.push({ time, source });
+  };
+
+  forEachCodexJsonlLineSync(filePath, record => {
+    const payload = asRecord(record.payload) || {};
+    const timestamp = getTimestamp(record, payload);
+    if (timestamp) {
+      if (!firstTimestamp) firstTimestamp = timestamp;
+      lastTimestamp = timestamp;
+    }
+
+    if (record.type === 'session_meta') {
+      const git = asRecord(payload.git);
+      nativeId = getOptionalString(payload, 'id') || nativeId;
+      cwd = getOptionalString(payload, 'cwd') || cwd;
+      version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
+      gitBranch = getOptionalString(git, 'branch')
+        || getOptionalString(payload, 'git_branch')
+        || getOptionalString(payload, 'gitBranch')
+        || gitBranch;
+      return;
+    }
+
+    if (record.type === 'turn_context') {
+      model = getOptionalString(payload, 'model') || model;
+      cwd = getOptionalString(payload, 'cwd') || cwd;
+      if (model !== 'unknown') modelsSet.add(model);
+      return;
+    }
+
+    if (record.type === 'response_item') {
+      const kind = getCodexPayloadKind(record);
+      if (kind === 'message') {
+        const role = getOptionalString(payload, 'role');
+        const text = getContentText(payload.content);
+        search.add(text);
+
+        if (role === 'user') {
+          userMessageCount++;
+        } else if (role === 'assistant' && text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
+          assistantMessageCount++;
+        } else if (role === 'developer' || role === 'system') {
+          search.add(text);
+        }
+        return;
+      }
+
+      if (kind === 'reasoning') {
+        search.add(getReasoningText(payload));
+        return;
+      }
+
+      if (kind === 'function_call' || kind === 'custom_tool_call' || kind === 'web_search_call') {
+        const toolName = getSummaryToolName(payload);
+        toolCallCount++;
+        toolsUsed[toolName] = (toolsUsed[toolName] || 0) + 1;
+        search.add(toolName);
+        search.add(typeof payload.arguments === 'string' ? payload.arguments : undefined);
+        search.add(typeof payload.input === 'string' ? payload.input : undefined);
+        return;
+      }
+
+      return;
+    }
+
+    if (record.type === 'event_msg') {
+      const kind = getCodexPayloadKind(record);
+      if (kind === 'user_message') {
+        const text = getUserMessageText(payload);
+        if (text) {
+          userMessageCount++;
+          search.add(text);
+        }
+        return;
+      }
+
+      if (kind === 'agent_reasoning') {
+        search.add(getReasoningText(payload));
+        return;
+      }
+
+      if (kind === 'agent_message') {
+        const text = getContentText(payload.content ?? payload.message);
+        if (text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
+          assistantMessageCount++;
+          search.add(text);
+        }
+        return;
+      }
+
+      if (kind === 'token_count') {
+        finalTokenUsage = getTokenUsageFromCountPayload(payload);
+        return;
+      }
+
+      if (kind === 'exec_command_end' || kind === 'patch_apply_end' || kind === 'web_search_end') {
+        search.add(getOptionalString(payload, 'stdout'));
+        search.add(getOptionalString(payload, 'stderr'));
+        search.add(getOptionalString(payload, 'output'));
+        return;
+      }
+
+      if (kind === 'context_compacted') {
+        recordCompaction(timestamp, 'context_compacted');
+        return;
+      }
+
+      if (kind === 'error' || kind === 'turn_aborted') {
+        search.add(getOptionalString(payload, 'reason') || getOptionalString(payload, 'message') || kind);
+      }
+    }
+
+    if (record.type === 'compacted') {
+      recordCompaction(timestamp, 'compacted');
+    }
+  });
+
+  const usage = toClaudeUsage(finalTokenUsage);
+  const timestamp = firstTimestamp || fileInfo?.createdAt || new Date(0).toISOString();
+  const updatedAt = lastTimestamp || fileInfo?.updatedAt || timestamp;
+  const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(timestamp).getTime());
+  const models = model === 'unknown' ? [] : Array.from(modelsSet.size > 0 ? modelsSet : new Set([model]));
+
+  return {
+    nativeId,
+    title: fileInfo?.title,
+    cwd,
+    gitBranch,
+    version,
+    model,
+    models: models.map(getModelDisplayName),
+    createdAt: timestamp,
+    updatedAt,
+    duration: Number.isNaN(duration) ? 0 : duration,
+    userMessageCount,
+    assistantMessageCount,
+    messageCount: userMessageCount + assistantMessageCount,
+    toolCallCount,
+    tokenUsage: usage,
+    reasoningOutputTokens: finalTokenUsage.reasoning_output_tokens || 0,
+    toolsUsed,
+    compaction: {
+      compactions,
+      microcompactions: 0,
+      totalTokensSaved: 0,
+      compactionTimestamps,
+    },
+    searchTextPreview: search.value(),
+  };
 }
 
 export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fileInfo?: CodexSessionFileInfo): CodexParsedSession {
@@ -530,7 +767,6 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
   return {
     info,
     detail: { ...info, messages },
-    records,
     searchableText: searchableParts.join('\n').toLowerCase(),
     reasoningOutputTokens: finalTokenUsage.reasoning_output_tokens || 0,
   };

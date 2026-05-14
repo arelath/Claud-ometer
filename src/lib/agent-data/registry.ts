@@ -5,10 +5,14 @@ import type { AgentDataProvider } from './provider';
 import { getSelectedAgents } from './data-source';
 import { claudeProvider } from './providers/claude/provider';
 import { codexProvider } from './providers/codex/provider';
+import { copilotProvider } from './providers/copilot/provider';
+import { cursorProvider } from './providers/cursor/provider';
 
 const providers = new Map<AgentKind, AgentDataProvider>([
   ['claude', claudeProvider],
   ['codex', codexProvider],
+  ['copilot', copilotProvider],
+  ['cursor', cursorProvider],
 ]);
 
 export function registerProvider(provider: AgentDataProvider): void {

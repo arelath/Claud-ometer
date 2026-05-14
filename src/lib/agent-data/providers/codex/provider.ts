@@ -46,4 +46,5 @@ export const codexProvider: AgentDataProvider = {
   },
   discoverSessionSources: reader.discoverSessionSummarySources,
   buildSessionSummary: reader.buildSessionSummary,
+  buildLightweightSessionSummary: reader.buildLightweightSessionSummary,
 };

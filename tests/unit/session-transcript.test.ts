@@ -52,6 +52,23 @@ function assistantWithTool(index: number, tool: SessionToolCallDisplay, content 
   };
 }
 
+function reasoning(index: number, summary = 'Reasoning summary', content = ''): SessionMessageDisplay {
+  return {
+    role: 'assistant',
+    content: '',
+    timestamp: `2026-05-03T10:00:${String(index).padStart(2, '0')}.000Z`,
+    messageId: `reasoning-${index}`,
+    model: 'gpt-5.5',
+    blocks: [{
+      type: 'thinking',
+      title: 'Reasoning',
+      summary,
+      content,
+      details: [],
+    }],
+  };
+}
+
 function toolResult(index: number, toolUseId: string, content: string): SessionMessageDisplay {
   return {
     role: 'tool-result',
@@ -238,6 +255,38 @@ describe('session transcript grouping', () => {
       calculateCostAllModes('claude-opus-4', 300, 30, 0, 0),
     ].reduce((sum, cost) => sum + cost.subscription, 0);
     expect(toolAssistantItems[0].message.estimatedCosts?.subscription).toBeCloseTo(expectedCosts, 12);
+  });
+
+  it('collapses repeated Codex reasoning summaries in the + Tools view', () => {
+    const read = toolCall('shell_command', 'codex-shell-1', { command: 'npm test' });
+    const messages: SessionMessageDisplay[] = [
+      {
+        role: 'user',
+        content: 'Run the test suite.',
+        timestamp: '2026-05-03T10:00:00.000Z',
+      },
+      reasoning(1),
+      toolUse(2, read),
+      toolResult(3, 'codex-shell-1', 'PASS'),
+      reasoning(4),
+      reasoning(5),
+      reasoning(6, 'Need one final check.'),
+    ];
+
+    const toolAssistantItems = buildTranscriptItems(messages, 'tools').filter(item => item.type === 'assistant');
+    expect(toolAssistantItems).toHaveLength(1);
+    expect((toolAssistantItems[0].message.blocks || [])
+      .filter(block => block.type === 'thinking')
+      .map(block => block.summary)).toEqual([
+      'Reasoning summary',
+      'Need one final check.',
+    ]);
+
+    const allReasoningSummaries = buildTranscriptItems(messages, 'all')
+      .filter(item => item.type === 'assistant')
+      .flatMap(item => item.message.blocks || [])
+      .filter(block => block.type === 'thinking' && block.summary === 'Reasoning summary');
+    expect(allReasoningSummaries).toHaveLength(3);
   });
 
   it('handles standalone tool results, empty assistant runs, compaction placement, and minimap targets', () => {

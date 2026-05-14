@@ -1,4 +1,4 @@
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'copilot' | 'cursor';
 
 export interface AgentIdentity {
   agentKind: AgentKind;
@@ -6,12 +6,15 @@ export interface AgentIdentity {
   routeId: string;
 }
 
-export const AGENT_KINDS: AgentKind[] = ['claude', 'codex'];
+export const AGENT_KINDS: AgentKind[] = ['claude', 'codex', 'copilot', 'cursor'];
 
 export function isAgentKind(value: unknown): value is AgentKind {
-  return value === 'claude' || value === 'codex';
+  return value === 'claude' || value === 'codex' || value === 'copilot' || value === 'cursor';
 }
 
 export function getAgentLabel(agentKind: AgentKind): string {
-  return agentKind === 'claude' ? 'Claude' : 'Codex';
+  if (agentKind === 'claude') return 'Claude';
+  if (agentKind === 'codex') return 'Codex';
+  if (agentKind === 'copilot') return 'Copilot';
+  return 'Cursor';
 }

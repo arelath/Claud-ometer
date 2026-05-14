@@ -13,6 +13,7 @@ export interface AgentDataProvider {
   getDashboardStats(): Promise<DashboardStats>;
   discoverSessionSources?(): Promise<SessionSummarySource[]>;
   buildSessionSummary?(source: SessionSummarySource): Promise<CachedSessionSummary>;
+  buildLightweightSessionSummary?(source: SessionSummarySource): CachedSessionSummary;
   getLiveSessions?(): LiveSessionInfo[];
   canResume?: boolean;
 }

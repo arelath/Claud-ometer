@@ -11,12 +11,12 @@ import {
 } from '@/lib/agent-data/session-summary';
 import { discoverCodexSessionFiles, type CodexSessionFileInfo } from './session-index';
 import { getFileSignature } from './io';
-import { parseCodexSessionFile, type CodexParsedSession } from './transcript-parser';
+import { parseCodexSessionFile, parseCodexSessionSummaryFile, type CodexParsedSession } from './transcript-parser';
 import { buildCodexDashboardStats } from './stats';
 
 const parsedCache = new AgentDataCache<CodexParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v3';
+export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v4';
 
 async function parseDiscoveredSession(fileInfo: CodexSessionFileInfo): Promise<CodexParsedSession> {
   const signature = getFileSignature(fileInfo.filePath);
@@ -192,65 +192,122 @@ function getSourceFileInfo(source: SessionSummarySource): CodexSessionFileInfo {
 }
 
 export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
-  const parsed = await parseDiscoveredSession(getSourceFileInfo(source));
-  const info = parsed.info;
-  const updatedAt = info.duration > 0
-    ? new Date(new Date(info.timestamp).getTime() + info.duration).toISOString()
-    : new Date(source.sourceSignature.mtimeMs || 0).toISOString();
+  const summary = parseCodexSessionSummaryFile(source.sourceFilePath, getSourceFileInfo(source));
+  const nativeProjectId = getProjectNativeId(summary.cwd, source.sourceFilePath);
+  const projectRouteId = qualifyProjectId('codex', nativeProjectId);
+  const routeId = makeRouteId('codex', summary.nativeId);
   const searchTextPreview = normalizeSearchText([
-    parsed.searchableText,
-    info.title,
-    info.projectName,
-    info.cwd,
-    info.gitBranch,
-    info.version,
-    info.model,
-    ...info.models,
-    ...Object.keys(info.toolsUsed || {}),
+    summary.searchTextPreview,
+    summary.title,
+    summary.cwd,
+    summary.gitBranch,
+    summary.version,
+    summary.model,
+    ...summary.models,
+    ...Object.keys(summary.toolsUsed || {}),
   ]);
 
   return {
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
     parserVersion: source.parserVersion,
     provider: 'codex',
-    nativeId: info.nativeId || routeNativeId(info.id),
-    routeId: info.routeId || info.id,
-    nativeProjectId: info.nativeProjectId || source.nativeProjectId || routeNativeId(info.projectId),
-    projectRouteId: info.projectRouteId || info.projectId,
-    projectName: info.projectName,
+    nativeId: summary.nativeId,
+    routeId,
+    nativeProjectId,
+    projectRouteId,
+    projectName: summary.cwd ? summary.cwd.split(/[\\/]/).filter(Boolean).at(-1) || 'codex' : 'codex',
     sourceFilePath: source.sourceFilePath,
     sourceSignature: source.sourceSignature,
-    createdAt: info.timestamp,
-    updatedAt,
-    title: info.title,
-    cwd: info.cwd,
-    gitBranch: info.gitBranch,
-    version: info.version,
-    model: info.model,
-    models: info.models,
-    messageCount: info.messageCount,
-    userMessageCount: info.userMessageCount,
-    assistantMessageCount: info.assistantMessageCount,
-    toolCallCount: info.toolCallCount,
+    createdAt: summary.createdAt,
+    updatedAt: summary.updatedAt,
+    title: summary.title,
+    cwd: summary.cwd,
+    gitBranch: summary.gitBranch,
+    version: summary.version,
+    model: summary.model,
+    models: summary.models,
+    messageCount: summary.messageCount,
+    userMessageCount: summary.userMessageCount,
+    assistantMessageCount: summary.assistantMessageCount,
+    toolCallCount: summary.toolCallCount,
     tokenTotals: {
-      input: info.totalInputTokens,
-      output: info.totalOutputTokens,
-      cacheRead: info.totalCacheReadTokens,
-      cacheWrite: info.totalCacheWriteTokens,
-      reasoningOutput: parsed.reasoningOutputTokens,
+      input: summary.tokenUsage.input_tokens,
+      output: summary.tokenUsage.output_tokens,
+      cacheRead: summary.tokenUsage.cache_read_input_tokens,
+      cacheWrite: summary.tokenUsage.cache_creation_input_tokens,
+      reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: {
-      [info.model || 'unknown']: {
-        inputTokens: info.totalInputTokens,
-        outputTokens: info.totalOutputTokens,
-        cacheReadInputTokens: info.totalCacheReadTokens,
-        cacheCreationInputTokens: info.totalCacheWriteTokens,
-        reasoningOutputTokens: parsed.reasoningOutputTokens,
+      [summary.model || 'unknown']: {
+        inputTokens: summary.tokenUsage.input_tokens,
+        outputTokens: summary.tokenUsage.output_tokens,
+        cacheReadInputTokens: summary.tokenUsage.cache_read_input_tokens,
+        cacheCreationInputTokens: summary.tokenUsage.cache_creation_input_tokens,
+        reasoningOutputTokens: summary.reasoningOutputTokens,
       },
     },
-    toolsUsed: info.toolsUsed,
-    compaction: info.compaction,
+    toolsUsed: summary.toolsUsed,
+    compaction: summary.compaction,
     searchTextPreview,
+  };
+}
+
+export function buildLightweightSessionSummary(source: SessionSummarySource): CachedSessionSummary {
+  const fileInfo = getSourceFileInfo(source);
+  const nativeProjectId = getProjectNativeId(fileInfo.cwd, source.sourceFilePath);
+  const projectRouteId = qualifyProjectId('codex', nativeProjectId);
+  const routeId = makeRouteId('codex', fileInfo.nativeId);
+  const timestamp = fileInfo.createdAt || new Date(source.sourceSignature.mtimeMs || 0).toISOString();
+  const updatedAt = fileInfo.updatedAt || timestamp;
+  const model = fileInfo.model || 'unknown';
+  const models = model === 'unknown' ? [] : [model];
+
+  return {
+    cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+    parserVersion: source.parserVersion,
+    provider: 'codex',
+    nativeId: fileInfo.nativeId,
+    routeId,
+    nativeProjectId,
+    projectRouteId,
+    projectName: fileInfo.cwd ? fileInfo.cwd.split(/[\\/]/).filter(Boolean).at(-1) || 'codex' : 'codex',
+    sourceFilePath: source.sourceFilePath,
+    sourceSignature: source.sourceSignature,
+    createdAt: timestamp,
+    updatedAt,
+    title: fileInfo.title,
+    cwd: fileInfo.cwd,
+    gitBranch: fileInfo.gitBranch || '',
+    version: fileInfo.version || '',
+    model,
+    models,
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolCallCount: 0,
+    tokenTotals: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoningOutput: 0,
+    },
+    modelUsage: {},
+    toolsUsed: {},
+    compaction: {
+      compactions: 0,
+      microcompactions: 0,
+      totalTokensSaved: 0,
+      compactionTimestamps: [],
+    },
+    searchTextPreview: normalizeSearchText([
+      fileInfo.title,
+      fileInfo.cwd,
+      fileInfo.gitBranch,
+      fileInfo.version,
+      model,
+      ...models,
+    ]),
   };
 }
 
