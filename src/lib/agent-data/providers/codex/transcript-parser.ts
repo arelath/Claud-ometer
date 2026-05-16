@@ -66,6 +66,7 @@ type CodexCompactionSource = 'context_compacted' | 'compacted';
 const CODEX_COMPACTION_DUPLICATE_WINDOW_MS = 1000;
 const SUMMARY_SEARCH_PREVIEW_LIMIT = 8 * 1024;
 const SUMMARY_SEARCH_PART_LIMIT = 256;
+const CHARS_PER_TOKEN = 4;
 
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = record?.[key];
@@ -137,9 +138,42 @@ function parseTokenUsage(value: unknown): CodexTokenUsage {
   };
 }
 
+function addTokenUsage(target: CodexTokenUsage, usage: CodexTokenUsage): void {
+  target.input_tokens = (target.input_tokens || 0) + (usage.input_tokens || 0);
+  target.cached_input_tokens = (target.cached_input_tokens || 0) + (usage.cached_input_tokens || 0);
+  target.output_tokens = (target.output_tokens || 0) + (usage.output_tokens || 0);
+  target.reasoning_output_tokens = (target.reasoning_output_tokens || 0) + (usage.reasoning_output_tokens || 0);
+}
+
+function hasTokenUsage(usage: CodexTokenUsage | null | undefined): boolean {
+  return Boolean((usage?.input_tokens || 0) > 0
+    || (usage?.cached_input_tokens || 0) > 0
+    || (usage?.output_tokens || 0) > 0
+    || (usage?.reasoning_output_tokens || 0) > 0);
+}
+
+function tokenUsageDelta(current: CodexTokenUsage, previous: CodexTokenUsage | null): CodexTokenUsage {
+  if (!previous) return { ...current };
+  return {
+    input_tokens: Math.max((current.input_tokens || 0) - (previous.input_tokens || 0), 0),
+    cached_input_tokens: Math.max((current.cached_input_tokens || 0) - (previous.cached_input_tokens || 0), 0),
+    output_tokens: Math.max((current.output_tokens || 0) - (previous.output_tokens || 0), 0),
+    reasoning_output_tokens: Math.max((current.reasoning_output_tokens || 0) - (previous.reasoning_output_tokens || 0), 0),
+  };
+}
+
+function estimateTokens(text: string): number {
+  return text.length > 0 ? Math.ceil(text.length / CHARS_PER_TOKEN) : 0;
+}
+
 function getTokenUsageFromCountPayload(payload: Record<string, unknown>): CodexTokenUsage {
   const info = asRecord(payload.info);
   return parseTokenUsage(info?.total_token_usage ?? payload.total_token_usage);
+}
+
+function hasTotalTokenUsagePayload(payload: Record<string, unknown>): boolean {
+  const info = asRecord(payload.info);
+  return Boolean(info?.total_token_usage || payload.total_token_usage);
 }
 
 function getLastTokenUsageFromCountPayload(payload: Record<string, unknown>): CodexTokenUsage | null {
@@ -276,6 +310,9 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
   let assistantMessageCount = 0;
   let toolCallCount = 0;
   let finalTokenUsage: CodexTokenUsage = {};
+  let hasCumulativeTokenUsage = false;
+  const accountedTokenUsage: CodexTokenUsage = {};
+  const estimatedTokenUsage: CodexTokenUsage = {};
   let compactions = 0;
   const compactionTimestamps: string[] = [];
   const compactionEvents: Array<{ time: number; source: CodexCompactionSource }> = [];
@@ -331,16 +368,22 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
 
         if (role === 'user') {
           userMessageCount++;
+          addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
         } else if (role === 'assistant' && text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
           assistantMessageCount++;
+          addTokenUsage(estimatedTokenUsage, { output_tokens: estimateTokens(text) });
         } else if (role === 'developer' || role === 'system') {
           search.add(text);
+          addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
         }
         return;
       }
 
       if (kind === 'reasoning') {
-        search.add(getReasoningText(payload));
+        const text = getReasoningText(payload);
+        search.add(text);
+        const tokens = estimateTokens(text);
+        addTokenUsage(estimatedTokenUsage, { output_tokens: tokens, reasoning_output_tokens: tokens });
         return;
       }
 
@@ -364,12 +407,16 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
         if (text) {
           userMessageCount++;
           search.add(text);
+          addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
         }
         return;
       }
 
       if (kind === 'agent_reasoning') {
-        search.add(getReasoningText(payload));
+        const text = getReasoningText(payload);
+        search.add(text);
+        const tokens = estimateTokens(text);
+        addTokenUsage(estimatedTokenUsage, { output_tokens: tokens, reasoning_output_tokens: tokens });
         return;
       }
 
@@ -378,12 +425,19 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
         if (text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
           assistantMessageCount++;
           search.add(text);
+          addTokenUsage(estimatedTokenUsage, { output_tokens: estimateTokens(text) });
         }
         return;
       }
 
       if (kind === 'token_count') {
-        finalTokenUsage = getTokenUsageFromCountPayload(payload);
+        const cumulativeTokenUsage = getTokenUsageFromCountPayload(payload);
+        const lastTokenUsage = getLastTokenUsageFromCountPayload(payload);
+        if (lastTokenUsage) addTokenUsage(accountedTokenUsage, lastTokenUsage);
+        if (hasTotalTokenUsagePayload(payload)) {
+          finalTokenUsage = cumulativeTokenUsage;
+          hasCumulativeTokenUsage = true;
+        }
         return;
       }
 
@@ -409,7 +463,12 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
     }
   });
 
-  const usage = toClaudeUsage(finalTokenUsage);
+  const tokenUsageSource = hasCumulativeTokenUsage
+    ? finalTokenUsage
+    : hasTokenUsage(accountedTokenUsage)
+      ? accountedTokenUsage
+      : estimatedTokenUsage;
+  const usage = toClaudeUsage(tokenUsageSource);
   const timestamp = firstTimestamp || fileInfo?.createdAt || new Date(0).toISOString();
   const updatedAt = lastTimestamp || fileInfo?.updatedAt || timestamp;
   const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(timestamp).getTime());
@@ -431,7 +490,7 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
     messageCount: userMessageCount + assistantMessageCount,
     toolCallCount,
     tokenUsage: usage,
-    reasoningOutputTokens: finalTokenUsage.reasoning_output_tokens || 0,
+    reasoningOutputTokens: tokenUsageSource.reasoning_output_tokens || 0,
     toolsUsed,
     compaction: {
       compactions,
@@ -463,6 +522,10 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
   let assistantMessageCount = 0;
   let toolCallCount = 0;
   let finalTokenUsage: CodexTokenUsage = {};
+  let hasCumulativeTokenUsage = false;
+  let previousCumulativeTokenUsage: CodexTokenUsage | null = null;
+  const accountedTokenUsage: CodexTokenUsage = {};
+  const estimatedTokenUsage: CodexTokenUsage = {};
   let compactions = 0;
   const compactionTimestamps: string[] = [];
   const compactionEvents: Array<{ time: number; source: CodexCompactionSource; messageIndex: number }> = [];
@@ -544,13 +607,16 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
 
         if (role === 'user') {
           userMessageCount++;
+          addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
           messages.push({ role: 'user', content: text, timestamp });
         } else if (role === 'assistant') {
           if (!shouldSkipDuplicateAssistant(seenAssistantText, text)) {
             assistantMessageCount++;
+            addTokenUsage(estimatedTokenUsage, { output_tokens: estimateTokens(text) });
             pushAssistantMessage({ role: 'assistant', content: text, timestamp, model });
           }
         } else if (role === 'developer' || role === 'system') {
+          addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
           messages.push({
             role: 'system',
             content: text,
@@ -564,6 +630,8 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
 
       if (kind === 'reasoning') {
         const summary = getReasoningText(payload);
+        const tokens = estimateTokens(summary);
+        addTokenUsage(estimatedTokenUsage, { output_tokens: tokens, reasoning_output_tokens: tokens });
         pushAssistantMessage({
           role: 'assistant',
           content: '',
@@ -620,6 +688,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
         const text = getUserMessageText(payload);
         if (text) {
           userMessageCount++;
+          addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
           searchableParts.push(text);
           messages.push({ role: 'user', content: text, timestamp });
         }
@@ -628,6 +697,8 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
 
       if (kind === 'agent_reasoning') {
         const summary = getReasoningText(payload);
+        const tokens = estimateTokens(summary);
+        addTokenUsage(estimatedTokenUsage, { output_tokens: tokens, reasoning_output_tokens: tokens });
         pushAssistantMessage({
           role: 'assistant',
           content: '',
@@ -649,6 +720,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
         const text = getContentText(payload.content ?? payload.message);
         if (text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
           assistantMessageCount++;
+          addTokenUsage(estimatedTokenUsage, { output_tokens: estimateTokens(text) });
           searchableParts.push(text);
           pushAssistantMessage({ role: 'assistant', content: text, timestamp, model });
         }
@@ -656,15 +728,28 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
       }
 
       if (kind === 'token_count') {
-        finalTokenUsage = getTokenUsageFromCountPayload(payload);
+        const cumulativeTokenUsage = getTokenUsageFromCountPayload(payload);
         const lastTokenUsage = getLastTokenUsageFromCountPayload(payload);
-        if (lastTokenUsage && lastAssistantMessageIndex != null) {
+        const turnUsage = lastTokenUsage || (
+          hasTotalTokenUsagePayload(payload)
+            ? tokenUsageDelta(cumulativeTokenUsage, previousCumulativeTokenUsage)
+            : null
+        );
+        if (turnUsage && lastAssistantMessageIndex != null) {
           const targetMessage = messages[lastAssistantMessageIndex];
-          attachCodexTurnUsage(targetMessage, lastTokenUsage, targetMessage.model || model);
-          const promptBreakdown = buildCodexPromptBreakdown(lastTokenUsage);
+          attachCodexTurnUsage(targetMessage, turnUsage, targetMessage.model || model);
+          const promptBreakdown = buildCodexPromptBreakdown(turnUsage);
           if (promptBreakdown) {
             targetMessage.promptBreakdown = promptBreakdown;
           }
+        }
+        if (turnUsage && hasTokenUsage(turnUsage)) {
+          addTokenUsage(accountedTokenUsage, turnUsage);
+        }
+        if (hasTotalTokenUsagePayload(payload)) {
+          finalTokenUsage = cumulativeTokenUsage;
+          hasCumulativeTokenUsage = true;
+          previousCumulativeTokenUsage = cumulativeTokenUsage;
         }
         continue;
       }
@@ -717,7 +802,12 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
   const projectNativeId = getProjectNativeId(cwd, filePath);
   const routeId = makeRouteId('codex', nativeId);
   const projectRouteId = qualifyProjectId('codex', projectNativeId);
-  const usage = toClaudeUsage(finalTokenUsage);
+  const tokenUsageSource = hasCumulativeTokenUsage
+    ? finalTokenUsage
+    : hasTokenUsage(accountedTokenUsage)
+      ? accountedTokenUsage
+      : estimatedTokenUsage;
+  const usage = toClaudeUsage(tokenUsageSource);
   const models = model === 'unknown' ? [] : Array.from(modelsSet);
   const costs = model === 'unknown'
     ? zeroCosts()
@@ -768,7 +858,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
     info,
     detail: { ...info, messages },
     searchableText: searchableParts.join('\n').toLowerCase(),
-    reasoningOutputTokens: finalTokenUsage.reasoning_output_tokens || 0,
+    reasoningOutputTokens: tokenUsageSource.reasoning_output_tokens || 0,
   };
 }
 

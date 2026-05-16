@@ -5,6 +5,10 @@ import { getAgentDataDir } from '@/lib/agent-data/data-source';
 import { codexEnvelopeSchema, type CodexEnvelope } from './schema';
 
 const JSONL_READ_CHUNK_SIZE = 1024 * 1024;
+export const FIRST_LINE_READ_CAP = 1024 * 1024;
+const YEAR_DIR_PATTERN = /^\d{4}$/;
+const MONTH_OR_DAY_DIR_PATTERN = /^\d{2}$/;
+const ROLLOUT_FILE_PATTERN = /^rollout-.*\.jsonl$/;
 
 export function getCodexDir(): string {
   return getAgentDataDir('codex');
@@ -35,6 +39,44 @@ function parseCodexJsonlLine(line: string): CodexEnvelope | null {
   } catch {
     // Codex rollouts can end with partial lines. Ignore them and keep reading.
     return null;
+  }
+}
+
+function readFirstLine(filePath: string, maxBytes = FIRST_LINE_READ_CAP): string {
+  const fd = fs.openSync(filePath, 'r');
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    while (totalBytes < maxBytes) {
+      const remaining = maxBytes - totalBytes;
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      const newlineIndex = chunk.indexOf(0x0a);
+      if (newlineIndex >= 0) {
+        chunks.push(chunk.subarray(0, newlineIndex));
+        break;
+      }
+      chunks.push(chunk);
+      totalBytes += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return Buffer.concat(chunks).toString('utf-8').replace(/\r$/, '');
+}
+
+export function isValidCodexSessionFile(filePath: string): boolean {
+  try {
+    const firstLine = readFirstLine(filePath);
+    const record = parseCodexJsonlLine(firstLine);
+    if (record?.type !== 'session_meta') return false;
+    const originator = record.payload?.originator;
+    return typeof originator === 'string' && originator.toLowerCase().startsWith('codex');
+  } catch {
+    return false;
   }
 }
 
@@ -78,16 +120,26 @@ export async function forEachCodexJsonlLine(filePath: string, callback: (record:
   }
 }
 
-export function listCodexSessionFiles(dirPath = getCodexSessionsDir()): string[] {
-  if (!fs.existsSync(dirPath)) return [];
-
+export function listCodexSessionFiles(sessionsDir = getCodexSessionsDir()): string[] {
+  if (!fs.existsSync(sessionsDir)) return [];
   const files: string[] = [];
-  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
-    const entryPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...listCodexSessionFiles(entryPath));
-    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-      files.push(entryPath);
+
+  for (const year of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
+    if (!year.isDirectory() || !YEAR_DIR_PATTERN.test(year.name)) continue;
+    const yearDir = path.join(sessionsDir, year.name);
+    for (const month of fs.readdirSync(yearDir, { withFileTypes: true })) {
+      if (!month.isDirectory() || !MONTH_OR_DAY_DIR_PATTERN.test(month.name)) continue;
+      const monthDir = path.join(yearDir, month.name);
+      for (const day of fs.readdirSync(monthDir, { withFileTypes: true })) {
+        if (!day.isDirectory() || !MONTH_OR_DAY_DIR_PATTERN.test(day.name)) continue;
+        const dayDir = path.join(monthDir, day.name);
+        for (const entry of fs.readdirSync(dayDir, { withFileTypes: true })) {
+          const entryPath = path.join(dayDir, entry.name);
+          if (entry.isFile() && ROLLOUT_FILE_PATTERN.test(entry.name) && isValidCodexSessionFile(entryPath)) {
+            files.push(entryPath);
+          }
+        }
+      }
     }
   }
 

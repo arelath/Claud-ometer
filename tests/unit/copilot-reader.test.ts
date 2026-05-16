@@ -71,6 +71,105 @@ describe('Copilot reader', () => {
     expect(detail?.messages[1].content).toContain('cache design proposal');
   });
 
+  it('discovers legacy Copilot CLI session-state events', async () => {
+    const sessionDir = path.join(copilotDir, 'session-state', 'legacy-session-1');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'workspace.yaml'), 'id: legacy-session-1\ncwd: "D:/repo/legacy-app" # comment\n');
+    fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), [
+      JSON.stringify({ type: 'session.model_change', timestamp: '2026-05-04T09:00:00.000Z', data: { newModel: 'gpt-4.1' } }),
+      JSON.stringify({ type: 'user.message', timestamp: '2026-05-04T09:00:01.000Z', data: { content: 'Update the legacy app.' } }),
+      JSON.stringify({
+        type: 'assistant.message',
+        timestamp: '2026-05-04T09:00:02.000Z',
+        data: {
+          messageId: 'legacy-msg-1',
+          outputTokens: 150,
+          toolRequests: [{ toolCallId: 'legacy-tool-1', name: 'read_file', arguments: JSON.stringify({ filePath: 'src/app.ts' }) }],
+        },
+      }),
+    ].join('\n'));
+
+    const reader = await loadReader();
+    const detail = await reader.getSessionDetail('copilot:legacy:legacy-session-1');
+
+    expect(detail).toMatchObject({
+      id: 'copilot:legacy:legacy-session-1',
+      agentKind: 'copilot',
+      projectId: 'copilot:legacy:D-repo-legacy-app',
+      projectName: 'legacy-app',
+      model: 'gpt-4.1',
+      models: ['gpt-4.1'],
+      messageCount: 2,
+      totalInputTokens: 0,
+      totalOutputTokens: 150,
+      toolCallCount: 1,
+      toolsUsed: { Read: 1 },
+    });
+    expect(detail?.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(detail?.messages[1].usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 150,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    });
+  });
+
+  it('infers transcript model family and fallback tokens when no token sidecar exists', async () => {
+    const fallbackSessionId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const transcriptPath = path.join(
+      copilotDir,
+      'workspaceStorage',
+      workspaceHash,
+      'GitHub.copilot-chat',
+      'transcripts',
+      `${fallbackSessionId}.jsonl`,
+    );
+    fs.writeFileSync(transcriptPath, [
+      JSON.stringify({
+        type: 'session.start',
+        data: {
+          sessionId: fallbackSessionId,
+          producer: 'copilot-agent',
+          copilotVersion: '0.46.2',
+          startTime: '2026-05-04T09:30:00.000Z',
+        },
+        timestamp: '2026-05-04T09:30:00.000Z',
+      }),
+      JSON.stringify({ type: 'user.message', data: { content: 'check' }, timestamp: '2026-05-04T09:30:01.000Z' }),
+      JSON.stringify({
+        type: 'assistant.message',
+        data: {
+          messageId: 'fallback-msg-1',
+          content: 'done',
+          reasoningText: 'think',
+          toolRequests: [{ toolCallId: 'call_openai_1', name: 'read_file', arguments: JSON.stringify({ filePath: 'src/app.ts' }) }],
+        },
+        timestamp: '2026-05-04T09:30:02.000Z',
+      }),
+    ].join('\n'));
+
+    const reader = await loadReader();
+    const detail = await reader.getSessionDetail(`copilot:${workspaceHash}:${fallbackSessionId}`);
+
+    expect(detail).toMatchObject({
+      model: 'copilot-openai-auto',
+      models: ['copilot-openai-auto'],
+      totalInputTokens: 2,
+      totalOutputTokens: 1,
+      toolCallCount: 1,
+    });
+    expect(detail?.messages[1]).toMatchObject({
+      role: 'assistant',
+      model: 'copilot-openai-auto',
+      usage: {
+        input_tokens: 2,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    });
+  });
+
   it('does not treat output-only completion token updates as complete Copilot usage', async () => {
     const filePath = path.join(root, 'completion-only-copilot.jsonl');
     fs.writeFileSync(filePath, [
@@ -170,6 +269,112 @@ describe('Copilot reader', () => {
       addedLines: 1,
       removedLines: 1,
     });
+  });
+
+  it('turns Copilot apply_patch tool input into modified-file diffs', async () => {
+    const patchSessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const workspaceDir = path.join(copilotDir, 'workspaceStorage', workspaceHash);
+    const transcriptPath = path.join(workspaceDir, 'GitHub.copilot-chat', 'transcripts', `${patchSessionId}.jsonl`);
+    const chatSessionPath = path.join(workspaceDir, 'chatSessions', `${patchSessionId}.jsonl`);
+    const patchInput = [
+      '*** Begin Patch',
+      '*** Update File: src/one.ts',
+      '@@',
+      '-export const enabled = false;',
+      '+export const enabled = true;',
+      '*** Add File: src/two.ts',
+      '+export const added = true;',
+      '*** End Patch',
+    ].join('\n');
+
+    fs.writeFileSync(transcriptPath, [
+      {
+        type: 'session.start',
+        data: {
+          sessionId: patchSessionId,
+          producer: 'copilot-agent',
+          copilotVersion: '0.46.2',
+          startTime: '2026-05-04T10:00:00.000Z',
+        },
+        id: 'event-1',
+        timestamp: '2026-05-04T10:00:00.000Z',
+      },
+      {
+        type: 'user.message',
+        data: { content: 'Patch two files.', attachments: [] },
+        id: 'event-2',
+        timestamp: '2026-05-04T10:00:01.000Z',
+      },
+      {
+        type: 'assistant.message',
+        data: {
+          messageId: 'assistant-1',
+          content: 'Applying the requested edits.',
+          toolRequests: [{
+            toolCallId: 'tool-patch-1',
+            name: 'apply_patch',
+            arguments: JSON.stringify({ explanation: 'Update fixtures.', input: patchInput }),
+            type: 'function',
+          }],
+        },
+        id: 'event-3',
+        timestamp: '2026-05-04T10:00:02.000Z',
+      },
+      {
+        type: 'tool.execution_start',
+        data: {
+          toolCallId: 'tool-patch-1',
+          toolName: 'apply_patch',
+          arguments: { explanation: 'Update fixtures.', input: patchInput },
+        },
+        id: 'event-4',
+        timestamp: '2026-05-04T10:00:03.000Z',
+      },
+      {
+        type: 'tool.execution_complete',
+        data: { toolCallId: 'tool-patch-1', success: true },
+        id: 'event-5',
+        timestamp: '2026-05-04T10:00:04.000Z',
+      },
+    ].map(record => JSON.stringify(record)).join('\n'));
+    fs.writeFileSync(chatSessionPath, JSON.stringify({
+      kind: 0,
+      v: {
+        version: 3,
+        creationDate: 1777802400000,
+        responderUsername: 'GitHub Copilot',
+        sessionId: patchSessionId,
+        requests: [],
+        inputState: {
+          selectedModel: {
+            identifier: 'copilot/gpt-5.4',
+            metadata: { id: 'gpt-5.4', vendor: 'copilot' },
+          },
+        },
+      },
+    }));
+
+    const reader = await loadReader();
+    const detail = await reader.getSessionDetail(`copilot:${workspaceHash}:${patchSessionId}`);
+
+    expect(detail).toMatchObject({
+      id: `copilot:${workspaceHash}:${patchSessionId}`,
+      toolCallCount: 1,
+      toolsUsed: { apply_patch: 1 },
+    });
+
+    const patchTool = detail?.messages.flatMap(message => message.toolCalls || []).find(tool => tool.name === 'apply_patch');
+    expect(patchTool?.details.find(detail => detail.key === 'file_path')?.value).toBe('src/one.ts\nsrc/two.ts');
+    expect(patchTool?.artifact?.edits?.map(edit => edit.path)).toEqual(['src/one.ts', 'src/two.ts']);
+
+    const diffSummary = getSessionDiffSummary(detail!.messages);
+    expect(diffSummary).toMatchObject({
+      fileCount: 2,
+      editCount: 2,
+      addedLines: 2,
+      removedLines: 1,
+    });
+    expect(diffSummary.files.map(file => file.path).sort()).toEqual(['src/one.ts', 'src/two.ts']);
   });
 
   it('assigns Copilot request usage to the final assistant event in each request group', async () => {

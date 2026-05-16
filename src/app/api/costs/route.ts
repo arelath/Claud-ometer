@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { apiError, withErrorHandler } from '@/lib/api-route';
 import { getProvidersForFilter } from '@/lib/agent-data/registry';
-import { getCachedDashboardStats } from '@/lib/agent-data/analytics';
+import { getCachedCostAnalytics } from '@/lib/agent-data/analytics';
 import { parseApiTimeRangeParams } from '@/lib/time-range';
 
 export const dynamic = 'force-dynamic';
@@ -13,5 +13,6 @@ export const GET = withErrorHandler(async (request: Request) => {
   if (agent && agent !== 'active' && providers.length === 0) apiError('Invalid provider filter', 400);
   const { range, error } = parseApiTimeRangeParams(searchParams);
   if (error) apiError(error, 400);
-  return NextResponse.json(getCachedDashboardStats(providers, range));
-}, 'Error fetching stats', 'Failed to fetch stats');
+
+  return NextResponse.json(getCachedCostAnalytics(providers, range));
+}, 'Error fetching cost analytics', 'Failed to fetch cost analytics');

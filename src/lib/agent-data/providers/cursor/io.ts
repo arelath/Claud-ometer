@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getAgentDataDir } from '@/lib/agent-data/data-source';
+import { getActiveDataSource, getAgentDataDir, getLiveCursorUserDir } from '@/lib/agent-data/data-source';
 
 const JSONL_READ_CHUNK_SIZE = 1024 * 1024;
 
@@ -21,10 +21,27 @@ export function getCursorDir(): string {
   return getAgentDataDir('cursor');
 }
 
+export function getCursorUserDir(): string {
+  return getActiveDataSource() === 'imported'
+    ? getAgentDataDir('cursor', 'imported')
+    : getLiveCursorUserDir();
+}
+
 export function getCursorProjectsDir(rootDir = getCursorDir()): string {
   return path.basename(rootDir).toLowerCase() === 'projects'
     ? rootDir
     : path.join(rootDir, 'projects');
+}
+
+export function getCursorStateDbPath(userDir = getCursorUserDir()): string {
+  const basename = path.basename(userDir).toLowerCase();
+  if (basename === 'state.vscdb') return userDir;
+  if (basename === 'globalstorage') return path.join(userDir, 'state.vscdb');
+  return path.join(userDir, 'globalStorage', 'state.vscdb');
+}
+
+export function getCursorWorkspaceStorageDir(dbPath = getCursorStateDbPath()): string {
+  return path.join(path.dirname(path.dirname(dbPath)), 'workspaceStorage');
 }
 
 export function getFileSignature(filePath: string): { mtimeMs: number; size: number } {
@@ -104,20 +121,22 @@ export function listCursorTranscriptFiles(projectsDir = getCursorProjectsDir()):
   if (!fs.existsSync(projectsDir)) return [];
 
   const files: string[] = [];
+  const collectTranscriptFiles = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        collectTranscriptFiles(entryPath);
+      } else if (entry.isFile() && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.txt'))) {
+        files.push(entryPath);
+      }
+    }
+  };
+
   for (const project of fs.readdirSync(projectsDir, { withFileTypes: true })) {
     if (!project.isDirectory()) continue;
     const transcriptsDir = path.join(projectsDir, project.name, 'agent-transcripts');
     if (!fs.existsSync(transcriptsDir)) continue;
-
-    for (const session of fs.readdirSync(transcriptsDir, { withFileTypes: true })) {
-      if (!session.isDirectory()) continue;
-      const sessionDir = path.join(transcriptsDir, session.name);
-      for (const entry of fs.readdirSync(sessionDir, { withFileTypes: true })) {
-        if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-          files.push(path.join(sessionDir, entry.name));
-        }
-      }
-    }
+    collectTranscriptFiles(transcriptsDir);
   }
 
   return files.sort((left, right) => left.localeCompare(right));

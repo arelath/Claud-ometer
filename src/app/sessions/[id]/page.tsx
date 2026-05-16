@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useMemo } from 'react';
+import { use, useMemo, type CSSProperties, type ReactNode } from 'react';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import {
@@ -15,10 +15,11 @@ import {
   Minimize2,
   Wrench,
 } from 'lucide-react';
-import { useDataSourceInfo, useSessionDetail } from '@/lib/hooks';
+import { useDataSourceInfo, useSessionDetail, useSessionSummary } from '@/lib/hooks';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { getContextFileGroups } from '@/lib/context-files';
 import type { FilterPreset } from '@/lib/session-transcript';
+import type { SessionInfo } from '@/lib/claude-data/types';
 import { getSessionDiffSummary } from '@/lib/session-diff';
 import { useSessionViewState } from '@/hooks/use-session-view-state';
 import { formatCost, formatDuration, formatTokens } from '@/lib/format';
@@ -80,18 +81,27 @@ function FilterPresets({ preset, onChange, counts }: {
   );
 }
 
+const TRANSCRIPT_ITEM_STYLE: CSSProperties = {
+  contentVisibility: 'auto',
+  containIntrinsicSize: '96px',
+};
+
 export default function SessionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: session, isLoading, error } = useSessionDetail(id);
+  const { data: summary } = useSessionSummary(id);
+  const displaySession: SessionInfo | undefined = session || summary;
   const { data: sourceInfo } = useDataSourceInfo();
   const { pickCost } = useCostMode();
   const messages = useMemo(() => session?.messages || [], [session]);
+  const hasTranscript = Boolean(session?.messages);
+  const isLive = Boolean(session?.isLive);
   const liveRevision = session?.isLive
     ? `${session.liveMetadataRevision || ''}:${session.liveTranscriptRevision || ''}:${messages.length}`
     : undefined;
   const compactionInfo = useMemo(
-    () => session?.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
-    [session?.compaction],
+    () => displaySession?.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
+    [displaySession?.compaction],
   );
   const compactionTimestamps = useMemo(
     () => compactionInfo.compactionTimestamps || [],
@@ -137,11 +147,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     messages,
     compactionTimestamps,
     diffSummary,
-    isLive: Boolean(session?.isLive),
+    isLive,
     liveRevision,
   });
 
-  if (isLoading || !session || !session.id) {
+  if ((isLoading && !displaySession) || !displaySession?.id) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
         <div className="space-y-3 text-center">
@@ -158,19 +168,19 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  const topTools = Object.entries(session.toolsUsed || {})
+  const topTools = Object.entries(displaySession.toolsUsed || {})
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10);
 
-  const models = [...new Set(session.models || [])];
+  const models = [...new Set(displaySession.models || [])];
 
   const contextFiles = getContextFileGroups(messages);
   const compaction = compactionInfo;
   const compactionCount = compaction.compactions + compaction.microcompactions;
   const sessionRenderContext: SessionRenderContextValue = {
-    projectRoot: session.cwd || undefined,
-    agentKind: session.agentKind,
-    assistantLabel: session.agentKind ? getAgentLabel(session.agentKind) : 'Claude',
+    projectRoot: displaySession.cwd || undefined,
+    agentKind: displaySession.agentKind,
+    assistantLabel: displaySession.agentKind ? getAgentLabel(displaySession.agentKind) : 'Claude',
     openArtifact: setArtifactViewer,
   };
 
@@ -185,46 +195,46 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               </Link>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <h1 className="min-w-0 truncate text-xl font-bold tracking-tight">{session.projectName}</h1>
-                  {session.agentKind && <AgentBadge agentKind={session.agentKind} />}
+                  <h1 className="min-w-0 truncate text-xl font-bold tracking-tight">{displaySession.projectName}</h1>
+                  {displaySession.agentKind && <AgentBadge agentKind={displaySession.agentKind} />}
                   {models.map(model => <Badge key={model} variant="secondary" className="text-xs">{model}</Badge>)}
-                  {session.isLive && (
+                  {isLive && (
                     <Badge className="border-green-500/30 bg-green-500/10 text-green-700 hover:bg-green-500/10 dark:text-green-300">
                       Live
                     </Badge>
                   )}
-                  {session.isLive && session.liveStatus === 'busy' && (
+                  {isLive && session?.liveStatus === 'busy' && (
                     <LiveWorkingIndicator
-                      activeToolName={session.liveActiveToolName}
-                      busySinceAtMs={session.liveBusySinceAtMs}
+                      activeToolName={session?.liveActiveToolName}
+                      busySinceAtMs={session?.liveBusySinceAtMs}
                     />
                   )}
-                  {session.isLive && session.liveStatus && session.liveStatus !== 'busy' && (
+                  {isLive && session?.liveStatus && session.liveStatus !== 'busy' && (
                     <SessionPill
                       value={session.liveStatus}
                       tone={session.liveStatus === 'idle' ? 'good' : 'neutral'}
                     />
                   )}
-                  {(!session.isLive || compactionCount > 0) && (
+                  {(!isLive || compactionCount > 0) && (
                     <SessionPill
                       value={compactionCount > 0 ? 'compacted' : 'completed'}
                       tone={compactionCount > 0 ? 'warn' : 'good'}
                     />
                   )}
-                  {sourceInfo?.active === 'live' && !session.isLive && (!session.agentKind || session.agentKind === 'claude') && (
-                    <ResumeSessionButton sessionId={session.id} showLabel />
+                  {sourceInfo?.active === 'live' && !isLive && (!displaySession.agentKind || displaySession.agentKind === 'claude') && (
+                    <ResumeSessionButton sessionId={displaySession.id} showLabel />
                   )}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-mono">{(session.nativeId || session.id).slice(0, 8)}</span>
-                  {session.gitBranch && (
+                  <span className="font-mono">{(displaySession.nativeId || displaySession.id).slice(0, 8)}</span>
+                  {displaySession.gitBranch && (
                     <>
                       <span className="opacity-40">-</span>
-                      <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{session.gitBranch}</span>
+                      <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{displaySession.gitBranch}</span>
                     </>
                   )}
                   <span className="opacity-40">-</span>
-                  <span>{format(new Date(session.timestamp), 'MMM d, yyyy h:mm a')}</span>
+                  <span>{format(new Date(displaySession.timestamp), 'MMM d, yyyy h:mm a')}</span>
                 </div>
               </div>
             </div>
@@ -234,7 +244,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 <CardContent className="px-2.5 py-1.5 text-center">
                   <div className="flex items-center justify-center gap-1">
                     <Coins className="h-3 w-3 text-primary" />
-                    <p className="whitespace-nowrap text-sm font-bold leading-5 text-primary">{formatCost(pickCost(session.estimatedCosts, session.estimatedCost))}</p>
+                    <p className="whitespace-nowrap text-sm font-bold leading-5 text-primary">{formatCost(pickCost(displaySession.estimatedCosts, displaySession.estimatedCost))}</p>
                   </div>
                   <p className="text-[9px] leading-3 text-muted-foreground">Est. Usage</p>
                 </CardContent>
@@ -243,7 +253,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <CardContent className="px-2.5 py-1.5 text-center">
                 <div className="flex items-center justify-center gap-1">
                   <Clock className="h-3 w-3 text-muted-foreground" />
-                  <p className="whitespace-nowrap text-sm font-bold leading-5">{formatDuration(session.duration)}</p>
+                  <p className="whitespace-nowrap text-sm font-bold leading-5">{formatDuration(displaySession.duration)}</p>
                 </div>
                 <p className="text-[9px] leading-3 text-muted-foreground">Duration</p>
               </CardContent>
@@ -252,7 +262,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <CardContent className="px-2.5 py-1.5 text-center">
                 <div className="flex items-center justify-center gap-1">
                   <MessageSquare className="h-3 w-3 text-muted-foreground" />
-                  <p className="whitespace-nowrap text-sm font-bold leading-5">{session.messageCount}</p>
+                  <p className="whitespace-nowrap text-sm font-bold leading-5">{displaySession.messageCount}</p>
                 </div>
                 <p className="text-[9px] leading-3 text-muted-foreground">Messages</p>
               </CardContent>
@@ -261,7 +271,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <CardContent className="px-2.5 py-1.5 text-center">
                 <div className="flex items-center justify-center gap-1">
                   <Wrench className="h-3 w-3 text-muted-foreground" />
-                  <p className="whitespace-nowrap text-sm font-bold leading-5">{session.toolCallCount}</p>
+                  <p className="whitespace-nowrap text-sm font-bold leading-5">{displaySession.toolCallCount}</p>
                 </div>
                 <p className="text-[9px] leading-3 text-muted-foreground">Tool Calls</p>
               </CardContent>
@@ -287,7 +297,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <CardContent className="px-2.5 py-1.5 text-center">
                 <div className="flex items-center justify-center gap-1">
                   <Activity className="h-3 w-3 text-muted-foreground" />
-                  <p className="whitespace-nowrap text-sm font-bold leading-5">{formatTokens(session.totalInputTokens + session.totalOutputTokens)}</p>
+                  <p className="whitespace-nowrap text-sm font-bold leading-5">{formatTokens(displaySession.totalInputTokens + displaySession.totalOutputTokens)}</p>
                 </div>
                 <p className="text-[9px] leading-3 text-muted-foreground">Tokens</p>
               </CardContent>
@@ -330,32 +340,41 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 <div className="flex h-full min-h-0 gap-3">
                   <div className="relative min-h-0 flex-1 min-w-0">
                     <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="h-full min-h-0 space-y-2 overflow-y-auto pr-2">
-                      {groupedMessages.map((group, groupIndex) => {
+                      {!hasTranscript ? (
+                        <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/20">
+                          <div className="space-y-3 text-center">
+                            <div className="mx-auto h-7 w-7 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                            <p className="text-sm text-muted-foreground">Loading transcript...</p>
+                          </div>
+                        </div>
+                      ) : groupedMessages.map((group, groupIndex) => {
+                        let content: ReactNode = null;
                         if (group.type === 'compaction') {
-                          return <CompactionDivider key={`c-${group.index}-${group.timestamp}`} timestamp={group.timestamp} targetId={group.targetId} />;
-                        }
-                        if (group.type === 'user') {
-                          return <UserMessage key={`u-${groupIndex}`} msg={group.message} index={group.index} />;
-                        }
-                        if (group.type === 'assistant') {
-                          return (
+                          content = <CompactionDivider timestamp={group.timestamp} targetId={group.targetId} />;
+                        } else if (group.type === 'user') {
+                          content = <UserMessage msg={group.message} index={group.index} />;
+                        } else if (group.type === 'assistant') {
+                          content = (
                             <AssistantCard
-                              key={`a-${groupIndex}`}
                               msg={group.message}
                               index={group.index}
                               toolPairs={group.toolPairs}
                               toolTimeline={group.toolTimeline}
                             />
                           );
+                        } else if (group.type === 'system-group') {
+                          content = <SystemGroup messages={group.messages} />;
                         }
-                        if (group.type === 'system-group') {
-                          return <SystemGroup key={`s-${groupIndex}`} messages={group.messages} />;
-                        }
-                        return null;
+                        if (!content) return null;
+                        return (
+                          <div key={`${group.type}-${groupIndex}`} style={TRANSCRIPT_ITEM_STYLE}>
+                            {content}
+                          </div>
+                        );
                       })}
                       <div ref={bottomRef} data-testid="conversation-bottom-sentinel" className="h-px" />
                     </div>
-                    {session.isLive && showScrollToBottom && (
+                    {isLive && showScrollToBottom && (
                       <button
                         type="button"
                         onClick={() => scrollToConversationBottom('smooth')}
@@ -368,13 +387,15 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     )}
                   </div>
 
-                  <Minimap
-                    segments={minimapSegments}
-                    viewport={minimapViewport}
-                    onJump={(targetId) => {
-                      scrollElementIntoConversation(targetId, 'start');
-                    }}
-                  />
+                  {hasTranscript && (
+                    <Minimap
+                      segments={minimapSegments}
+                      viewport={minimapViewport}
+                      onJump={(targetId) => {
+                        scrollElementIntoConversation(targetId, 'start');
+                      }}
+                    />
+                  )}
                 </div>
               ) : (
                 <ChangesView
@@ -385,16 +406,16 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   onSelectPath={setSelectedDiffPath}
                   onCopyPatch={handleCopyPatch}
                   onJumpToMessage={handleJumpToDiffMessage}
-                  projectRoot={session.cwd || undefined}
+                  projectRoot={displaySession.cwd || undefined}
                 />
               )}
             </CardContent>
           </Card>
-          {session.isLive && <LiveSessionSendBox sessionId={session.id} liveStatus={session.liveStatus} />}
+          {isLive && session && <LiveSessionSendBox sessionId={session.id} liveStatus={session.liveStatus} />}
           </section>
 
           <aside className="hidden h-full min-h-0 flex-col gap-2 overflow-hidden xl:flex">
-            <ContextWindowMeter session={session} messages={messages} className="shrink-0" />
+              <ContextWindowMeter session={displaySession} messages={messages} className="shrink-0" />
 
             <ContextFilesPanel
               contextFiles={contextFiles}
@@ -494,32 +515,32 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
               <CardContent className="px-3 pb-3 pt-0 space-y-2">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">Provider</span>
-                  <span className="font-medium">{session.agentKind || 'claude'}</span>
+                  <span className="font-medium">{displaySession.agentKind || 'claude'}</span>
                 </div>
-                {session.routeId && (
+                {displaySession.routeId && (
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Route ID</span>
-                    <span className="font-mono truncate max-w-[160px]">{session.routeId}</span>
+                    <span className="font-mono truncate max-w-[160px]">{displaySession.routeId}</span>
                   </div>
                 )}
-                {session.nativeId && (
+                {displaySession.nativeId && (
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Native ID</span>
-                    <span className="font-mono truncate max-w-[160px]">{session.nativeId}</span>
+                    <span className="font-mono truncate max-w-[160px]">{displaySession.nativeId}</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">Version</span>
-                  <span className="font-mono">{session.version}</span>
+                  <span className="font-mono">{displaySession.version}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">Project</span>
-                  <span className="font-medium truncate max-w-[120px]">{session.projectName}</span>
+                  <span className="font-medium truncate max-w-[120px]">{displaySession.projectName}</span>
                 </div>
-                {session.gitBranch && (
+                {displaySession.gitBranch && (
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Branch</span>
-                    <span className="font-mono truncate max-w-[120px]">{session.gitBranch}</span>
+                    <span className="font-mono truncate max-w-[120px]">{displaySession.gitBranch}</span>
                   </div>
                 )}
               </CardContent>

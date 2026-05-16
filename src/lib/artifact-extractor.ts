@@ -247,7 +247,6 @@ export function getSessionDiffArtifacts(messages: SessionMessageDisplay[]): Sess
       if (tool.artifact?.kind !== 'diff') continue;
 
       const filePath = getToolPath(tool.details);
-      if (!filePath) continue;
 
       const diffItems = tool.artifact.edits?.length
         ? tool.artifact.edits
@@ -259,9 +258,12 @@ export function getSessionDiffArtifacts(messages: SessionMessageDisplay[]): Sess
           }];
 
       diffItems.forEach((diffItem, artifactIndex) => {
+        const diffPath = diffItem.path ? normalizePath(diffItem.path) : filePath;
+        if (!diffPath) return;
+
         const isWriteArtifact = tool.name === ANTHROPIC_TOOL_NAMES.write;
         const snapshotOldText = isWriteArtifact && diffItem.oldText === ''
-          ? resolveWriteOldTextFromSnapshot(filePath, messageIndex, snapshots)
+          ? resolveWriteOldTextFromSnapshot(diffPath, messageIndex, snapshots)
           : null;
         const oldText = snapshotOldText ?? diffItem.oldText;
         const newText = diffItem.newText;
@@ -271,11 +273,11 @@ export function getSessionDiffArtifacts(messages: SessionMessageDisplay[]): Sess
           ?? parseLineNumber(diffItem.location)
           ?? null;
         const startLine = explicitStartLine
-          ?? inferStartLineFromPreviousEdits(filePath, oldText, artifacts)
-          ?? inferStartLineFromSnapshots(filePath, oldText, messageIndex, snapshots);
+          ?? inferStartLineFromPreviousEdits(diffPath, oldText, artifacts)
+          ?? inferStartLineFromSnapshots(diffPath, oldText, messageIndex, snapshots);
 
         artifacts.push({
-          path: filePath,
+          path: diffPath,
           toolName: tool.name,
           toolId: diffItems.length > 1 && tool.id ? `${tool.id}:${artifactIndex + 1}` : tool.id,
           artifactIndex,

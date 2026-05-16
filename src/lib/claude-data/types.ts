@@ -257,6 +257,7 @@ export interface SessionArtifactDisplay {
   location?: string;
   includeWhenEmpty?: boolean;
   edits?: {
+    path?: string;
     oldText: string;
     newText: string;
     location?: string;

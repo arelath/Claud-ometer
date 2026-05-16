@@ -9,6 +9,7 @@ describe('agent-aware data source helpers', () => {
   const codexDir = path.join(root, 'home', '.codex');
   const copilotDir = path.join(root, 'home', 'Code', 'User');
   const cursorDir = path.join(root, 'home', '.cursor');
+  const cursorUserDir = path.join(root, 'home', 'Cursor', 'User');
 
   async function loadModule() {
     vi.resetModules();
@@ -22,6 +23,7 @@ describe('agent-aware data source helpers', () => {
     process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
     process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
     process.env.CLAUD_OMETER_CURSOR_DIR = cursorDir;
+    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
     delete process.env.CLAUD_OMETER_AGENTS;
   });
 
@@ -32,6 +34,7 @@ describe('agent-aware data source helpers', () => {
     delete process.env.CLAUD_OMETER_CODEX_DIR;
     delete process.env.CLAUD_OMETER_COPILOT_DIR;
     delete process.env.CLAUD_OMETER_CURSOR_DIR;
+    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
     delete process.env.CLAUD_OMETER_AGENTS;
   });
 
@@ -73,6 +76,16 @@ describe('agent-aware data source helpers', () => {
     fs.writeFileSync(path.join(sessionDir, 'session-id.jsonl'), '{"role":"user","message":{"content":[{"type":"text","text":"Hello Cursor"}]}}\n');
     fs.mkdirSync(path.join(sessionDir, 'subagents'), { recursive: true });
     fs.writeFileSync(path.join(sessionDir, 'subagents', 'subagent.jsonl'), '{"role":"user","message":{"content":[{"type":"text","text":"Ignore me"}]}}\n');
+    const dataSource = await loadModule();
+
+    expect(dataSource.getDetectedAgents('live')).toEqual(['cursor']);
+    expect(dataSource.getSelectedAgents('live')).toEqual(['cursor']);
+  });
+
+  it('selects Cursor when the global Cursor chat database is present', async () => {
+    const globalStorageDir = path.join(cursorUserDir, 'globalStorage');
+    fs.mkdirSync(globalStorageDir, { recursive: true });
+    fs.writeFileSync(path.join(globalStorageDir, 'state.vscdb'), '');
     const dataSource = await loadModule();
 
     expect(dataSource.getDetectedAgents('live')).toEqual(['cursor']);

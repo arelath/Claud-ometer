@@ -3,7 +3,7 @@ import { apiError, withErrorHandler } from '@/lib/api-route';
 import { getProvidersForFilter, resolveSessionProvider } from '@/lib/agent-data/registry';
 import { sortSessionsByTimestamp } from '@/lib/agent-data/aggregate';
 import { parseRouteId } from '@/lib/agent-data/route-id';
-import { getIndexedSessionSummariesWithFallbacks } from '@/lib/agent-data/indexer';
+import { getIndexedSessionSummaries } from '@/lib/agent-data/indexer';
 import { summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 
@@ -58,7 +58,7 @@ export const GET = withErrorHandler(async (request: Request) => {
   if (agent && agent !== 'active' && providers.length === 0) apiError('Invalid provider filter', 400);
 
   if (query) {
-    const summaries = await getIndexedSessionSummariesWithFallbacks(providers);
+    const summaries = getIndexedSessionSummaries(providers);
     const lowerQuery = query.toLowerCase();
     const matchingSummaries = summaries.filter(summary => summarySearchText(summary).includes(lowerQuery));
     return paginatedResponse(matchingSummaries, limit, offset, includeTotal);
@@ -69,7 +69,7 @@ export const GET = withErrorHandler(async (request: Request) => {
     const projectProviders = parsedProjectId.agentKind
       ? [resolveSessionProvider(projectId)].filter((provider): provider is AgentDataProvider => Boolean(provider))
       : providers;
-    const summaries = await getIndexedSessionSummariesWithFallbacks(projectProviders);
+    const summaries = getIndexedSessionSummaries(projectProviders);
     const nativeProjectId = parsedProjectId.nativeId;
     const sessions = sortSessionsByTimestamp(summariesToSessions(summaries.filter(summary => {
       if (parsedProjectId.agentKind && summary.provider !== parsedProjectId.agentKind) return false;
@@ -78,6 +78,6 @@ export const GET = withErrorHandler(async (request: Request) => {
     return NextResponse.json(sessions);
   }
 
-  const summaries = await getIndexedSessionSummariesWithFallbacks(providers);
+  const summaries = getIndexedSessionSummaries(providers);
   return paginatedResponse(summaries, limit, offset, includeTotal);
 }, 'Error fetching sessions', 'Failed to fetch sessions');

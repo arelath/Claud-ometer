@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { isExcludedCopilotExportPath, toZipPath } from '@/lib/agent-data/archive';
 import { isCopilotChatSessionFile } from './chat-session';
@@ -11,6 +12,25 @@ function getWorkspaceStorageDir(copilotDir: string): string {
   return path.basename(copilotDir).toLowerCase() === 'workspacestorage'
     ? copilotDir
     : path.join(copilotDir, 'workspaceStorage');
+}
+
+function getLegacySessionStateDir(copilotDir: string): string {
+  if (path.basename(copilotDir).toLowerCase() === 'session-state') return copilotDir;
+  const nested = path.join(copilotDir, 'session-state');
+  if (fs.existsSync(nested) || copilotDir.replace(/\\/g, '/').includes('/agent-data/copilot')) return nested;
+
+  const explicit = process.env.CLAUD_OMETER_COPILOT_LEGACY_DIR?.trim();
+  if (explicit) {
+    return path.basename(explicit).toLowerCase() === 'session-state'
+      ? explicit
+      : path.join(explicit, 'session-state');
+  }
+
+  if (process.env.CLAUD_OMETER_COPILOT_DIR?.trim() || process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim()) {
+    return nested;
+  }
+  if (fs.existsSync(nested)) return nested;
+  return path.join(os.homedir(), '.copilot', 'session-state');
 }
 
 function getArchiveRoot(copilotDir: string, workspaceStorageDir: string): string {
@@ -27,6 +47,20 @@ function addFile(archive: ArchiveWriter, filePath: string, rootDir: string, pref
 
 export function addCopilotDataToArchive(archive: ArchiveWriter, copilotDir: string, prefix: string): void {
   const workspaceStorageDir = getWorkspaceStorageDir(copilotDir);
+  const legacySessionStateDir = getLegacySessionStateDir(copilotDir);
+
+  if (fs.existsSync(legacySessionStateDir)) {
+    const legacyRootDir = path.dirname(legacySessionStateDir);
+    for (const session of fs.readdirSync(legacySessionStateDir, { withFileTypes: true })) {
+      if (!session.isDirectory()) continue;
+      const sessionDir = path.join(legacySessionStateDir, session.name);
+      const eventsPath = path.join(sessionDir, 'events.jsonl');
+      if (fs.existsSync(eventsPath)) addFile(archive, eventsPath, legacyRootDir, prefix);
+      const workspaceYamlPath = path.join(sessionDir, 'workspace.yaml');
+      if (fs.existsSync(workspaceYamlPath)) addFile(archive, workspaceYamlPath, legacyRootDir, prefix);
+    }
+  }
+
   if (!fs.existsSync(workspaceStorageDir)) return;
 
   const rootDir = getArchiveRoot(copilotDir, workspaceStorageDir);

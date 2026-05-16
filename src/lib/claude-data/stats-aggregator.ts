@@ -258,3 +258,8 @@ export async function computeSupplementalStats(afterDate: string): Promise<Suppl
   supplementalCache = { key: cacheKey, data: result, ts: Date.now() };
   return result;
 }
+
+export function resetStatsAggregatorCache(): void {
+  supplementalCache = null;
+  localHourCountsCache = null;
+}

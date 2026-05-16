@@ -14,11 +14,11 @@ import {
 import { getFileSignature } from './io';
 import { discoverCopilotSessionFiles, type CopilotSessionFileInfo } from './session-index';
 import { parseCopilotSessionFile, parseCopilotSessionSummaryFile, type CopilotParsedSession } from './transcript-parser';
-import { getCopilotChatSessionSummary, resetCopilotChatSessionCacheForTests, type CopilotChatSessionSummary } from './chat-session';
+import { getCopilotChatSessionSummary, resetCopilotChatSessionCache, type CopilotChatSessionSummary } from './chat-session';
 
 const parsedCache = new AgentDataCache<CopilotParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const COPILOT_SESSION_SUMMARY_PARSER_VERSION = 'copilot-summary-v3';
+export const COPILOT_SESSION_SUMMARY_PARSER_VERSION = 'copilot-summary-v5';
 
 async function parseDiscoveredSession(fileInfo: CopilotSessionFileInfo): Promise<CopilotParsedSession> {
   const cached = parsedCache.get({ provider: 'copilot', filePath: fileInfo.filePath, signature: fileInfo.sourceSignature, scope: 'detail' });
@@ -80,6 +80,51 @@ function calculateCosts(modelUsage: Record<string, CachedModelUsage>) {
 function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionInfo {
   const cached = infoCache.get({ provider: 'copilot', filePath: fileInfo.filePath, signature: fileInfo.sourceSignature, scope: 'list' });
   if (cached) return cached;
+
+  if (fileInfo.sourceKind === 'legacy') {
+    const summary = parseCopilotSessionSummaryFile(fileInfo.filePath, fileInfo);
+    const estimatedCosts = calculateCosts(summary.modelUsage);
+    const routeId = makeRouteId('copilot', getRouteNativeId(fileInfo));
+    const projectRouteId = qualifyProjectId('copilot', fileInfo.nativeProjectId);
+    const info: SessionInfo = {
+      id: routeId,
+      agentKind: 'copilot',
+      nativeId: fileInfo.nativeId,
+      routeId,
+      projectId: projectRouteId,
+      nativeProjectId: fileInfo.nativeProjectId,
+      projectRouteId,
+      projectName: fileInfo.projectName,
+      title: summary.title,
+      sourceFilePath: fileInfo.filePath,
+      timestamp: summary.createdAt,
+      duration: summary.duration,
+      messageCount: summary.messageCount,
+      userMessageCount: summary.userMessageCount,
+      assistantMessageCount: summary.assistantMessageCount,
+      toolCallCount: summary.toolCallCount,
+      totalInputTokens: summary.tokenUsage.input_tokens,
+      totalOutputTokens: summary.tokenUsage.output_tokens,
+      totalCacheReadTokens: summary.tokenUsage.cache_read_input_tokens,
+      totalCacheWriteTokens: summary.tokenUsage.cache_creation_input_tokens,
+      estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
+      estimatedCosts,
+      model: summary.model,
+      models: summary.models,
+      gitBranch: '',
+      cwd: fileInfo.cwd,
+      version: summary.version,
+      toolsUsed: summary.toolsUsed,
+      compaction: {
+        compactions: 0,
+        microcompactions: 0,
+        totalTokensSaved: 0,
+        compactionTimestamps: [],
+      },
+    };
+    infoCache.set({ provider: 'copilot', filePath: fileInfo.filePath, signature: fileInfo.sourceSignature, scope: 'list' }, info);
+    return info;
+  }
 
   const chatSummary = getCopilotChatSessionSummary(fileInfo.chatSessionFilePath);
   const modelUsage = buildModelUsage(chatSummary);
@@ -228,6 +273,7 @@ function getSourceFileInfo(source: SessionSummarySource): CopilotSessionFileInfo
   const timestamp = fallbackSignature.mtimeMs > 0 ? new Date(fallbackSignature.mtimeMs).toISOString() : new Date(0).toISOString();
   return {
     filePath: source.sourceFilePath,
+    sourceKind: source.sourceFilePath.replace(/\\/g, '/').includes('/session-state/') ? 'legacy' : 'vscode',
     chatSessionFilePath,
     nativeId,
     routeNativeId: `${workspaceHash}:${nativeId}`,
@@ -303,6 +349,61 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
 
 export function buildLightweightSessionSummary(source: SessionSummarySource): CachedSessionSummary {
   const fileInfo = getSourceFileInfo(source);
+  if (fileInfo.sourceKind === 'legacy') {
+    const summary = parseCopilotSessionSummaryFile(source.sourceFilePath, fileInfo);
+    const routeId = makeRouteId('copilot', summary.routeNativeId);
+    const projectRouteId = qualifyProjectId('copilot', summary.nativeProjectId);
+    return {
+      cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+      parserVersion: source.parserVersion,
+      provider: 'copilot',
+      nativeId: summary.nativeId,
+      routeId,
+      nativeProjectId: summary.nativeProjectId,
+      projectRouteId,
+      projectName: summary.projectName,
+      sourceFilePath: source.sourceFilePath,
+      sourceSignature: source.sourceSignature,
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt,
+      title: summary.title,
+      cwd: summary.cwd,
+      gitBranch: '',
+      version: summary.version,
+      model: summary.model,
+      models: summary.models,
+      messageCount: summary.messageCount,
+      userMessageCount: summary.userMessageCount,
+      assistantMessageCount: summary.assistantMessageCount,
+      toolCallCount: summary.toolCallCount,
+      tokenTotals: {
+        input: summary.tokenUsage.input_tokens,
+        output: summary.tokenUsage.output_tokens,
+        cacheRead: summary.tokenUsage.cache_read_input_tokens,
+        cacheWrite: summary.tokenUsage.cache_creation_input_tokens,
+        reasoningOutput: summary.reasoningOutputTokens,
+      },
+      modelUsage: summary.modelUsage,
+      toolsUsed: summary.toolsUsed,
+      compaction: {
+        compactions: 0,
+        microcompactions: 0,
+        totalTokensSaved: 0,
+        compactionTimestamps: [],
+      },
+      searchTextPreview: normalizeSearchText([
+        summary.searchTextPreview,
+        summary.title,
+        summary.projectName,
+        summary.cwd,
+        summary.version,
+        summary.model,
+        ...summary.models,
+        ...Object.keys(summary.toolsUsed || {}),
+      ]),
+    };
+  }
+
   const chatSummary = getCopilotChatSessionSummary(fileInfo.chatSessionFilePath);
   const modelUsage = buildModelUsage(chatSummary);
   const routeId = makeRouteId('copilot', getRouteNativeId(fileInfo));
@@ -381,8 +482,12 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   };
 }
 
-export function resetCopilotReaderCacheForTests(): void {
+export function resetCopilotReaderCache(): void {
   parsedCache.clear();
   infoCache.clear();
-  resetCopilotChatSessionCacheForTests();
+  resetCopilotChatSessionCache();
+}
+
+export function resetCopilotReaderCacheForTests(): void {
+  resetCopilotReaderCache();
 }

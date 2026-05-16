@@ -64,6 +64,55 @@ const EMPTY_USAGE: TokenUsage = {
   cache_read_input_tokens: 0,
 };
 
+const CHARS_PER_TOKEN = 4;
+const COPILOT_AUTO_MODEL = 'copilot-auto';
+const COPILOT_OPENAI_AUTO_MODEL = 'copilot-openai-auto';
+const COPILOT_ANTHROPIC_AUTO_MODEL = 'copilot-anthropic-auto';
+
+const TRANSCRIPT_TOOL_CALL_MODEL_HINTS: Array<{ prefix: string; model: string }> = [
+  { prefix: 'toolu_bdrk_', model: COPILOT_ANTHROPIC_AUTO_MODEL },
+  { prefix: 'toolu_vrtx_', model: COPILOT_ANTHROPIC_AUTO_MODEL },
+  { prefix: 'tooluse_', model: COPILOT_ANTHROPIC_AUTO_MODEL },
+  { prefix: 'toolu_', model: COPILOT_ANTHROPIC_AUTO_MODEL },
+  { prefix: 'call_', model: COPILOT_OPENAI_AUTO_MODEL },
+];
+
+function zeroCopilotUsage(): CopilotUsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+  };
+}
+
+function addCopilotUsage(target: CopilotUsageTotals, usage: CopilotUsageTotals): void {
+  target.inputTokens += usage.inputTokens;
+  target.outputTokens += usage.outputTokens;
+  target.cacheReadInputTokens += usage.cacheReadInputTokens;
+  target.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+  target.reasoningOutputTokens += usage.reasoningOutputTokens;
+}
+
+function hasCopilotUsage(usage: CopilotUsageTotals): boolean {
+  return usage.inputTokens > 0
+    || usage.outputTokens > 0
+    || usage.cacheReadInputTokens > 0
+    || usage.cacheCreationInputTokens > 0
+    || usage.reasoningOutputTokens > 0;
+}
+
+function normalizeCopilotModelId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toLowerCase().startsWith('copilot/') ? trimmed.slice('copilot/'.length) : trimmed;
+}
+
+function estimateTokensFromText(value: string): number {
+  return value ? Math.ceil(value.length / CHARS_PER_TOKEN) : 0;
+}
+
 function toTokenUsage(usage: CopilotUsageTotals): TokenUsage {
   return {
     input_tokens: usage.inputTokens,
@@ -153,15 +202,27 @@ function getCopilotSidecarSummary(fileInfo: CopilotSessionFileInfo): CopilotChat
 }
 
 const TOOL_NAME_MAP: Record<string, string> = {
+  bash: 'Bash',
   create_file: 'Write',
   delete_file: 'Delete',
+  edit_file: 'Edit',
+  fetch_webpage: 'WebFetch',
   file_search: 'Search',
+  find_files: 'Glob',
   grep_search: 'Grep',
+  github_repo: 'GitHub',
+  kill_terminal: 'Bash',
+  list_dir: 'LS',
+  list_directory: 'LS',
+  memory: 'Memory',
   multi_replace_string_in_file: 'MultiEdit',
   read_file: 'Read',
   replace_string_in_file: 'Edit',
   run_in_terminal: 'Bash',
+  search_files: 'Grep',
   semantic_search: 'Search',
+  web_search: 'WebSearch',
+  write_file: 'Edit',
 };
 
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
@@ -226,7 +287,140 @@ function getFirstNumber(args: Record<string, unknown>, keys: string[]): number |
   return undefined;
 }
 
-function buildDiffArtifact(args: Record<string, unknown>, filePath: string | undefined): SessionArtifactDisplay | undefined {
+interface ParsedApplyPatchEdit {
+  path: string;
+  oldText: string;
+  newText: string;
+  location?: string;
+}
+
+function getApplyPatchInput(args: Record<string, unknown>): string | undefined {
+  return getFirstString(args, ['input', 'patch', 'arguments']);
+}
+
+function isApplyPatchFileHeader(line: string): boolean {
+  return /^\*\*\* (?:Update|Add|Delete) File: /.test(line);
+}
+
+function parseApplyPatchInput(input: string): ParsedApplyPatchEdit[] {
+  const edits: ParsedApplyPatchEdit[] = [];
+  let filePath = '';
+  let operation = '';
+  let oldLines: string[] = [];
+  let newLines: string[] = [];
+  let location: string | undefined;
+  let hunkCountForFile = 0;
+
+  const flushHunk = () => {
+    if (!filePath) return;
+    if (oldLines.length === 0 && newLines.length === 0) return;
+    edits.push({
+      path: filePath,
+      oldText: oldLines.join('\n'),
+      newText: newLines.join('\n'),
+      location: location && location !== '@@' ? location : hunkCountForFile > 1 ? `hunk ${hunkCountForFile}` : undefined,
+    });
+    oldLines = [];
+    newLines = [];
+  };
+
+  const startFile = (nextOperation: 'update' | 'add' | 'delete', nextPath: string) => {
+    flushHunk();
+    filePath = nextPath.trim();
+    operation = nextOperation;
+    oldLines = [];
+    newLines = [];
+    location = operation === 'add' || operation === 'delete' ? 'line 1' : undefined;
+    hunkCountForFile = operation === 'add' || operation === 'delete' ? 1 : 0;
+  };
+
+  for (const line of input.replace(/\r\n?/g, '\n').split('\n')) {
+    const updateMatch = line.match(/^\*\*\* Update File: (.+)$/);
+    if (updateMatch) {
+      startFile('update', updateMatch[1]);
+      continue;
+    }
+
+    const addMatch = line.match(/^\*\*\* Add File: (.+)$/);
+    if (addMatch) {
+      startFile('add', addMatch[1]);
+      continue;
+    }
+
+    const deleteMatch = line.match(/^\*\*\* Delete File: (.+)$/);
+    if (deleteMatch) {
+      startFile('delete', deleteMatch[1]);
+      continue;
+    }
+
+    const moveMatch = line.match(/^\*\*\* Move to: (.+)$/);
+    if (moveMatch) {
+      filePath = moveMatch[1].trim();
+      continue;
+    }
+
+    if (line.startsWith('@@')) {
+      flushHunk();
+      hunkCountForFile += 1;
+      location = line.trim();
+      continue;
+    }
+
+    if (!filePath || line === '*** Begin Patch' || line === '*** End Patch' || line === '*** End of File') continue;
+    if (line.startsWith('*** ') && !isApplyPatchFileHeader(line)) continue;
+    if (line.startsWith('\\')) continue;
+
+    if (line.startsWith('+')) {
+      if (operation !== 'delete') newLines.push(line.slice(1));
+    } else if (line.startsWith('-')) {
+      if (operation !== 'add') oldLines.push(line.slice(1));
+    } else if (line.startsWith(' ')) {
+      const content = line.slice(1);
+      oldLines.push(content);
+      newLines.push(content);
+    } else if (operation === 'update') {
+      oldLines.push(line);
+      newLines.push(line);
+    }
+  }
+
+  flushHunk();
+  return edits;
+}
+
+function buildApplyPatchArtifact(args: Record<string, unknown>): SessionArtifactDisplay | undefined {
+  const input = getApplyPatchInput(args);
+  if (!input) return undefined;
+
+  const edits = parseApplyPatchInput(input);
+  if (edits.length === 0) return undefined;
+
+  return {
+    kind: 'diff',
+    title: edits.length === 1 ? `${edits[0].path} diff` : `${edits.length} patch edits`,
+    oldText: edits.map(edit => edit.oldText).join('\n'),
+    newText: edits.map(edit => edit.newText).join('\n'),
+    location: edits.length === 1 ? edits[0].location : `${edits.length} edits`,
+    includeWhenEmpty: true,
+    edits: edits.map(edit => ({
+      path: edit.path,
+      oldText: edit.oldText,
+      newText: edit.newText,
+      location: edit.location,
+      includeWhenEmpty: true,
+    })),
+  };
+}
+
+function getApplyPatchPaths(args: Record<string, unknown>): string[] {
+  const input = getApplyPatchInput(args);
+  if (!input) return [];
+  return Array.from(new Set(parseApplyPatchInput(input).map(edit => edit.path).filter(Boolean)));
+}
+
+function buildDiffArtifact(rawName: string, args: Record<string, unknown>, filePath: string | undefined): SessionArtifactDisplay | undefined {
+  if (rawName === 'apply_patch') return buildApplyPatchArtifact(args);
+
   const oldText = getFirstString(args, ['oldString', 'old_string', 'oldText', 'old_text']);
   const newText = getFirstString(args, ['newString', 'new_string', 'newText', 'new_text', 'content']);
   if (oldText == null && newText == null) return undefined;
@@ -244,7 +438,9 @@ function buildDiffArtifact(args: Record<string, unknown>, filePath: string | und
 function buildToolCall(rawName: string, toolCallId: string, args: Record<string, unknown>): SessionToolCallDisplay {
   const name = normalizeToolName(rawName);
   const details: SessionToolCallDetail[] = [];
-  const filePath = getFirstString(args, ['filePath', 'file_path', 'path', 'targetPath']);
+  const applyPatchPaths = rawName === 'apply_patch' ? getApplyPatchPaths(args) : [];
+  const filePath = getFirstString(args, ['filePath', 'file_path', 'path', 'targetPath'])
+    || (applyPatchPaths.length > 0 ? applyPatchPaths.join('\n') : undefined);
   const command = getFirstString(args, ['command', 'cmd']);
   const query = getFirstString(args, ['query', 'searchQuery', 'pattern']);
   const startLine = getFirstNumber(args, ['startLine', 'start_line', 'lineStart', 'line_start']);
@@ -263,13 +459,13 @@ function buildToolCall(rawName: string, toolCallId: string, args: Record<string,
     addDetail(details, key, value);
   }
 
-  const primary = filePath || command || query || stringifyValue(args);
+  const primary = applyPatchPaths.length > 1 ? `${applyPatchPaths.length} files` : filePath || command || query || stringifyValue(args);
   return {
     name,
     id: toolCallId,
     summary: primary ? `${name}: ${primary}` : name,
     details,
-    artifact: buildDiffArtifact(args, filePath),
+    artifact: buildDiffArtifact(rawName, args, filePath),
   };
 }
 
@@ -285,6 +481,80 @@ function getToolRequests(data: Record<string, unknown>): SessionToolCallDisplay[
       return buildToolCall(name, toolCallId, parseArguments(record.arguments));
     })
     .filter((tool): tool is SessionToolCallDisplay => Boolean(tool));
+}
+
+function addModelHint(modelCounts: Map<string, number>, model: string | undefined, weight = 1): void {
+  const normalized = normalizeCopilotModelId(model);
+  if (!normalized) return;
+  modelCounts.set(normalized, (modelCounts.get(normalized) || 0) + weight);
+}
+
+function addToolCallModelHints(modelCounts: Map<string, number>, tools: SessionToolCallDisplay[]): void {
+  for (const tool of tools) {
+    for (const hint of TRANSCRIPT_TOOL_CALL_MODEL_HINTS) {
+      if (!tool.id.startsWith(hint.prefix)) continue;
+      addModelHint(modelCounts, hint.model);
+      break;
+    }
+  }
+}
+
+function chooseInferredTranscriptModel(modelCounts: Map<string, number>): string | undefined {
+  if (modelCounts.size === 0) return undefined;
+  return [...modelCounts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0];
+}
+
+function chooseCopilotModel(chatSummary: CopilotChatSessionSummary, inferredModel: string | undefined): string {
+  return chatSummary.model !== 'unknown'
+    ? chatSummary.model
+    : inferredModel || COPILOT_AUTO_MODEL;
+}
+
+function chooseCopilotModels(chatSummary: CopilotChatSessionSummary, primaryModel: string): string[] {
+  return Array.from(new Set([
+    ...chatSummary.models,
+    primaryModel,
+  ].filter(model => model && model !== 'unknown')));
+}
+
+function estimateTranscriptUsage(content: string, reasoningText: string, userContent: string, explicitOutputTokens?: number): CopilotUsageTotals {
+  const outputTokens = explicitOutputTokens && explicitOutputTokens > 0
+    ? Math.max(0, explicitOutputTokens)
+    : estimateTokensFromText(content);
+
+  return {
+    inputTokens: estimateTokensFromText(userContent),
+    outputTokens,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: explicitOutputTokens && explicitOutputTokens > 0 ? 0 : estimateTokensFromText(reasoningText),
+  };
+}
+
+function addModelUsage(
+  modelUsage: Record<string, CachedModelUsage>,
+  model: string,
+  usage: CopilotUsageTotals,
+  contextWindow?: number,
+  maxOutputTokens?: number,
+): void {
+  const existing = modelUsage[model] || {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    contextWindow,
+    maxOutputTokens,
+  };
+  existing.inputTokens += usage.inputTokens;
+  existing.outputTokens += usage.outputTokens;
+  existing.cacheReadInputTokens += usage.cacheReadInputTokens;
+  existing.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+  existing.reasoningOutputTokens = (existing.reasoningOutputTokens || 0) + usage.reasoningOutputTokens;
+  existing.contextWindow ||= contextWindow;
+  existing.maxOutputTokens ||= maxOutputTokens;
+  modelUsage[model] = existing;
 }
 
 function buildToolStartCall(data: Record<string, unknown>): SessionToolCallDisplay | null {
@@ -412,7 +682,144 @@ export function readCopilotRecords(filePath: string): CopilotTranscriptRecord[] 
   return records;
 }
 
+interface LegacyCopilotParseResult {
+  summary: CopilotParsedSessionSummary;
+  messages: SessionMessageDisplay[];
+  searchableText: string;
+}
+
+function isLegacyCopilotSession(filePath: string, fileInfo: CopilotSessionFileInfo): boolean {
+  return fileInfo.sourceKind === 'legacy'
+    || filePath.replace(/\\/g, '/').includes('/session-state/')
+    || path.basename(filePath).toLowerCase() === 'events.jsonl';
+}
+
+function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptRecord[], fileInfo: CopilotSessionFileInfo): LegacyCopilotParseResult {
+  const messages: SessionMessageDisplay[] = [];
+  const searchableParts: string[] = [];
+  const toolsUsed: Record<string, number> = {};
+  const seenToolCallIds = new Set<string>();
+  const seenMessageIds = new Set<string>();
+  const tokenUsage = zeroCopilotUsage();
+  const modelUsage: Record<string, CachedModelUsage> = {};
+  const models = new Set<string>();
+  const time = { first: fileInfo.createdAt || '', last: fileInfo.updatedAt || '' };
+
+  const nativeId = fileInfo.nativeId || path.basename(path.dirname(filePath));
+  let title = fileInfo.title || '';
+  let currentModel = '';
+  let userMessageCount = 0;
+  let assistantMessageCount = 0;
+
+  const recordTool = (tool: SessionToolCallDisplay) => {
+    if (seenToolCallIds.has(tool.id)) return;
+    seenToolCallIds.add(tool.id);
+    toolsUsed[tool.name] = (toolsUsed[tool.name] || 0) + 1;
+    searchableParts.push(tool.name, tool.summary, ...tool.details.map(detail => detail.value));
+  };
+
+  for (const record of records) {
+    const data = asRecord(record.data) || {};
+    const timestamp = updateTime(record, data, time);
+    currentModel = normalizeCopilotModelId(getOptionalString(data, 'model')) || currentModel;
+
+    if (record.type === 'session.model_change') {
+      currentModel = normalizeCopilotModelId(getOptionalString(data, 'newModel')) || currentModel;
+      if (currentModel) models.add(currentModel);
+      continue;
+    }
+
+    if (record.type === 'user.message') {
+      const content = getOptionalString(data, 'content') || '';
+      if (!content) continue;
+      userMessageCount++;
+      title ||= firstLine(content);
+      searchableParts.push(content);
+      messages.push({ role: 'user', content, timestamp });
+      continue;
+    }
+
+    if (record.type !== 'assistant.message') continue;
+
+    const outputTokens = getOptionalNumber(data, 'outputTokens') ?? getOptionalNumber(data, 'output_tokens') ?? 0;
+    if (outputTokens === 0 || !currentModel) continue;
+
+    const messageId = getOptionalString(data, 'messageId') || getOptionalString(data, 'id') || `${assistantMessageCount}`;
+    if (seenMessageIds.has(messageId)) continue;
+    seenMessageIds.add(messageId);
+
+    const content = getOptionalString(data, 'content') || '';
+    const toolCalls = getToolRequests(data);
+    const usage = {
+      inputTokens: 0,
+      outputTokens,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+    };
+    const tokenUsageForMessage = toTokenUsage(usage);
+    const estimatedCosts = calculateCostAllModes(currentModel, 0, outputTokens, 0, 0);
+
+    assistantMessageCount++;
+    models.add(currentModel);
+    addCopilotUsage(tokenUsage, usage);
+    addModelUsage(modelUsage, currentModel, usage);
+    searchableParts.push(content);
+    for (const tool of toolCalls) recordTool(tool);
+
+    messages.push({
+      role: 'assistant',
+      content,
+      timestamp,
+      messageId,
+      model: currentModel,
+      usage: tokenUsageForMessage,
+      estimatedCosts,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    });
+  }
+
+  const createdAt = time.first || fileInfo.createdAt || new Date(0).toISOString();
+  const updatedAt = time.last || fileInfo.updatedAt || createdAt;
+  const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(createdAt).getTime());
+  const modelList = Array.from(models);
+  const summary: CopilotParsedSessionSummary = {
+    nativeId,
+    routeNativeId: fileInfo.routeNativeId || `${fileInfo.workspaceHash}:${nativeId}`,
+    title,
+    workspaceHash: fileInfo.workspaceHash,
+    nativeProjectId: fileInfo.nativeProjectId,
+    projectName: fileInfo.projectName,
+    cwd: fileInfo.cwd,
+    version: fileInfo.version || '',
+    createdAt,
+    updatedAt,
+    duration: Number.isNaN(duration) ? 0 : duration,
+    userMessageCount,
+    assistantMessageCount,
+    messageCount: userMessageCount + assistantMessageCount,
+    toolCallCount: seenToolCallIds.size,
+    model: modelList.at(-1) || 'unknown',
+    models: modelList,
+    tokenUsage: toTokenUsage(tokenUsage),
+    reasoningOutputTokens: tokenUsage.reasoningOutputTokens,
+    modelUsage,
+    toolsUsed,
+    searchTextPreview: searchableParts.join('\n').toLowerCase().slice(0, SUMMARY_SEARCH_PREVIEW_LIMIT),
+  };
+
+  return {
+    summary,
+    messages,
+    searchableText: searchableParts.join('\n').toLowerCase(),
+  };
+}
+
 export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: CopilotSessionFileInfo): CopilotParsedSessionSummary {
+  if (isLegacyCopilotSession(filePath, fileInfo)) {
+    return parseLegacyCopilotRecords(filePath, readCopilotRecords(filePath), fileInfo).summary;
+  }
+
   const search = createBoundedSearchCollector();
   const chatSummary = getCopilotSidecarSummary(fileInfo);
   const toolsUsed: Record<string, number> = {};
@@ -424,6 +831,11 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
   let title = fileInfo.title || '';
   let userMessageCount = 0;
   let assistantMessageCount = 0;
+  let pendingUserContent = '';
+  const modelCounts = new Map<string, number>();
+  const fallbackUsage = zeroCopilotUsage();
+  const fallbackModelUsage: Record<string, CachedModelUsage> = {};
+  const shouldUseTranscriptTokenFallback = !hasCopilotUsage(chatSummary.usage);
 
   const recordTool = (tool: SessionToolCallDisplay) => {
     if (seenToolCallIds.has(tool.id)) return;
@@ -436,8 +848,21 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
 
   const transcriptPath = fileInfo.transcriptFilePath
     || (filePath.replace(/\\/g, '/').includes('/GitHub.copilot-chat/transcripts/') ? filePath : undefined);
+  const transcriptRecords = transcriptPath ? readCopilotRecords(transcriptPath) : [];
 
-  if (transcriptPath) forEachCopilotJsonlLineSync(transcriptPath, record => {
+  for (const record of transcriptRecords) {
+    const data = asRecord(record.data) || {};
+    addModelHint(modelCounts, getOptionalString(data, 'model'), 100);
+    if (record.type === 'assistant.message') {
+      addToolCallModelHints(modelCounts, getToolRequests(data));
+    } else if (record.type === 'tool.execution_start') {
+      const tool = buildToolStartCall(data);
+      if (tool) addToolCallModelHints(modelCounts, [tool]);
+    }
+  }
+  const inferredModelForFallback = chooseInferredTranscriptModel(modelCounts);
+
+  for (const record of transcriptRecords) {
     const data = asRecord(record.data) || {};
     const timestamp = updateTime(record, data, time);
 
@@ -445,7 +870,7 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
       nativeId = getOptionalString(data, 'sessionId') || nativeId;
       version = getOptionalString(data, 'copilotVersion') || version;
       time.first = getOptionalString(data, 'startTime') || time.first || timestamp;
-      return;
+      continue;
     }
 
     if (record.type === 'user.message') {
@@ -454,25 +879,40 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
         userMessageCount++;
         title ||= firstLine(content);
         search.add(content);
+        pendingUserContent = content;
       }
-      return;
+      continue;
     }
 
     if (record.type === 'assistant.message') {
       const content = getOptionalString(data, 'content') || '';
       const reasoningText = getOptionalString(data, 'reasoningText') || '';
+      const toolCalls = getToolRequests(data);
       assistantMessageCount++;
       search.add(content);
       search.add(reasoningText);
-      for (const tool of getToolRequests(data)) recordTool(tool);
-      return;
+      for (const tool of toolCalls) recordTool(tool);
+      if (shouldUseTranscriptTokenFallback) {
+        const model = normalizeCopilotModelId(getOptionalString(data, 'model'))
+          || inferredModelForFallback
+          || COPILOT_AUTO_MODEL;
+        const usage = estimateTranscriptUsage(content, reasoningText, pendingUserContent, getOptionalNumber(data, 'outputTokens'));
+        if (hasCopilotUsage(usage)) {
+          addCopilotUsage(fallbackUsage, usage);
+          addModelUsage(fallbackModelUsage, model, usage);
+        }
+      }
+      pendingUserContent = '';
+      continue;
     }
 
     if (record.type === 'tool.execution_start') {
       const tool = buildToolStartCall(data);
-      if (tool) recordTool(tool);
+      if (tool) {
+        recordTool(tool);
+      }
     }
-  });
+  }
 
   userMessageCount ||= chatSummary.userMessageCount;
   assistantMessageCount ||= chatSummary.assistantMessageCount;
@@ -483,8 +923,12 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
   const createdAt = time.first || fileInfo.createdAt || new Date(0).toISOString();
   const updatedAt = time.last || fileInfo.updatedAt || createdAt;
   const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(createdAt).getTime());
-  const tokenUsage = toTokenUsage(chatSummary.usage);
-  const modelUsage = buildCopilotModelUsage(chatSummary);
+  const inferredModel = inferredModelForFallback;
+  const primaryModel = chooseCopilotModel(chatSummary, inferredModel);
+  const tokenTotals = shouldUseTranscriptTokenFallback ? fallbackUsage : chatSummary.usage;
+  const tokenUsage = toTokenUsage(tokenTotals);
+  const modelUsage = shouldUseTranscriptTokenFallback ? fallbackModelUsage : buildCopilotModelUsage(chatSummary);
+  const models = chooseCopilotModels(chatSummary, primaryModel);
 
   return {
     nativeId,
@@ -502,10 +946,10 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
     assistantMessageCount,
     messageCount: userMessageCount + assistantMessageCount,
     toolCallCount: seenToolCallIds.size,
-    model: chatSummary.model,
-    models: chatSummary.models,
+    model: primaryModel,
+    models,
     tokenUsage,
-    reasoningOutputTokens: chatSummary.usage.reasoningOutputTokens,
+    reasoningOutputTokens: tokenTotals.reasoningOutputTokens,
     modelUsage,
     toolsUsed,
     searchTextPreview: search.value(),
@@ -513,6 +957,16 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
 }
 
 export function parseCopilotRecords(filePath: string, records: CopilotTranscriptRecord[], fileInfo: CopilotSessionFileInfo): CopilotParsedSession {
+  if (isLegacyCopilotSession(filePath, fileInfo)) {
+    const parsed = parseLegacyCopilotRecords(filePath, records, fileInfo);
+    const info = buildBaseSessionInfo(filePath, parsed.summary);
+    return {
+      info,
+      detail: { ...info, messages: parsed.messages },
+      searchableText: parsed.searchableText,
+    };
+  }
+
   const chatSummary = getCopilotSidecarSummary(fileInfo);
   const requestUsages = chatSummary.requests;
   const messages: SessionMessageDisplay[] = [];
@@ -528,6 +982,23 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
   let userMessageCount = 0;
   let assistantMessageCount = 0;
   const usageByAssistant = buildAssistantRequestUsageMap(records, requestUsages);
+  const modelCounts = new Map<string, number>();
+  for (const record of records) {
+    const data = asRecord(record.data) || {};
+    addModelHint(modelCounts, getOptionalString(data, 'model'), 100);
+    if (record.type === 'assistant.message') {
+      addToolCallModelHints(modelCounts, getToolRequests(data));
+    } else if (record.type === 'tool.execution_start') {
+      const tool = buildToolStartCall(data);
+      if (tool) addToolCallModelHints(modelCounts, [tool]);
+    }
+  }
+  const inferredModel = chooseInferredTranscriptModel(modelCounts);
+  const primaryModel = chooseCopilotModel(chatSummary, inferredModel);
+  const shouldUseTranscriptTokenFallback = requestUsages.length === 0 && !hasCopilotUsage(chatSummary.usage);
+  const parsedUsage = zeroCopilotUsage();
+  const parsedModelUsage: Record<string, CachedModelUsage> = {};
+  let pendingUserContent = '';
 
   if (records.length === 0 && chatSummary.messages.length > 0) {
     const createdAt = chatSummary.createdAt || fileInfo.createdAt || new Date(0).toISOString();
@@ -551,8 +1022,8 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
       assistantMessageCount: chatSummary.assistantMessageCount,
       messageCount: chatSummary.userMessageCount + chatSummary.assistantMessageCount,
       toolCallCount: 0,
-      model: chatSummary.model,
-      models: chatSummary.models,
+      model: primaryModel,
+      models: chooseCopilotModels(chatSummary, primaryModel),
       tokenUsage,
       reasoningOutputTokens: chatSummary.usage.reasoningOutputTokens,
       modelUsage,
@@ -591,6 +1062,7 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
       userMessageCount++;
       title ||= firstLine(content);
       searchableParts.push(content);
+      pendingUserContent = content;
       messages.push({ role: 'user', content, timestamp });
       continue;
     }
@@ -601,8 +1073,12 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
       const toolCalls = getToolRequests(data);
       const blocks: SessionMessageBlockDisplay[] = [];
       const requestUsage = usageByAssistant.get(assistantMessageCount);
-      const messageModel = requestUsage?.model || chatSummary.model;
-      const usage = requestUsage ? toTokenUsage(requestUsage.usage) : { ...EMPTY_USAGE };
+      const fallbackUsage = shouldUseTranscriptTokenFallback
+        ? estimateTranscriptUsage(content, reasoningText, pendingUserContent, getOptionalNumber(data, 'outputTokens'))
+        : null;
+      const usageTotals = requestUsage?.usage || fallbackUsage;
+      const messageModel = requestUsage?.model || normalizeCopilotModelId(getOptionalString(data, 'model')) || primaryModel;
+      const usage = usageTotals ? toTokenUsage(usageTotals) : { ...EMPTY_USAGE };
       const estimatedCosts = hasTokenUsage(usage) && messageModel !== 'unknown'
         ? calculateCostAllModes(
           messageModel,
@@ -625,6 +1101,11 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
       assistantMessageCount++;
       searchableParts.push(content, reasoningText);
       for (const tool of toolCalls) recordTool(tool);
+      if (usageTotals && hasCopilotUsage(usageTotals)) {
+        addCopilotUsage(parsedUsage, usageTotals);
+        addModelUsage(parsedModelUsage, messageModel, usageTotals, requestUsage?.contextWindow, requestUsage?.maxOutputTokens);
+      }
+      pendingUserContent = '';
 
       messages.push({
         role: 'assistant',
@@ -649,7 +1130,7 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
         role: 'tool-use',
         content: '',
         timestamp,
-        model: chatSummary.model,
+        model: primaryModel,
         toolCalls: [tool],
       });
       continue;
@@ -671,8 +1152,10 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
   const createdAt = time.first || fileInfo.createdAt || new Date(0).toISOString();
   const updatedAt = time.last || fileInfo.updatedAt || createdAt;
   const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(createdAt).getTime());
-  const tokenUsage = toTokenUsage(chatSummary.usage);
-  const modelUsage = buildCopilotModelUsage(chatSummary);
+  const tokenTotals = hasCopilotUsage(parsedUsage) ? parsedUsage : chatSummary.usage;
+  const tokenUsage = toTokenUsage(tokenTotals);
+  const modelUsage = hasCopilotUsage(parsedUsage) ? parsedModelUsage : buildCopilotModelUsage(chatSummary);
+  const models = chooseCopilotModels(chatSummary, primaryModel);
   const summary: CopilotParsedSessionSummary = {
     nativeId,
     routeNativeId: `${fileInfo.workspaceHash}:${nativeId}`,
@@ -689,10 +1172,10 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
     assistantMessageCount,
     messageCount: userMessageCount + assistantMessageCount,
     toolCallCount: seenToolCallIds.size,
-    model: chatSummary.model,
-    models: chatSummary.models,
+    model: primaryModel,
+    models,
     tokenUsage,
-    reasoningOutputTokens: chatSummary.usage.reasoningOutputTokens,
+    reasoningOutputTokens: tokenTotals.reasoningOutputTokens,
     modelUsage,
     toolsUsed,
     searchTextPreview: searchableParts.join('\n').toLowerCase().slice(0, SUMMARY_SEARCH_PREVIEW_LIMIT),

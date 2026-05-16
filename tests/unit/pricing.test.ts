@@ -59,6 +59,10 @@ describe('pricing helpers', () => {
     expect(getModelDisplayName('synthetic-fixture')).toBe('Synthetic');
     expect(getModelDisplayName('custom-model')).toBe('custom-model');
     expect(getModelDisplayName('gpt-5.5')).toBe('gpt-5.5');
+    expect(getModelDisplayName('cursor-auto')).toBe('Cursor (auto)');
+    expect(getModelDisplayName('composer-1')).toBe('Composer 1');
+    expect(getModelDisplayName('copilot-openai-auto')).toBe('Copilot (OpenAI auto)');
+    expect(getModelDisplayName('copilot-anthropic-auto')).toBe('Copilot (Anthropic auto)');
 
     expect(getModelColor('claude-opus-4-7')).toBe('#D4764E');
     expect(getModelColor('claude-sonnet-4-6')).toBe('#6B8AE6');
@@ -66,6 +70,17 @@ describe('pricing helpers', () => {
     expect(getModelColor('synthetic-fixture')).toBe('#7A7A7A');
     expect(getModelColor('custom-model')).toBe('#888888');
     expect(getModelColor('gpt-5.5')).toBe('#10A37F');
+    expect(getModelColor('cursor-auto')).toBe('#00B4D8');
+    expect(getModelColor('composer-1')).toBe('#00A884');
+    expect(getModelColor('copilot-openai-auto')).toBe('#10A37F');
+    expect(getModelColor('copilot-anthropic-auto')).toBe('#6B8AE6');
+  });
+
+  it('maps Cursor aliases to concrete pricing models', () => {
+    expect(getModelPricing('cursor-auto')).toEqual(getModelPricing('claude-sonnet-4-5'));
+    expect(getModelPricing('cursor-agent-auto')).toEqual(getModelPricing('claude-sonnet-4-5'));
+    expect(getModelPricing('composer-2')).toEqual(getModelPricing('claude-sonnet-4-6'));
+    expect(calculateCost('cursor-auto', 1_000_000, 1_000_000, 0, 0, 'api')).toBeGreaterThan(0);
   });
 
   it('assigns distinct colors to common OpenAI model families', () => {

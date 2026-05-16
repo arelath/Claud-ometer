@@ -39,6 +39,7 @@ vi.mock('@/lib/hooks', () => ({
     isLoading: detailState.isLoading,
     error: detailState.error,
   }),
+  useSessionSummary: () => ({ data: detailState.session || undefined }),
 }));
 
 vi.mock('@/lib/cost-mode-context', () => ({

@@ -17,6 +17,7 @@ describe('agent archives', () => {
   const codexDir = path.join(root, '.codex');
   const copilotDir = path.join(root, 'Code', 'User');
   const cursorDir = path.join(root, '.cursor');
+  const cursorUserDir = path.join(root, 'Cursor', 'User');
   const importDir = path.join(root, 'import');
 
   beforeEach(() => {
@@ -24,6 +25,7 @@ describe('agent archives', () => {
     process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
     process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
     process.env.CLAUD_OMETER_CURSOR_DIR = cursorDir;
+    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
     process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
     process.env.CLAUD_OMETER_AGENTS = 'codex';
   });
@@ -33,6 +35,7 @@ describe('agent archives', () => {
     delete process.env.CLAUD_OMETER_CODEX_DIR;
     delete process.env.CLAUD_OMETER_COPILOT_DIR;
     delete process.env.CLAUD_OMETER_CURSOR_DIR;
+    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
     delete process.env.CLAUD_OMETER_IMPORT_DIR;
     delete process.env.CLAUD_OMETER_AGENTS;
     vi.resetModules();
@@ -61,8 +64,12 @@ describe('agent archives', () => {
     expect(isExcludedCursorExportPath('projects/project/agent-tools/tool.txt')).toBe(true);
     expect(isExcludedCursorExportPath('projects/project/assets/image.png')).toBe(true);
     expect(isExcludedCursorExportPath('projects/project/mcps/server/metadata.json')).toBe(true);
-    expect(isExcludedCursorExportPath('projects/project/agent-transcripts/session/subagents/subagent.jsonl')).toBe(true);
+    expect(isExcludedCursorExportPath('projects/project/agent-transcripts/session/subagents/subagent.jsonl')).toBe(false);
     expect(isExcludedCursorExportPath('projects/project/agent-transcripts/session/session.jsonl')).toBe(false);
+    expect(isExcludedCursorExportPath('globalStorage/state.vscdb')).toBe(false);
+    expect(isExcludedCursorExportPath('workspaceStorage/hash/workspace.json')).toBe(false);
+    expect(isExcludedCursorExportPath('workspaceStorage/hash/state.vscdb')).toBe(false);
+    expect(isExcludedCursorExportPath('projects/project/state.vscdb')).toBe(true);
   });
 
   it('prevents archive path traversal on import', () => {
@@ -111,6 +118,10 @@ describe('agent archives', () => {
     fs.writeFileSync(path.join(workspaceDir, 'codebase-external.sqlite'), 'index');
     fs.mkdirSync(path.join(workspaceDir, 'debug-logs', 'session'), { recursive: true });
     fs.writeFileSync(path.join(workspaceDir, 'debug-logs', 'session', 'main.jsonl'), '{}\n');
+    const legacyDir = path.join(copilotDir, 'session-state', 'legacy-session-1');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, 'workspace.yaml'), 'cwd: D:/repo/legacy-app\n');
+    fs.writeFileSync(path.join(legacyDir, 'events.jsonl'), '{}\n');
     process.env.CLAUD_OMETER_AGENTS = 'copilot';
 
     vi.resetModules();
@@ -126,6 +137,8 @@ describe('agent archives', () => {
     expect(names).toContain('agent-data/copilot/workspaceStorage/48bc27b295ea103e3d172520b17fc2e5/chatSessions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl');
     expect(names).toContain('agent-data/copilot/workspaceStorage/48bc27b295ea103e3d172520b17fc2e5/chatSessions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jsonl');
     expect(names).toContain('agent-data/copilot/workspaceStorage/48bc27b295ea103e3d172520b17fc2e5/chatSessions/cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl');
+    expect(names).toContain('agent-data/copilot/session-state/legacy-session-1/events.jsonl');
+    expect(names).toContain('agent-data/copilot/session-state/legacy-session-1/workspace.yaml');
     expect(names).not.toContain('agent-data/copilot/workspaceStorage/48bc27b295ea103e3d172520b17fc2e5/GitHub.copilot-chat/codebase-external.sqlite');
     expect(names).not.toContain('agent-data/copilot/workspaceStorage/48bc27b295ea103e3d172520b17fc2e5/GitHub.copilot-chat/debug-logs/session/main.jsonl');
 
@@ -133,12 +146,17 @@ describe('agent archives', () => {
     expect(meta).toMatchObject({
       exportVersion: 2,
       agents: ['copilot'],
-      agentCounts: { copilot: { projectCount: 1, sessionCount: 3 } },
+      agentCounts: { copilot: { projectCount: 2, sessionCount: 4 } },
     });
   });
 
-  it('exports Cursor parent transcripts while excluding sidecars and subagents', async () => {
+  it('exports Cursor transcripts and chat databases while excluding sidecars', async () => {
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'cursor'), cursorDir, { recursive: true });
+    fs.mkdirSync(path.join(cursorUserDir, 'globalStorage'), { recursive: true });
+    fs.writeFileSync(path.join(cursorUserDir, 'globalStorage', 'state.vscdb'), 'db');
+    fs.mkdirSync(path.join(cursorUserDir, 'workspaceStorage', 'workspace-hash'), { recursive: true });
+    fs.writeFileSync(path.join(cursorUserDir, 'workspaceStorage', 'workspace-hash', 'workspace.json'), '{}');
+    fs.writeFileSync(path.join(cursorUserDir, 'workspaceStorage', 'workspace-hash', 'state.vscdb'), 'workspace-db');
     process.env.CLAUD_OMETER_AGENTS = 'cursor';
 
     vi.resetModules();
@@ -149,14 +167,17 @@ describe('agent archives', () => {
 
     expect(response.status).toBe(200);
     expect(names).toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl');
-    expect(names).not.toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/subagents/dddddddd-dddd-4ddd-8ddd-dddddddddddd.jsonl');
+    expect(names).toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/subagents/dddddddd-dddd-4ddd-8ddd-dddddddddddd.jsonl');
+    expect(names).toContain('agent-data/cursor/globalStorage/state.vscdb');
+    expect(names).toContain('agent-data/cursor/workspaceStorage/workspace-hash/workspace.json');
+    expect(names).toContain('agent-data/cursor/workspaceStorage/workspace-hash/state.vscdb');
     expect(names).not.toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-tools/tool-sidecar.txt');
 
     const meta = JSON.parse(await zip.file('agent-data/export-meta.json')!.async('string'));
     expect(meta).toMatchObject({
       exportVersion: 2,
       agents: ['cursor'],
-      agentCounts: { cursor: { projectCount: 1, sessionCount: 1 } },
+      agentCounts: { cursor: { projectCount: 1, sessionCount: 2 } },
     });
   });
 
@@ -193,7 +214,20 @@ describe('agent archives', () => {
     expect(countCopilotData(copilotDir)).toEqual({ projectCount: 2, sessionCount: 3 });
   });
 
-  it('counts Cursor projects with parent transcripts', () => {
+  it('counts Copilot legacy session-state events', () => {
+    const firstSession = path.join(copilotDir, 'session-state', 'legacy-one');
+    const secondSession = path.join(copilotDir, 'session-state', 'legacy-two');
+    fs.mkdirSync(firstSession, { recursive: true });
+    fs.mkdirSync(secondSession, { recursive: true });
+    fs.writeFileSync(path.join(firstSession, 'workspace.yaml'), 'cwd: D:/repo/one\n');
+    fs.writeFileSync(path.join(firstSession, 'events.jsonl'), '{}\n');
+    fs.writeFileSync(path.join(secondSession, 'workspace.yaml'), 'cwd: D:/repo/two\n');
+    fs.writeFileSync(path.join(secondSession, 'events.jsonl'), '{}\n');
+
+    expect(countCopilotData(copilotDir)).toEqual({ projectCount: 2, sessionCount: 2 });
+  });
+
+  it('counts Cursor projects with transcripts and subagents', () => {
     const firstSession = path.join(cursorDir, 'projects', 'project-one', 'agent-transcripts', 'one');
     const secondSession = path.join(cursorDir, 'projects', 'project-two', 'agent-transcripts', 'two');
     fs.mkdirSync(firstSession, { recursive: true });
@@ -203,7 +237,7 @@ describe('agent archives', () => {
     fs.writeFileSync(path.join(firstSession, 'subagents', 'ignored.jsonl'), '{}\n');
     fs.writeFileSync(path.join(secondSession, 'two.jsonl'), '{}\n');
 
-    expect(countCursorData(cursorDir)).toEqual({ projectCount: 2, sessionCount: 2 });
+    expect(countCursorData(cursorDir)).toEqual({ projectCount: 2, sessionCount: 3 });
   });
 
   it('imports legacy claude-data archives as Claude-only imported data', async () => {

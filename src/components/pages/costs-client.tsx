@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useCacheStatus, useStats, useProjects } from '@/lib/hooks';
+import { useCacheStatus, useCostAnalytics } from '@/lib/hooks';
 import type { DashboardStats, ProjectInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { CostModeSelector } from '@/components/cost-mode-selector';
@@ -26,18 +26,19 @@ import {
 
 export function CostsClient({ initialStats, initialProjects }: { initialStats?: DashboardStats; initialProjects?: ProjectInfo[] }) {
   const timeRange = useAnalyticsTimeRange();
-  const { data: stats, isLoading: statsLoading, mutate: mutateStats } = useStats(initialStats, timeRange.apiParams);
-  const { data: projects, isLoading: projectsLoading, mutate: mutateProjects } = useProjects(initialProjects, timeRange.apiParams);
+  const initialAnalytics = initialStats && initialProjects ? { stats: initialStats, projects: initialProjects } : undefined;
+  const { data: analytics, isLoading, mutate } = useCostAnalytics(initialAnalytics, timeRange.apiParams);
   const { data: cacheStatus } = useCacheStatus();
   const { costMode, pickCost, label: modeLabel } = useCostMode();
+  const stats = analytics?.stats;
+  const projects = analytics?.projects;
 
   useEffect(() => {
     if (!cacheStatus?.refreshCompletedAt) return;
-    void mutateStats();
-    void mutateProjects();
-  }, [cacheStatus?.refreshCompletedAt, mutateProjects, mutateStats]);
+    void mutate();
+  }, [cacheStatus?.refreshCompletedAt, mutate]);
 
-  if (statsLoading || projectsLoading || !stats || !projects) {
+  if (isLoading || !stats || !projects) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
         <div className="space-y-3 text-center">

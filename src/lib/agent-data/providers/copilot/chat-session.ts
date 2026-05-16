@@ -666,6 +666,10 @@ export function getCopilotChatSessionSummary(filePath: string | undefined): Copi
   return value;
 }
 
-export function resetCopilotChatSessionCacheForTests(): void {
+export function resetCopilotChatSessionCache(): void {
   chatSessionCache.clear();
+}
+
+export function resetCopilotChatSessionCacheForTests(): void {
+  resetCopilotChatSessionCache();
 }

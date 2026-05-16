@@ -120,6 +120,7 @@ export const claudeProvider: AgentDataProvider = {
   },
   discoverSessionSources: 'discoverSessionSummarySources' in reader ? reader.discoverSessionSummarySources : undefined,
   buildSessionSummary: 'buildSessionSummary' in reader ? reader.buildSessionSummary : undefined,
+  resetCache: 'resetClaudeReaderCache' in reader ? reader.resetClaudeReaderCache : undefined,
   getLiveSessions() {
     return getLiveSessions().map(withLiveSessionIdentity);
   },

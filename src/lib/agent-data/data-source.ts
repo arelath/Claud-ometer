@@ -159,10 +159,43 @@ export function getLiveCursorDir(): string {
   return process.env.CLAUD_OMETER_CURSOR_DIR?.trim() || path.join(os.homedir(), '.cursor');
 }
 
+export function getLiveCursorUserDir(): string {
+  const explicitRoot = process.env.CLAUD_OMETER_CURSOR_USER_DIR?.trim();
+  if (explicitRoot) return explicitRoot;
+
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  if (process.platform === 'win32') {
+    return path.join(appData, 'Cursor', 'User');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Cursor', 'User');
+  }
+  return path.join(os.homedir(), '.config', 'Cursor', 'User');
+}
+
 function getCopilotWorkspaceStorageDir(copilotDir: string): string {
   return path.basename(copilotDir).toLowerCase() === 'workspacestorage'
     ? copilotDir
     : path.join(copilotDir, 'workspaceStorage');
+}
+
+function getCopilotLegacySessionStateDir(copilotDir: string, mode: DataSourceMode = getActiveDataSource()): string {
+  if (path.basename(copilotDir).toLowerCase() === 'session-state') return copilotDir;
+  const nested = path.join(copilotDir, 'session-state');
+  if (mode === 'imported') return nested;
+
+  const explicit = process.env.CLAUD_OMETER_COPILOT_LEGACY_DIR?.trim();
+  if (explicit) {
+    return path.basename(explicit).toLowerCase() === 'session-state'
+      ? explicit
+      : path.join(explicit, 'session-state');
+  }
+
+  if (process.env.CLAUD_OMETER_COPILOT_DIR?.trim() || process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim()) {
+    return nested;
+  }
+  if (fs.existsSync(nested)) return nested;
+  return path.join(os.homedir(), '.copilot', 'session-state');
 }
 
 function isCopilotChatSessionFile(filePath: string): boolean {
@@ -180,7 +213,16 @@ function isCopilotChatSessionFile(filePath: string): boolean {
   }
 }
 
-function hasCopilotData(copilotDir: string): boolean {
+function hasCopilotData(copilotDir: string, mode: DataSourceMode = getActiveDataSource()): boolean {
+  const legacySessionStateDir = getCopilotLegacySessionStateDir(copilotDir, mode);
+  if (fs.existsSync(legacySessionStateDir)) {
+    for (const session of fs.readdirSync(legacySessionStateDir, { withFileTypes: true })) {
+      if (!session.isDirectory()) continue;
+      const eventsPath = path.join(legacySessionStateDir, session.name, 'events.jsonl');
+      if (fs.existsSync(eventsPath)) return true;
+    }
+  }
+
   const workspaceStorageDir = getCopilotWorkspaceStorageDir(copilotDir);
   if (!fs.existsSync(workspaceStorageDir)) return false;
 
@@ -209,7 +251,14 @@ function getCursorProjectsDir(cursorDir: string): string {
     : path.join(cursorDir, 'projects');
 }
 
-function hasCursorData(cursorDir: string): boolean {
+function getCursorStateDbPath(cursorUserDir: string): string {
+  if (path.basename(cursorUserDir).toLowerCase() === 'globalstorage') {
+    return path.join(cursorUserDir, 'state.vscdb');
+  }
+  return path.join(cursorUserDir, 'globalStorage', 'state.vscdb');
+}
+
+function hasCursorTranscriptData(cursorDir: string): boolean {
   const projectsDir = getCursorProjectsDir(cursorDir);
   if (!fs.existsSync(projectsDir)) return false;
 
@@ -219,15 +268,37 @@ function hasCursorData(cursorDir: string): boolean {
     if (!fs.existsSync(transcriptsDir)) continue;
 
     for (const session of fs.readdirSync(transcriptsDir, { withFileTypes: true })) {
-      if (!session.isDirectory()) continue;
-      const sessionDir = path.join(transcriptsDir, session.name);
-      if (fs.readdirSync(sessionDir, { withFileTypes: true }).some(entry => entry.isFile() && entry.name.endsWith('.jsonl'))) {
+      const sessionPath = path.join(transcriptsDir, session.name);
+      if (session.isFile() && (session.name.endsWith('.jsonl') || session.name.endsWith('.txt'))) {
         return true;
+      }
+      if (!session.isDirectory()) continue;
+      const stack = [sessionPath];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const entryPath = path.join(current, entry.name);
+          if (entry.isDirectory()) stack.push(entryPath);
+          else if (entry.isFile() && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.txt'))) {
+            return true;
+          }
+        }
       }
     }
   }
 
   return false;
+}
+
+function hasCursorData(cursorDir: string, mode: DataSourceMode = getActiveDataSource()): boolean {
+  if (hasCursorTranscriptData(cursorDir)) return true;
+
+  const importedUserDir = mode === 'imported' ? cursorDir : '';
+  const colocatedUserDir = fs.existsSync(getCursorStateDbPath(cursorDir)) ? cursorDir : '';
+  const liveUserDir = mode === 'live' ? getLiveCursorUserDir() : '';
+  return [importedUserDir, colocatedUserDir, liveUserDir]
+    .filter(Boolean)
+    .some(userDir => fs.existsSync(getCursorStateDbPath(userDir)));
 }
 
 export function getAgentDataDir(agentKind: AgentKind, mode: DataSourceMode = getActiveDataSource()): string {
@@ -249,8 +320,8 @@ export function getAgentDataDir(agentKind: AgentKind, mode: DataSourceMode = get
 export function getDetectedAgents(mode: DataSourceMode = getActiveDataSource()): AgentKind[] {
   return AGENT_KINDS.filter(agent => {
     const agentDir = getAgentDataDir(agent, mode);
-    if (agent === 'copilot') return hasCopilotData(agentDir);
-    if (agent === 'cursor') return hasCursorData(agentDir);
+    if (agent === 'copilot') return hasCopilotData(agentDir, mode);
+    if (agent === 'cursor') return hasCursorData(agentDir, mode);
     return fs.existsSync(agentDir);
   });
 }

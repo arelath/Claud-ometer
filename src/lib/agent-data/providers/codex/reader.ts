@@ -315,7 +315,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return buildCodexDashboardStats(await getParsedSessions());
 }
 
-export function resetCodexReaderCacheForTests(): void {
+export function resetCodexReaderCache(): void {
   parsedCache.clear();
   infoCache.clear();
+}
+
+export function resetCodexReaderCacheForTests(): void {
+  resetCodexReaderCache();
 }

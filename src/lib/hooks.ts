@@ -1,6 +1,7 @@
 import useSWR from 'swr';
 import type { AgentKind } from '@/lib/agent-data/types';
 import type { SessionIndexState } from '@/lib/agent-data/indexer';
+import type { CostAnalyticsPayload } from '@/lib/agent-data/analytics';
 import type { DashboardStats, LiveSessionInfo, ProjectInfo, SessionInfo, SessionDetail } from '@/lib/claude-data/types';
 import { buildTimeRangeQuery, type TimeRangeParams } from '@/lib/time-range';
 
@@ -61,6 +62,11 @@ export function useProjects(fallbackData?: ProjectInfo[], timeRange?: TimeRangeP
   return useSWR<ProjectInfo[]>(`/api/projects${query}`, fetcher, { fallbackData: query ? undefined : fallbackData });
 }
 
+export function useCostAnalytics(fallbackData?: CostAnalyticsPayload, timeRange?: TimeRangeParams) {
+  const query = buildTimeRangeQuery(timeRange);
+  return useSWR<CostAnalyticsPayload>(`/api/costs${query}`, fetcher, { fallbackData: query ? undefined : fallbackData });
+}
+
 export function useSessions(limit = 50, offset = 0, query = '', fallbackData?: SessionInfo[]) {
   const url = query
     ? `/api/sessions?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}&includeTotal=1`
@@ -81,6 +87,12 @@ export function useSessionDetail(sessionId: string) {
   });
 }
 
+export function useSessionSummary(sessionId: string) {
+  return useSWR<SessionInfo>(`/api/sessions/${sessionId}/summary`, fetcher, {
+    revalidateOnFocus: false,
+  });
+}
+
 export function useDataSourceInfo() {
   return useSWR<DataSourceInfo>('/api/data-source', fetcher, { refreshInterval: 5000 });
 }
@@ -94,7 +106,7 @@ export function useLiveSessionBinding(sessionId: string) {
 }
 
 export function useCacheStatus() {
-  return useSWR<CacheStatus>('/api/cache', fetcher, {
+  return useSWR<CacheStatus>('/api/cache?quick=1', fetcher, {
     refreshInterval: (latestData) => {
       if (!latestData) return 2000;
       return latestData.status === 'refreshing' || latestData.status === 'stale' || latestData.status === 'empty'

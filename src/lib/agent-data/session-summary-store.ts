@@ -156,10 +156,14 @@ export async function rebuildCachedSessionSummaries(providers: AgentDataProvider
 
 export function clearSessionSummaryCache(): void {
   clearPersistentSessionSummaryCache();
-  resetSessionSummaryStoreForTests();
+  resetSessionSummaryStore();
+}
+
+export function resetSessionSummaryStore(): void {
+  memo.clear();
+  inflight.clear();
 }
 
 export function resetSessionSummaryStoreForTests(): void {
-  memo.clear();
-  inflight.clear();
+  resetSessionSummaryStore();
 }

@@ -1,3 +1,4 @@
+import fs from 'fs';
 import type { AgentDataProvider } from './provider';
 import {
   getCachedSessionSummaries,
@@ -6,6 +7,7 @@ import {
 } from './session-summary-store';
 import {
   readSessionSummaryCache,
+  getSessionSummaryCachePath,
   sourceSummaryCacheKey,
   summaryCacheKey,
   type SessionSummaryCacheStatus,
@@ -20,6 +22,11 @@ export interface SessionIndexStatus extends SessionSummaryCacheStatus {
   refreshStartedAt?: string;
   refreshCompletedAt?: string;
   refreshError?: string;
+}
+
+export interface IndexedSessionSnapshot {
+  summaries: CachedSessionSummary[];
+  signature: string;
 }
 
 interface RuntimeState {
@@ -55,11 +62,33 @@ function getRuntimeState(providers: AgentDataProvider[]): RuntimeState {
   return state;
 }
 
-function readIndexedSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
+function readIndexedSnapshot(providers: AgentDataProvider[]): IndexedSessionSnapshot {
+  const refreshProviders = supportedProviders(providers);
+  const cache = readSessionSummaryCache();
   const providerKinds = new Set(supportedProviders(providers).map(provider => provider.kind));
-  return readSessionSummaryCache().summaries
+  const summaries = cache.summaries
     .filter(summary => providerKinds.has(summary.provider))
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const signature = [
+    cache.cacheVersion,
+    cache.generatedAt,
+    runtimeKey(refreshProviders),
+    summaries.length,
+    summaries
+      .map(summary => [
+        summary.provider,
+        summary.parserVersion,
+        summary.sourceFilePath,
+        summary.sourceSignature.mtimeMs,
+        summary.sourceSignature.size,
+      ].join('\0'))
+      .join('\n'),
+  ].join(':');
+  return { summaries, signature };
+}
+
+function readIndexedSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
+  return readIndexedSnapshot(providers).summaries;
 }
 
 function summarizeStatus(cacheStatus: SessionSummaryCacheStatus, state: RuntimeState): Pick<SessionIndexStatus, 'status' | 'unindexedCount'> {
@@ -74,9 +103,11 @@ function summarizeStatus(cacheStatus: SessionSummaryCacheStatus, state: RuntimeS
 }
 
 export function getIndexedSessionSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
-  const summaries = readIndexedSummaries(providers);
-  ensureSessionIndexRefresh(providers);
-  return summaries;
+  return readIndexedSummaries(providers);
+}
+
+export function getIndexedSessionSnapshot(providers: AgentDataProvider[]): IndexedSessionSnapshot {
+  return readIndexedSnapshot(providers);
 }
 
 async function getLightweightFallbackSummaries(
@@ -175,6 +206,43 @@ export async function getSessionIndexStatus(providers: AgentDataProvider[]): Pro
   };
 }
 
-export function resetSessionIndexerForTests(): void {
+export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): SessionIndexStatus {
+  const refreshProviders = supportedProviders(providers);
+  const providerKinds = refreshProviders.map(provider => provider.kind);
+  const state = getRuntimeState(refreshProviders);
+  const cache = readSessionSummaryCache();
+  const cachePath = getSessionSummaryCachePath();
+  const summaryCount = cache.summaries.filter(summary => providerKinds.includes(summary.provider)).length;
+  const status: SessionIndexState = state.refreshPromise
+    ? 'refreshing'
+    : state.refreshError
+      ? 'error'
+      : summaryCount === 0
+        ? 'empty'
+        : 'fresh';
+
+  return {
+    cachePath,
+    exists: fs.existsSync(cachePath),
+    generatedAt: cache.generatedAt,
+    summaryCount,
+    activeProviders: providerKinds,
+    sourceCount: summaryCount,
+    validCount: summaryCount,
+    staleCount: 0,
+    missingCount: 0,
+    status,
+    unindexedCount: 0,
+    refreshStartedAt: state.refreshStartedAt,
+    refreshCompletedAt: state.refreshCompletedAt,
+    refreshError: state.refreshError,
+  };
+}
+
+export function resetSessionIndexer(): void {
   runtimeByKey.clear();
+}
+
+export function resetSessionIndexerForTests(): void {
+  resetSessionIndexer();
 }

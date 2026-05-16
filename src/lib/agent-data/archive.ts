@@ -1,6 +1,9 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import type { AgentKind } from './types';
+import { getLiveCursorUserDir } from './data-source';
+import { discoverCursorChatSessions } from './providers/cursor/state-db';
 
 export const AGENT_ARCHIVE_ROOT = 'agent-data';
 export const LEGACY_CLAUDE_ARCHIVE_ROOT = 'claude-data';
@@ -44,7 +47,6 @@ const COPILOT_EXCLUDED_DIRS = new Set([
 
 const CURSOR_EXCLUDED_NAMES = new Set([
   'ai-code-tracking.db',
-  'state.vscdb',
   'state.vscdb.options.json',
   'storage.json',
   'settings.json',
@@ -57,7 +59,6 @@ const CURSOR_EXCLUDED_DIRS = new Set([
   'extensions',
   'History',
   'mcps',
-  'subagents',
 ]);
 
 export function toZipPath(...parts: string[]): string {
@@ -84,6 +85,10 @@ export function isExcludedCopilotExportPath(relativePath: string): boolean {
 export function isExcludedCursorExportPath(relativePath: string): boolean {
   const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
   const fileName = parts.at(-1) || '';
+  const normalized = parts.join('/');
+  if (normalized === 'globalStorage/state.vscdb') return false;
+  if (/^workspaceStorage\/[^/]+\/(?:state\.vscdb|workspace\.json)$/.test(normalized)) return false;
+  if (fileName === 'state.vscdb') return true;
   if (CURSOR_EXCLUDED_NAMES.has(fileName)) return true;
   if (fileName.endsWith('.sqlite') || fileName.endsWith('.sqlite3') || fileName.endsWith('.db')) return true;
   return parts.some(part => CURSOR_EXCLUDED_DIRS.has(part));
@@ -188,6 +193,25 @@ function getCopilotWorkspaceStorageDir(copilotDir: string): string {
     : path.join(copilotDir, 'workspaceStorage');
 }
 
+function getCopilotLegacySessionStateDir(copilotDir: string): string {
+  if (path.basename(copilotDir).toLowerCase() === 'session-state') return copilotDir;
+  const nested = path.join(copilotDir, 'session-state');
+  if (fs.existsSync(nested) || copilotDir.replace(/\\/g, '/').includes('/agent-data/copilot')) return nested;
+
+  const explicit = process.env.CLAUD_OMETER_COPILOT_LEGACY_DIR?.trim();
+  if (explicit) {
+    return path.basename(explicit).toLowerCase() === 'session-state'
+      ? explicit
+      : path.join(explicit, 'session-state');
+  }
+
+  if (process.env.CLAUD_OMETER_COPILOT_DIR?.trim() || process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim()) {
+    return nested;
+  }
+  if (fs.existsSync(nested)) return nested;
+  return path.join(os.homedir(), '.copilot', 'session-state');
+}
+
 function isCopilotChatSessionPrefix(filePath: string): boolean {
   try {
     const fd = fs.openSync(filePath, 'r');
@@ -205,10 +229,33 @@ function isCopilotChatSessionPrefix(filePath: string): boolean {
 
 export function countCopilotData(copilotDir: string): { projectCount: number; sessionCount: number } {
   const workspaceStorageDir = getCopilotWorkspaceStorageDir(copilotDir);
-  if (!fs.existsSync(workspaceStorageDir)) return { projectCount: 0, sessionCount: 0 };
-
   let projectCount = 0;
   let sessionCount = 0;
+  const legacySessionStateDir = getCopilotLegacySessionStateDir(copilotDir);
+
+  if (fs.existsSync(legacySessionStateDir)) {
+    const legacyProjectIds = new Set<string>();
+    for (const session of fs.readdirSync(legacySessionStateDir, { withFileTypes: true })) {
+      if (!session.isDirectory()) continue;
+      const eventsPath = path.join(legacySessionStateDir, session.name, 'events.jsonl');
+      if (!fs.existsSync(eventsPath)) continue;
+      sessionCount++;
+      const workspaceYamlPath = path.join(legacySessionStateDir, session.name, 'workspace.yaml');
+      let projectId = session.name;
+      if (fs.existsSync(workspaceYamlPath)) {
+        try {
+          const match = fs.readFileSync(workspaceYamlPath, 'utf-8').match(/^cwd:\s*(.+)$/m);
+          projectId = match?.[1]?.replace(/\s*#.*$/, '').replace(/^['"]|['"]$/g, '').trim() || projectId;
+        } catch {
+          projectId = session.name;
+        }
+      }
+      legacyProjectIds.add(projectId);
+    }
+    projectCount += legacyProjectIds.size;
+  }
+
+  if (!fs.existsSync(workspaceStorageDir)) return { projectCount, sessionCount };
 
   for (const workspace of fs.readdirSync(workspaceStorageDir, { withFileTypes: true })) {
     if (!workspace.isDirectory()) continue;
@@ -251,29 +298,46 @@ function getCursorProjectsDir(cursorDir: string): string {
 
 export function countCursorData(cursorDir: string): { projectCount: number; sessionCount: number } {
   const projectsDir = getCursorProjectsDir(cursorDir);
-  if (!fs.existsSync(projectsDir)) return { projectCount: 0, sessionCount: 0 };
-
-  let projectCount = 0;
+  const projectIds = new Set<string>();
   let sessionCount = 0;
 
-  for (const project of fs.readdirSync(projectsDir, { withFileTypes: true })) {
-    if (!project.isDirectory()) continue;
-    const transcriptsDir = path.join(projectsDir, project.name, 'agent-transcripts');
-    if (!fs.existsSync(transcriptsDir)) continue;
+  if (fs.existsSync(projectsDir)) {
+    for (const project of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+      if (!project.isDirectory()) continue;
+      const transcriptsDir = path.join(projectsDir, project.name, 'agent-transcripts');
+      if (!fs.existsSync(transcriptsDir)) continue;
 
-    let projectSessions = 0;
-    for (const session of fs.readdirSync(transcriptsDir, { withFileTypes: true })) {
-      if (!session.isDirectory()) continue;
-      const sessionDir = path.join(transcriptsDir, session.name);
-      if (fs.readdirSync(sessionDir, { withFileTypes: true }).some(entry => entry.isFile() && entry.name.endsWith('.jsonl'))) {
-        projectSessions++;
+      let projectSessions = 0;
+      const stack = [transcriptsDir];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const entryPath = path.join(current, entry.name);
+          if (entry.isDirectory()) stack.push(entryPath);
+          else if (entry.isFile() && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.txt'))) {
+            projectSessions++;
+          }
+        }
       }
-    }
 
-    if (projectSessions === 0) continue;
-    projectCount++;
-    sessionCount += projectSessions;
+      if (projectSessions === 0) continue;
+      projectIds.add(project.name);
+      sessionCount += projectSessions;
+    }
   }
 
-  return { projectCount, sessionCount };
+  const normalizedCursorDir = path.resolve(cursorDir);
+  const importDir = path.resolve(process.env.CLAUD_OMETER_IMPORT_DIR?.trim() || path.join(process.cwd(), '.dashboard-data'));
+  const isImportedCursorDir = normalizedCursorDir === importDir || normalizedCursorDir.startsWith(`${importDir}${path.sep}`);
+  const colocatedDbPath = path.join(cursorDir, 'globalStorage', 'state.vscdb');
+  const liveDbPath = path.join(getLiveCursorUserDir(), 'globalStorage', 'state.vscdb');
+  const dbPath = fs.existsSync(colocatedDbPath) ? colocatedDbPath : isImportedCursorDir ? '' : liveDbPath;
+  if (dbPath) {
+    for (const session of discoverCursorChatSessions(dbPath)) {
+      projectIds.add(session.nativeProjectId);
+      sessionCount++;
+    }
+  }
+
+  return { projectCount: projectIds.size, sessionCount };
 }

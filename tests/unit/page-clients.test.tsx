@@ -37,6 +37,13 @@ vi.mock('@/lib/hooks', () => ({
     data: hookState.projects ?? fallbackData,
     isLoading: hookState.projectsLoading,
   }),
+  useCostAnalytics: (fallbackData?: { stats: DashboardStats; projects: ProjectInfo[] }) => ({
+    data: fallbackData ?? (hookState.stats && hookState.projects
+      ? { stats: hookState.stats, projects: hookState.projects }
+      : undefined),
+    isLoading: hookState.statsLoading || hookState.projectsLoading,
+    mutate: vi.fn(),
+  }),
   useSessions: (limit = 50, offset = 0, _query?: string, fallbackData?: SessionInfo[]) => ({
     data: hookState.sessions
       ? { sessions: hookState.sessions.slice(offset, offset + limit), total: hookState.sessions.length, limit, offset }

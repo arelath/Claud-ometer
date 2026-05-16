@@ -91,7 +91,7 @@ describe('session indexer', () => {
     delete process.env.CLAUD_OMETER_CACHE_DIR;
   });
 
-  it('returns stale cache immediately while refreshing in the background', async () => {
+  it('returns stale cache immediately and refreshes only when requested', async () => {
     writeSessionSummaryCache({
       cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
       generatedAt: '2026-05-08T10:00:00.000Z',
@@ -108,6 +108,10 @@ describe('session indexer', () => {
 
     expect(fastSummaries).toHaveLength(1);
     expect(fastSummaries[0].parserVersion).toBe('parser-v1');
+    expect(buildSessionSummary).not.toHaveBeenCalled();
+
+    ensureSessionIndexRefresh([provider]);
+
     await vi.waitFor(() => expect(buildSessionSummary).toHaveBeenCalledTimes(1));
     await expect(getSessionIndexStatus([provider])).resolves.toMatchObject({ status: 'refreshing', staleCount: 1 });
 

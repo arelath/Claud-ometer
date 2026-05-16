@@ -162,6 +162,89 @@ describe('Codex session detail parser', () => {
     expect(parsed.info.totalCacheReadTokens).toBe(700);
   });
 
+  it('attaches cumulative token deltas when last-token usage is absent', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-05-08T10:00:00.000Z', type: 'session_meta', payload: { id: 'cumulative', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo' } },
+      {
+        timestamp: '2026-05-08T10:00:02.000Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'first' }] },
+      },
+      {
+        timestamp: '2026-05-08T10:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          kind: 'token_count',
+          info: { total_token_usage: { input_tokens: 20, cached_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 1 } },
+        },
+      },
+      {
+        timestamp: '2026-05-08T10:00:04.000Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'second' }] },
+      },
+      {
+        timestamp: '2026-05-08T10:00:05.000Z',
+        type: 'event_msg',
+        payload: {
+          kind: 'token_count',
+          info: { total_token_usage: { input_tokens: 32, cached_input_tokens: 9, output_tokens: 11, reasoning_output_tokens: 3 } },
+        },
+      },
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/cumulative.jsonl', records);
+    const assistants = parsed.detail.messages.filter(message => message.role === 'assistant');
+
+    expect(assistants[0].usage).toMatchObject({ input_tokens: 15, cache_read_input_tokens: 5, output_tokens: 7 });
+    expect(assistants[1].usage).toMatchObject({ input_tokens: 8, cache_read_input_tokens: 4, output_tokens: 4 });
+    expect(parsed.info.totalInputTokens).toBe(23);
+    expect(parsed.info.totalCacheReadTokens).toBe(9);
+    expect(parsed.info.totalOutputTokens).toBe(11);
+  });
+
+  it('estimates Codex tokens from text when no token records exist', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-05-08T10:00:00.000Z', type: 'session_meta', payload: { id: 'estimated', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '12345678' }] } },
+      { timestamp: '2026-05-08T10:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '123456789' }] } },
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/estimated.jsonl', records);
+
+    expect(parsed.info.totalInputTokens).toBe(2);
+    expect(parsed.info.totalOutputTokens).toBe(3);
+    expect(parsed.info.totalCacheReadTokens).toBe(0);
+    expect(parsed.info.estimatedCosts.api).toBeGreaterThan(0);
+  });
+
+  it('keeps explicit zero cumulative token records at zero', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-05-08T10:00:00.000Z', type: 'session_meta', payload: { id: 'zero', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo' } },
+      { timestamp: '2026-05-08T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'text that would otherwise estimate' }] } },
+      {
+        timestamp: '2026-05-08T10:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          kind: 'token_count',
+          info: { total_token_usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } },
+        },
+      },
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/zero.jsonl', records);
+
+    expect(parsed.info.totalInputTokens).toBe(0);
+    expect(parsed.info.totalOutputTokens).toBe(0);
+    expect(parsed.info.totalCacheReadTokens).toBe(0);
+  });
+
   it('feeds Codex apply_patch artifacts into the Changes diff summary', async () => {
     const reader = await loadReader();
     const detail = await reader.getSessionDetail('00000000-0000-0000-0000-000000000001');

@@ -15,9 +15,9 @@ export const dynamic = 'force-dynamic';
 
 function hasExportableAgentData(agent: ReturnType<typeof getSelectedAgents>[number]): boolean {
   const agentDir = getAgentDataDir(agent);
+  if (agent === 'cursor') return countCursorData(agentDir).sessionCount > 0;
   if (!fs.existsSync(agentDir)) return false;
   if (agent === 'copilot') return countCopilotData(agentDir).sessionCount > 0;
-  if (agent === 'cursor') return countCursorData(agentDir).sessionCount > 0;
   return true;
 }
 

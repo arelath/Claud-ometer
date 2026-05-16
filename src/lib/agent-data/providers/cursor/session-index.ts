@@ -1,16 +1,21 @@
+import { createHash } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import {
   asRecord,
   forEachCursorJsonlLineSync,
   getCursorDir,
   getCursorProjectsDir,
+  getCursorStateDbPath,
   getFileSignature,
   getFileTimestampInfo,
   listCursorTranscriptFiles,
   signatureToString,
 } from './io';
+import { discoverCursorChatSessions, getCursorConversationSummary, resetCursorStateDbCache, type CursorChatSessionInfo } from './state-db';
 
-export interface CursorSessionFileInfo {
+export interface CursorAgentSessionFileInfo {
+  sourceKind: 'agent';
   filePath: string;
   nativeId: string;
   routeNativeId: string;
@@ -22,9 +27,12 @@ export interface CursorSessionFileInfo {
   createdAt: string;
   updatedAt: string;
   title?: string;
+  model?: string;
   signature: string;
   sourceSignature: { mtimeMs: number; size: number };
 }
+
+export type CursorSessionFileInfo = CursorAgentSessionFileInfo | CursorChatSessionInfo;
 
 interface DiscoveryCacheEntry {
   signature: string;
@@ -86,7 +94,7 @@ function getProjectName(projectId: string, cwd: string): string {
   return projectId;
 }
 
-function readTitle(filePath: string): string | undefined {
+function readJsonlTitle(filePath: string): string | undefined {
   let title: string | undefined;
   try {
     forEachCursorJsonlLineSync(filePath, record => {
@@ -100,20 +108,57 @@ function readTitle(filePath: string): string | undefined {
   return title;
 }
 
+function readTextTitle(filePath: string): string | undefined {
+  try {
+    const prefix = fs.readFileSync(filePath, 'utf-8').slice(0, 128 * 1024);
+    const userQuery = prefix.match(/<user_query>([\s\S]*?)(?:<\/user_query>|$)/i)?.[1];
+    if (userQuery?.trim()) return firstLine(userQuery);
+
+    const userBlock = prefix.match(/^\s*user:\s*([\s\S]*?)(?:\r?\n\s*A:\s*|$)/im)?.[1];
+    return userBlock?.trim() ? firstLine(userBlock) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readTitle(filePath: string): string | undefined {
+  return filePath.endsWith('.txt') ? readTextTitle(filePath) : readJsonlTitle(filePath);
+}
+
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function nativeIdFromTranscriptPath(filePath: string): string {
+  const ext = path.extname(filePath);
+  const fileStem = path.basename(filePath, ext);
+  if (UUID_LIKE.test(fileStem)) return fileStem;
+
+  const parent = path.basename(path.dirname(filePath));
+  if (parent !== 'agent-transcripts' && parent !== 'subagents') return parent;
+
+  return createHash('sha1').update(filePath).digest('hex').slice(0, 16);
+}
+
 function getSessionParts(filePath: string): { projectId: string; nativeId: string; projectDir: string } {
-  const sessionDir = path.dirname(filePath);
-  const nativeId = path.basename(sessionDir);
-  const projectDir = path.dirname(path.dirname(sessionDir));
-  const projectId = path.basename(projectDir);
+  const parts = filePath.split(/[\\/]+/);
+  const projectsIndex = parts.lastIndexOf('projects');
+  const projectId = projectsIndex >= 0 && parts[projectsIndex + 1]
+    ? parts[projectsIndex + 1]
+    : path.basename(path.dirname(path.dirname(path.dirname(filePath))));
+  const projectDir = projectsIndex >= 0
+    ? parts.slice(0, projectsIndex + 2).join(path.sep)
+    : path.dirname(path.dirname(path.dirname(filePath)));
+  const nativeId = nativeIdFromTranscriptPath(filePath);
   return { projectId, nativeId, projectDir };
 }
 
-function readSessionFileInfo(filePath: string): CursorSessionFileInfo {
+function readSessionFileInfo(filePath: string): CursorAgentSessionFileInfo {
   const { projectId, nativeId, projectDir } = getSessionParts(filePath);
   const cwd = decodeProjectPath(projectId);
   const sourceSignature = getFileSignature(filePath);
   const timestampInfo = getFileTimestampInfo(filePath);
+  const summary = getCursorConversationSummary(nativeId);
   return {
+    sourceKind: 'agent',
     filePath,
     nativeId,
     routeNativeId: `${projectId}:${nativeId}`,
@@ -123,16 +168,18 @@ function readSessionFileInfo(filePath: string): CursorSessionFileInfo {
     projectName: getProjectName(projectId, cwd),
     cwd,
     createdAt: timestampInfo.createdAt,
-    updatedAt: timestampInfo.updatedAt,
-    title: readTitle(filePath),
+    updatedAt: summary?.updatedAt || timestampInfo.updatedAt,
+    title: summary?.title || readTitle(filePath),
+    model: summary?.model,
     signature: signatureToString(sourceSignature),
     sourceSignature,
   };
 }
 
-function buildDiscoverySignature(files: string[]): string {
+function buildDiscoverySignature(files: string[], chatSessions: CursorChatSessionInfo[]): string {
   return files
     .map(filePath => `${filePath}:${signatureToString(getFileSignature(filePath))}`)
+    .concat(chatSessions.map(session => `${session.filePath}:${session.signature}`))
     .join('|');
 }
 
@@ -140,18 +187,30 @@ export async function discoverCursorSessionFiles(): Promise<CursorSessionFileInf
   const cursorDir = getCursorDir();
   const projectsDir = getCursorProjectsDir(cursorDir);
   const files = listCursorTranscriptFiles(projectsDir);
-  if (files.length === 0) return [];
+  const dbPath = fs.existsSync(getCursorStateDbPath(cursorDir))
+    ? getCursorStateDbPath(cursorDir)
+    : getCursorStateDbPath();
+  const chatSessions = discoverCursorChatSessions(dbPath);
+  if (files.length === 0 && chatSessions.length === 0) return [];
 
-  const signature = buildDiscoverySignature(files);
-  const cached = discoveryCache.get(cursorDir);
+  const signature = buildDiscoverySignature(files, chatSessions);
+  const cached = discoveryCache.get(`${cursorDir}:${dbPath}`);
   if (cached?.signature === signature) return cached.value;
 
-  const value = files.map(readSessionFileInfo)
+  const value: CursorSessionFileInfo[] = [
+    ...files.map(readSessionFileInfo),
+    ...chatSessions,
+  ]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  discoveryCache.set(cursorDir, { signature, value });
+  discoveryCache.set(`${cursorDir}:${dbPath}`, { signature, value });
   return value;
 }
 
-export function resetCursorSessionIndexCacheForTests(): void {
+export function resetCursorSessionIndexCache(): void {
   discoveryCache.clear();
+  resetCursorStateDbCache();
+}
+
+export function resetCursorSessionIndexCacheForTests(): void {
+  resetCursorSessionIndexCache();
 }

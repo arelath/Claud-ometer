@@ -47,13 +47,28 @@ describe('Codex session discovery', () => {
     });
   });
 
-  it('falls back to the id parsed from the filename and skips malformed lines', async () => {
+  it('skips files whose first line is not Codex session metadata', async () => {
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(
       path.join(sessionsDir, 'rollout-2026-05-08T10-16-36-ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl'),
       [
         '{not json',
+        JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'turn_context', payload: { cwd: 'D:/tmp/fallback' } }),
+      ].join('\n'),
+    );
+    const sessionIndex = await loadModule();
+
+    await expect(sessionIndex.discoverCodexSessionFiles()).resolves.toEqual([]);
+  });
+
+  it('falls back to the id parsed from the filename after valid Codex metadata', async () => {
+    const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, 'rollout-2026-05-08T10-16-36-ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl'),
+      [
+        JSON.stringify({ timestamp: '2026-05-08T10:19:00.000Z', type: 'session_meta', payload: { originator: 'codex_cli' } }),
         JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'turn_context', payload: { cwd: 'D:/tmp/fallback' } }),
       ].join('\n'),
     );
@@ -74,14 +89,14 @@ describe('Codex session discovery', () => {
       JSON.stringify({
         timestamp: '2026-05-08T10:16:36.000Z',
         type: 'session_meta',
-        payload: { id: 'prefix-id', cwd: 'D:/tmp/prefix', timestamp: '2026-05-08T10:16:36.000Z' },
+        payload: { id: 'prefix-id', originator: 'codex_cli', cwd: 'D:/tmp/prefix', timestamp: '2026-05-08T10:16:36.000Z' },
       }),
       JSON.stringify({
         timestamp: '2026-05-08T10:16:37.000Z',
         type: 'turn_context',
         payload: { cwd: 'D:/tmp/prefix', model: 'gpt-5.5' },
       }),
-      'x'.repeat(300 * 1024),
+      'x'.repeat(1100 * 1024),
       JSON.stringify({
         timestamp: '2026-05-08T12:00:00.000Z',
         type: 'session_meta',
@@ -101,15 +116,33 @@ describe('Codex session discovery', () => {
     });
   });
 
+  it('only discovers rollout JSONL files under dated session directories', async () => {
+    const validDir = path.join(codexDir, 'sessions', '2026', '05', '08');
+    const looseDir = path.join(codexDir, 'sessions', 'misc');
+    fs.mkdirSync(validDir, { recursive: true });
+    fs.mkdirSync(looseDir, { recursive: true });
+    const validLine = JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'valid', originator: 'codex_cli' } });
+    fs.writeFileSync(path.join(validDir, 'rollout-2026-05-08T10-16-36-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl'), validLine);
+    fs.writeFileSync(path.join(validDir, 'notes.jsonl'), validLine);
+    fs.writeFileSync(path.join(looseDir, 'rollout-loose.jsonl'), validLine);
+    const sessionIndex = await loadModule();
+
+    const sessions = await sessionIndex.discoverCodexSessionFiles();
+
+    expect(sessions.map(session => path.basename(session.filePath))).toEqual([
+      'rollout-2026-05-08T10-16-36-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl',
+    ]);
+  });
+
   it('invalidates discovery when file size changes', async () => {
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });
     const filePath = path.join(sessionsDir, 'rollout-2026-05-08T10-16-36-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl');
-    fs.writeFileSync(filePath, JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'one' } }));
+    fs.writeFileSync(filePath, JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'one', originator: 'codex_cli' } }));
     const sessionIndex = await loadModule();
 
     const first = await sessionIndex.discoverCodexSessionFiles();
-    fs.appendFileSync(filePath, `\n${JSON.stringify({ timestamp: '2026-05-08T10:21:00.000Z', type: 'session_meta', payload: { id: 'two' } })}`);
+    fs.appendFileSync(filePath, `\n${JSON.stringify({ timestamp: '2026-05-08T10:21:00.000Z', type: 'session_meta', payload: { id: 'two', originator: 'codex_cli' } })}`);
     const second = await sessionIndex.discoverCodexSessionFiles();
 
     expect(first[0].nativeId).toBe('one');
@@ -120,8 +153,8 @@ describe('Codex session discovery', () => {
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });
     const filePath = path.join(sessionsDir, 'rollout-2026-05-08T10-16-36-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl');
-    const firstLine = JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'one' } });
-    const secondLine = JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'two' } });
+    const firstLine = JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'one', originator: 'codex_cli' } });
+    const secondLine = JSON.stringify({ timestamp: '2026-05-08T10:20:00.000Z', type: 'session_meta', payload: { id: 'two', originator: 'codex_cli' } });
     expect(secondLine.length).toBe(firstLine.length);
     fs.writeFileSync(filePath, firstLine);
     const sessionIndex = await loadModule();

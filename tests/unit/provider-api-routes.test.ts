@@ -7,6 +7,7 @@ describe('provider API routes', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'provider-api-routes');
   const codexDir = path.join(root, '.codex');
   const copilotDir = path.join(root, 'copilot');
+  const cursorUserDir = path.join(root, 'Cursor', 'User');
   const importDir = path.join(root, 'import');
   const copilotFixtureSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const copilotFixtureWorkspaceHash = '48bc27b295ea103e3d172520b17fc2e5';
@@ -17,6 +18,7 @@ describe('provider API routes', () => {
     process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
     process.env.CLAUD_OMETER_COPILOT_DIR = path.join(root, 'copilot-missing');
     process.env.CLAUD_OMETER_CURSOR_DIR = path.join(root, 'cursor-missing');
+    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
     process.env.CLAUD_OMETER_CLAUDE_DIR = path.join(root, '.claude-missing');
     process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
     process.env.CLAUD_OMETER_AGENTS = 'codex';
@@ -32,6 +34,7 @@ describe('provider API routes', () => {
     delete process.env.CLAUD_OMETER_CODEX_DIR;
     delete process.env.CLAUD_OMETER_COPILOT_DIR;
     delete process.env.CLAUD_OMETER_CURSOR_DIR;
+    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
     delete process.env.CLAUD_OMETER_CLAUDE_DIR;
     delete process.env.CLAUD_OMETER_IMPORT_DIR;
     delete process.env.CLAUD_OMETER_AGENTS;
@@ -131,6 +134,7 @@ describe('provider API routes', () => {
     process.env.CLAUD_OMETER_CODEX_DIR = path.join(root, '.codex-missing');
     process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
     process.env.CLAUD_OMETER_CURSOR_DIR = path.join(root, 'cursor-missing');
+    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
     process.env.CLAUD_OMETER_CLAUDE_DIR = path.join(root, '.claude-missing');
     process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
     process.env.CLAUD_OMETER_AGENTS = 'copilot';
@@ -161,7 +165,7 @@ describe('provider API routes', () => {
     expect(stats).toMatchObject({ totalSessions: 3, totalMessages: 10, projectCount: 1 });
   });
 
-  it('lists newly discovered Codex sessions before the summary cache catches up', async () => {
+  it('keeps sessions reads cache-only until the summary cache is rebuilt', async () => {
     const [{ POST: rebuildCache }, { GET: getSessions }] = await Promise.all([
       import('@/app/api/cache/route'),
       import('@/app/api/sessions/route'),
@@ -179,7 +183,7 @@ describe('provider API routes', () => {
         JSON.stringify({
           timestamp: liveTimestamp,
           type: 'session_meta',
-          payload: { id: liveId, timestamp: liveTimestamp, cwd: liveCwd, cli_version: '0.130.0' },
+          payload: { id: liveId, originator: 'codex_cli', timestamp: liveTimestamp, cwd: liveCwd, cli_version: '0.130.0' },
         }),
         JSON.stringify({
           timestamp: '2026-05-12T18:03:01.000Z',
@@ -192,6 +196,11 @@ describe('provider API routes', () => {
       path.join(codexDir, 'session_index.jsonl'),
       `\n${JSON.stringify({ id: liveId, thread_name: 'Live Codex Session', updated_at: liveTimestamp })}\n`,
     );
+
+    const stalePage = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex&limit=5&includeTotal=1'))).json();
+    expect(stalePage.total).toBe(1);
+
+    await rebuildCache();
 
     const page = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex&limit=5&includeTotal=1'))).json();
     const liveSession = page.sessions.find((session: { id: string }) => session.id === `codex:${liveId}`);
@@ -212,6 +221,7 @@ describe('provider API routes', () => {
     process.env.CLAUD_OMETER_CODEX_DIR = path.join(root, '.codex-missing');
     process.env.CLAUD_OMETER_COPILOT_DIR = path.join(root, 'copilot-missing');
     process.env.CLAUD_OMETER_CURSOR_DIR = path.join(root, 'cursor-missing');
+    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
     process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
     process.env.CLAUD_OMETER_AGENTS = 'claude,codex';
     vi.resetModules();

@@ -9,6 +9,8 @@ const readerState = vi.hoisted(() => ({
   getProjectSessions: vi.fn(),
   getSessions: vi.fn(),
   searchSessions: vi.fn(),
+  getActiveProviders: vi.fn(),
+  getCachedCostAnalytics: vi.fn(),
 }));
 
 vi.mock('@/lib/claude-data/reader', () => ({
@@ -17,6 +19,14 @@ vi.mock('@/lib/claude-data/reader', () => ({
   getProjectSessions: readerState.getProjectSessions,
   getSessions: readerState.getSessions,
   searchSessions: readerState.searchSessions,
+}));
+
+vi.mock('@/lib/agent-data/registry', () => ({
+  getActiveProviders: readerState.getActiveProviders,
+}));
+
+vi.mock('@/lib/agent-data/analytics', () => ({
+  getCachedCostAnalytics: readerState.getCachedCostAnalytics,
 }));
 
 vi.mock('@/components/pages/dashboard-client', () => ({
@@ -115,9 +125,11 @@ describe('Next app page wrappers', () => {
     readerState.getProjectSessions.mockResolvedValue([session]);
     readerState.getSessions.mockResolvedValue([session]);
     readerState.searchSessions.mockResolvedValue([{ ...session, id: 'session-search' }]);
+    readerState.getActiveProviders.mockReturnValue([]);
+    readerState.getCachedCostAnalytics.mockReturnValue({ stats, projects: [project] });
   });
 
-  it('renders dashboard, costs, and projects as client-fetching shells', async () => {
+  it('renders dashboard and projects as shells while preloading costs', async () => {
     const DashboardPage = (await import('@/app/page')).default;
     const CostsPage = (await import('@/app/costs/page')).default;
     const ProjectsPage = (await import('@/app/projects/page')).default;
@@ -128,7 +140,8 @@ describe('Next app page wrappers', () => {
 
     render(<CostsPage />);
     expect(readerState.getProjects).not.toHaveBeenCalled();
-    expect(screen.getByText('Costs client client-fetch client-fetch')).toBeInTheDocument();
+    expect(readerState.getCachedCostAnalytics).toHaveBeenCalled();
+    expect(screen.getByText('Costs client 150 1')).toBeInTheDocument();
 
     render(await ProjectsPage());
     expect(screen.getByText('Projects client client-fetch')).toBeInTheDocument();

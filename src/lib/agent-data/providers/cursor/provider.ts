@@ -2,6 +2,7 @@ import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import { getCachedSessionSummaries } from '@/lib/agent-data/session-summary-store';
 import { summariesToDashboardStats, summariesToProjects, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 import * as reader from './reader';
+import { resetCursorSessionIndexCache } from './session-index';
 
 function summarySearchText(summary: CachedSessionSummary): string {
   return [
@@ -42,4 +43,8 @@ export const cursorProvider: AgentDataProvider = {
   discoverSessionSources: reader.discoverSessionSummarySources,
   buildSessionSummary: reader.buildSessionSummary,
   buildLightweightSessionSummary: reader.buildLightweightSessionSummary,
+  resetCache() {
+    reader.resetCursorReaderCache();
+    resetCursorSessionIndexCache();
+  },
 };

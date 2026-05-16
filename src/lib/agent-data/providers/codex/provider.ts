@@ -1,5 +1,6 @@
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import * as reader from './reader';
+import { resetCodexSessionIndexCache } from './session-index';
 import { getCachedSessionSummaries } from '@/lib/agent-data/session-summary-store';
 import { summariesToDashboardStats, summariesToProjects, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 
@@ -47,4 +48,8 @@ export const codexProvider: AgentDataProvider = {
   discoverSessionSources: reader.discoverSessionSummarySources,
   buildSessionSummary: reader.buildSessionSummary,
   buildLightweightSessionSummary: reader.buildLightweightSessionSummary,
+  resetCache() {
+    reader.resetCodexReaderCache();
+    resetCodexSessionIndexCache();
+  },
 };

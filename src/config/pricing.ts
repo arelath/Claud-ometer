@@ -23,6 +23,12 @@ export const LITELLM_PRICING_SOURCE = {
 
 export const MODEL_PRICING: Record<string, ModelPricing> = pricingSnapshot.models;
 const MODEL_PRICING_ENTRIES = Object.entries(MODEL_PRICING);
+const MODEL_PRICING_ALIASES: Record<string, string> = {
+  'cursor-auto': 'claude-sonnet-4-5',
+  'cursor-agent-auto': 'claude-sonnet-4-5',
+  'composer-1': 'claude-sonnet-4-5',
+  'composer-2': 'claude-sonnet-4-6',
+};
 const PROVIDER_ORDER: Record<string, number> = {
   anthropic: 0,
   openai: 1,
@@ -73,6 +79,12 @@ export const DEFAULT_COST_MODE: CostMode = 'subscription';
 
 export function getModelDisplayName(modelId: string): string {
   const normalized = modelId.toLowerCase();
+  if (normalized === 'cursor-auto' || normalized === 'cursor-agent-auto') return 'Cursor (auto)';
+  if (normalized === 'composer-1') return 'Composer 1';
+  if (normalized === 'composer-2') return 'Composer 2';
+  if (normalized === 'copilot-auto') return 'Copilot (auto)';
+  if (normalized === 'copilot-openai-auto') return 'Copilot (OpenAI auto)';
+  if (normalized === 'copilot-anthropic-auto') return 'Copilot (Anthropic auto)';
   if (normalized.includes('synthetic')) return 'Synthetic';
   if (normalized.startsWith('gpt-')) return modelId;
   if (normalized.includes('opus')) return 'Opus';
@@ -126,6 +138,11 @@ const OPENAI_MODEL_COLOR_RULES: Array<{ pattern: RegExp; color: string }> = [
 
 export function getModelColor(modelId: string): string {
   const normalized = normalizeModelId(modelId);
+  if (normalized === 'cursor-auto' || normalized === 'cursor-agent-auto') return '#00B4D8';
+  if (normalized.startsWith('composer-')) return '#00A884';
+  if (normalized === 'copilot-auto') return '#6B7280';
+  if (normalized === 'copilot-openai-auto') return '#10A37F';
+  if (normalized === 'copilot-anthropic-auto') return '#6B8AE6';
   if (normalized.includes('synthetic')) return '#7A7A7A';
   const claudeFamily = getClaudeFamily(normalized);
   if (claudeFamily) return CLAUDE_MODEL_COLORS[claudeFamily];
@@ -186,15 +203,16 @@ export function getModelPricingEntry(model: string): { model: string; pricing: M
   const normalized = normalizeModelId(model);
   if (!normalized) return null;
 
-  const direct = MODEL_PRICING[normalized];
-  if (direct) return { model: normalized, pricing: direct };
+  const aliased = MODEL_PRICING_ALIASES[normalized] || normalized;
+  const direct = MODEL_PRICING[aliased];
+  if (direct) return { model: aliased, pricing: direct };
 
   const prefixMatch = pickBestPricingEntry(
-    MODEL_PRICING_ENTRIES.filter(([key]) => normalized.startsWith(`${key}-`) || key.startsWith(`${normalized}-`))
+    MODEL_PRICING_ENTRIES.filter(([key]) => aliased.startsWith(`${key}-`) || key.startsWith(`${aliased}-`))
   );
   if (prefixMatch) return { model: prefixMatch[0], pricing: prefixMatch[1] };
 
-  const family = getClaudeFamily(normalized);
+  const family = getClaudeFamily(aliased);
   if (!family) return null;
 
   const familyMatch = pickBestPricingEntry(

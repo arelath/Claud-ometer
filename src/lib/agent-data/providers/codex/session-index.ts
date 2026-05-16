@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getCodexDir, getFileSignature, listCodexSessionFiles, signatureToString } from './io';
+import { FIRST_LINE_READ_CAP, getCodexDir, getFileSignature, listCodexSessionFiles, signatureToString } from './io';
 import { asRecord } from './schema';
 
 export interface CodexSessionFileInfo {
@@ -41,7 +41,7 @@ function fallbackDateFromPath(filePath: string): string {
   return `${match[1]}-${match[2]}-${match[3]}T00:00:00.000Z`;
 }
 
-function readFilePrefix(filePath: string, maxBytes = 256 * 1024): { text: string; complete: boolean } {
+function readFilePrefix(filePath: string, maxBytes = FIRST_LINE_READ_CAP): { text: string; complete: boolean } {
   const stat = fs.statSync(filePath);
   const bytesToRead = Math.min(stat.size, maxBytes);
   const buffer = Buffer.alloc(bytesToRead);
@@ -180,6 +180,10 @@ export async function discoverCodexSessionFiles(): Promise<CodexSessionFileInfo[
   return value;
 }
 
-export function resetCodexSessionIndexCacheForTests(): void {
+export function resetCodexSessionIndexCache(): void {
   discoveryCache.clear();
+}
+
+export function resetCodexSessionIndexCacheForTests(): void {
+  resetCodexSessionIndexCache();
 }

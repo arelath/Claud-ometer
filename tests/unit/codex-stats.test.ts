@@ -49,7 +49,7 @@ describe('Codex stats', () => {
     expect(stats.estimatedCosts.api).toBeGreaterThan(0);
   });
 
-  it('accepts legacy direct token_count totals and handles missing token_count', async () => {
+  it('accepts legacy direct token_count totals and estimates missing token_count', async () => {
     const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
     const { buildCodexDashboardStats } = await import('@/lib/agent-data/providers/codex/stats');
     const baseRecords: CodexEnvelope[] = [
@@ -83,6 +83,7 @@ describe('Codex stats', () => {
     expect(direct.info.totalOutputTokens).toBe(3);
     expect(direct.info.totalCacheReadTokens).toBe(2);
     expect(missing.info.totalInputTokens).toBe(0);
-    expect(buildCodexDashboardStats([direct, missing]).totalTokens).toBe(13);
+    expect(missing.info.totalOutputTokens).toBe(1);
+    expect(buildCodexDashboardStats([direct, missing]).totalTokens).toBe(14);
   });
 });

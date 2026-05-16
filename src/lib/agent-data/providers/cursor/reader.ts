@@ -11,6 +11,7 @@ import {
 } from '@/lib/agent-data/session-summary';
 import { getFileSignature } from './io';
 import { discoverCursorSessionFiles, type CursorSessionFileInfo } from './session-index';
+import { resetCursorStateDbCache } from './state-db';
 import { parseCursorSessionFile, parseCursorSessionSummaryFile, type CursorParsedSession } from './transcript-parser';
 
 const parsedCache = new AgentDataCache<CursorParsedSession>();
@@ -71,7 +72,7 @@ function buildLightweightSessionInfo(fileInfo: CursorSessionFileInfo): SessionIn
     gitBranch: '',
     cwd: fileInfo.cwd,
     version: '',
-    toolsUsed: {},
+    toolsUsed: summary.toolsUsed,
     compaction: {
       compactions: 0,
       microcompactions: 0,
@@ -174,6 +175,7 @@ function getSourceFileInfo(source: SessionSummarySource): CursorSessionFileInfo 
   const nativeProjectId = source.nativeProjectId || 'cursor';
   const timestamp = fallbackSignature.mtimeMs > 0 ? new Date(fallbackSignature.mtimeMs).toISOString() : new Date(0).toISOString();
   return {
+    sourceKind: 'agent',
     filePath: source.sourceFilePath,
     nativeId,
     routeNativeId: `${nativeProjectId}:${nativeId}`,
@@ -276,7 +278,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
       reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: summary.modelUsage,
-    toolsUsed: {},
+    toolsUsed: summary.toolsUsed,
     compaction: {
       compactions: 0,
       microcompactions: 0,
@@ -297,7 +299,12 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return summariesToDashboardStats(summaries);
 }
 
-export function resetCursorReaderCacheForTests(): void {
+export function resetCursorReaderCache(): void {
   parsedCache.clear();
   infoCache.clear();
+  resetCursorStateDbCache();
+}
+
+export function resetCursorReaderCacheForTests(): void {
+  resetCursorReaderCache();
 }

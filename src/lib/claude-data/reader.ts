@@ -42,7 +42,7 @@ import {
   zeroPromptTokenTotals,
 } from './prompt-metrics';
 import { buildEventBlock, buildThinkingBlock, buildToolCallDisplay, buildToolResultBlock } from './tool-parser';
-import { computeLocalHourCounts, computeSupplementalStats } from './stats-aggregator';
+import { computeLocalHourCounts, computeSupplementalStats, resetStatsAggregatorCache } from './stats-aggregator';
 
 interface SessionFileCacheEntry {
   signature: string;
@@ -1016,4 +1016,13 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     projectCount: projects.length,
     recentSessions,
   };
+}
+
+export function resetClaudeReaderCache(): void {
+  sessionInfoCache.clear();
+  resetStatsAggregatorCache();
+}
+
+export function resetClaudeReaderCacheForTests(): void {
+  resetClaudeReaderCache();
 }

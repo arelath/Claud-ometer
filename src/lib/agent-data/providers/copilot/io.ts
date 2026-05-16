@@ -1,6 +1,7 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import { getAgentDataDir } from '@/lib/agent-data/data-source';
+import { getActiveDataSource, getAgentDataDir } from '@/lib/agent-data/data-source';
 
 const JSONL_READ_CHUNK_SIZE = 1024 * 1024;
 
@@ -26,6 +27,26 @@ export function getCopilotWorkspaceStorageDir(rootDir = getCopilotDir()): string
   return path.basename(rootDir).toLowerCase() === 'workspacestorage'
     ? rootDir
     : path.join(rootDir, 'workspaceStorage');
+}
+
+export function getCopilotLegacySessionStateDir(rootDir = getCopilotDir()): string {
+  if (path.basename(rootDir).toLowerCase() === 'session-state') return rootDir;
+  const nested = path.join(rootDir, 'session-state');
+  if (getActiveDataSource() === 'imported') return nested;
+
+  const explicit = process.env.CLAUD_OMETER_COPILOT_LEGACY_DIR?.trim();
+  if (explicit) {
+    return path.basename(explicit).toLowerCase() === 'session-state'
+      ? explicit
+      : path.join(explicit, 'session-state');
+  }
+
+  if (process.env.CLAUD_OMETER_COPILOT_DIR?.trim() || process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim()) {
+    return nested;
+  }
+  if (fs.existsSync(nested)) return nested;
+
+  return path.join(os.homedir(), '.copilot', 'session-state');
 }
 
 export function getFileSignature(filePath: string): { mtimeMs: number; size: number } {
@@ -120,6 +141,21 @@ export function listCopilotChatSessionFiles(workspaceStorageDir = getCopilotWork
       if (entry.isFile() && entry.name.endsWith('.jsonl')) {
         files.push(path.join(chatSessionsDir, entry.name));
       }
+    }
+  }
+
+  return files.sort((left, right) => left.localeCompare(right));
+}
+
+export function listCopilotLegacyEventFiles(sessionStateDir = getCopilotLegacySessionStateDir()): string[] {
+  if (!fs.existsSync(sessionStateDir)) return [];
+
+  const files: string[] = [];
+  for (const session of fs.readdirSync(sessionStateDir, { withFileTypes: true })) {
+    if (!session.isDirectory()) continue;
+    const eventsPath = path.join(sessionStateDir, session.name, 'events.jsonl');
+    if (fs.existsSync(eventsPath) && fs.statSync(eventsPath).isFile()) {
+      files.push(eventsPath);
     }
   }
 

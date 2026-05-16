@@ -18,6 +18,7 @@ vi.mock('react', async () => {
 vi.mock('@/lib/hooks', () => ({
   useDataSourceInfo: () => ({ data: { active: 'live', agents: ['claude', 'codex'], detectedAgents: ['claude', 'codex'], hasImportedData: false, importMeta: null } }),
   useSessionDetail: () => ({ data: state.session, isLoading: false, error: null }),
+  useSessionSummary: () => ({ data: state.session || undefined }),
 }));
 
 vi.mock('@/lib/cost-mode-context', () => ({
