@@ -74,8 +74,9 @@ export function normalizeTimeRangeSelection(
 }
 
 export function parseTimeRangeSearchParams(searchParams: URLSearchParams, baseDate = new Date()): TimeRangeSelection {
+  const preset = searchParams.get('range');
   return normalizeTimeRangeSelection({
-    preset: searchParams.get('range') || undefined,
+    preset: isTimeRangePreset(preset) ? preset : undefined,
     start: searchParams.get('start') || undefined,
     end: searchParams.get('end') || undefined,
   }, baseDate);

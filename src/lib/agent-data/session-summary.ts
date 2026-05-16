@@ -1,10 +1,13 @@
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
+import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
 import type {
+  ChangeTotals,
   CompactionInfo,
   CostEstimates,
   DashboardStats,
   DailyActivity,
+  DailyChangeActivity,
   DailyModelTokens,
   ModelUsage,
   ProjectInfo,
@@ -12,7 +15,7 @@ import type {
 } from '@/lib/claude-data/types';
 import type { AgentKind } from './types';
 
-export const SESSION_SUMMARY_CACHE_VERSION = 2;
+export const SESSION_SUMMARY_CACHE_VERSION = 3;
 
 export interface SessionSourceSignature {
   size: number;
@@ -71,6 +74,7 @@ export interface CachedSessionSummary {
     reasoningOutput?: number;
   };
   modelUsage: Record<string, CachedModelUsage>;
+  changeTotals?: ChangeTotals;
   toolsUsed: Record<string, number>;
   compaction: CompactionInfo;
   searchTextPreview?: string;
@@ -209,9 +213,11 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
   const sessions = sortedSummaries.map(summaryToSessionInfo);
   const dailyActivity = new Map<string, DailyActivity>();
   const dailyModelTokens = new Map<string, DailyModelTokens>();
+  const dailyChangeActivity = new Map<string, DailyChangeActivity>();
   const modelUsage: DashboardStats['modelUsage'] = {};
   const hourCounts: Record<string, number> = {};
   let estimatedCosts = zeroCosts();
+  let changeTotals = zeroChangeTotals();
 
   for (const summary of sortedSummaries) {
     const date = datePart(summary.createdAt);
@@ -220,6 +226,20 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
     activity.messageCount += summary.messageCount;
     activity.toolCallCount += summary.toolCallCount;
     dailyActivity.set(date, activity);
+
+    const summaryChangeTotals = summary.changeTotals || zeroChangeTotals();
+    changeTotals = addChangeTotals(changeTotals, summaryChangeTotals);
+    const existingDailyChangeActivity = dailyChangeActivity.get(date) || {
+      date,
+      ...zeroChangeTotals(),
+      sessionCount: 0,
+    };
+    const nextDailyChangeTotals = addChangeTotals(existingDailyChangeActivity, summaryChangeTotals);
+    dailyChangeActivity.set(date, {
+      date,
+      ...nextDailyChangeTotals,
+      sessionCount: existingDailyChangeActivity.sessionCount + 1,
+    });
 
     const hour = hourPart(summary.createdAt);
     hourCounts[hour] = (hourCounts[hour] || 0) + 1;
@@ -278,6 +298,8 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
     estimatedCosts,
     dailyActivity: Array.from(dailyActivity.values()).sort((left, right) => left.date.localeCompare(right.date)),
     dailyModelTokens: Array.from(dailyModelTokens.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    changeTotals,
+    dailyChangeActivity: Array.from(dailyChangeActivity.values()).sort((left, right) => left.date.localeCompare(right.date)),
     modelUsage,
     hourCounts,
     firstSessionDate: summaries.map(summary => summary.createdAt).sort()[0]?.slice(0, 10) || '',

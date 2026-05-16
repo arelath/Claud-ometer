@@ -2,7 +2,7 @@
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { getModelDisplayName, getModelColor } from '@/config/pricing';
+import { getModelCostDisplayName, getModelCostGroupKey, getModelColor } from '@/config/pricing';
 import { useCostMode } from '@/lib/cost-mode-context';
 import type { ModelUsage, CostEstimates } from '@/lib/claude-data/types';
 
@@ -19,19 +19,44 @@ function formatTokens(n: number): string {
 
 export function ModelBreakdown({ data }: ModelBreakdownProps) {
   const { pickCost } = useCostMode();
-  const chartData = Object.entries(data)
-    .map(([model, usage]) => ({
-      name: getModelDisplayName(model),
-      model,
-      tokens: getUsageTokenTotal(usage),
-      cost: pickCost(usage.estimatedCosts, usage.estimatedCost),
-      color: getModelColor(model),
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheRead: usage.cacheReadInputTokens,
-      cacheWrite: usage.cacheCreationInputTokens,
-    }))
-    .filter(item => item.tokens > 0);
+  const modelGroups = new Map<string, {
+    name: string;
+    model: string;
+    tokens: number;
+    cost: number;
+    color: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheWrite: number;
+  }>();
+
+  Object.entries(data).forEach(([model, usage]) => {
+    const groupKey = getModelCostGroupKey(model);
+    const group = modelGroups.get(groupKey) || {
+      name: getModelCostDisplayName(model),
+      model: groupKey,
+      tokens: 0,
+      cost: 0,
+      color: getModelColor(groupKey),
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+
+    group.tokens += getUsageTokenTotal(usage);
+    group.cost += pickCost(usage.estimatedCosts, usage.estimatedCost);
+    group.inputTokens += usage.inputTokens;
+    group.outputTokens += usage.outputTokens;
+    group.cacheRead += usage.cacheReadInputTokens;
+    group.cacheWrite += usage.cacheCreationInputTokens;
+    modelGroups.set(groupKey, group);
+  });
+
+  const chartData = Array.from(modelGroups.values())
+    .filter(item => item.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens);
 
   const totalTokens = chartData.reduce((sum, d) => sum + d.tokens, 0);
 

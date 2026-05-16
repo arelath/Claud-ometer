@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getFilePatchText, getSessionDiffSummary, getSessionPatchText } from '@/lib/session-diff';
+import { getFilePatchText, getSessionChangeTotals, getSessionDiffSummary, getSessionPatchText } from '@/lib/session-diff';
 import { buildToolCallDisplay } from '@/lib/claude-data/tool-parser';
 import type { SessionMessageDisplay, SessionToolCallDetail } from '@/lib/claude-data/types';
 
@@ -137,6 +137,36 @@ describe('session diff helpers', () => {
     expect(summary.editCount).toBe(3);
     expect(summary.addedLines).toBe(4);
     expect(summary.removedLines).toBe(2);
+    expect(getSessionChangeTotals([
+      assistantWithEdit(
+        1,
+        'src/cache.ts',
+        ['export function cache() {', '  return false;', '}'].join('\n'),
+        ['export function cache() {', '  return true;', '}', 'cache();'].join('\n'),
+        '40',
+      ),
+      assistantWithEdit(
+        2,
+        'src/cache.ts',
+        ['const mode = "old";'].join('\n'),
+        ['const mode = "new";'].join('\n'),
+        '90',
+      ),
+      assistantWithEdit(
+        3,
+        'src/only-added.ts',
+        '',
+        ['export const created = true;'].join('\n'),
+        '1',
+      ),
+    ])).toEqual({
+      addedLines: 4,
+      removedLines: 2,
+      netLineDelta: 2,
+      changedLines: 6,
+      fileCount: 2,
+      editCount: 3,
+    });
 
     const cacheFile = summary.files.find(file => file.path === 'src/cache.ts');
     expect(cacheFile).toMatchObject({

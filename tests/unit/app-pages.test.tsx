@@ -109,6 +109,8 @@ const stats: DashboardStats = {
   estimatedCosts: costs(0.5),
   dailyActivity: [],
   dailyModelTokens: [],
+  changeTotals: { addedLines: 0, removedLines: 0, netLineDelta: 0, changedLines: 0, fileCount: 0, editCount: 0 },
+  dailyChangeActivity: [],
   modelUsage: {},
   hourCounts: {},
   firstSessionDate: '2026-05-08',

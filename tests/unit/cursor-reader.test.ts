@@ -143,6 +143,14 @@ describe('Cursor reader', () => {
       toolCallCount: 0,
       model: 'cursor-agent-auto',
       models: ['cursor-agent-auto'],
+      changeTotals: {
+        addedLines: 0,
+        removedLines: 0,
+        netLineDelta: 0,
+        changedLines: 0,
+        fileCount: 0,
+        editCount: 0,
+      },
     });
     expect(summary.tokenTotals.input).toBeGreaterThan(0);
     expect(summary.tokenTotals.output).toBeGreaterThan(0);

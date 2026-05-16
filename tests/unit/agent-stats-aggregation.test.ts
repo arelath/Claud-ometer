@@ -23,6 +23,24 @@ function stats(name: 'claude' | 'codex'): DashboardStats {
       tokensByModel: { [model]: isCodex ? 198 : 1200 },
       costsByModel: { [model]: costs(isCodex ? 0.08 : 1.6) },
     }],
+    changeTotals: {
+      addedLines: isCodex ? 3 : 10,
+      removedLines: isCodex ? 1 : 4,
+      netLineDelta: isCodex ? 2 : 6,
+      changedLines: isCodex ? 4 : 14,
+      fileCount: isCodex ? 1 : 2,
+      editCount: isCodex ? 1 : 3,
+    },
+    dailyChangeActivity: [{
+      date: '2026-05-08',
+      addedLines: isCodex ? 3 : 10,
+      removedLines: isCodex ? 1 : 4,
+      netLineDelta: isCodex ? 2 : 6,
+      changedLines: isCodex ? 4 : 14,
+      fileCount: isCodex ? 1 : 2,
+      editCount: isCodex ? 1 : 3,
+      sessionCount: isCodex ? 1 : 2,
+    }],
     modelUsage: {
       [model]: {
         inputTokens: isCodex ? 150 : 900,
@@ -79,6 +97,17 @@ describe('agent stats aggregation', () => {
     expect(merged.totalTokens).toBe(1398);
     expect(merged.projectCount).toBe(3);
     expect(merged.dailyActivity).toEqual([{ date: '2026-05-08', messageCount: 5, sessionCount: 2, toolCallCount: 6 }]);
+    expect(merged.changeTotals).toEqual({ addedLines: 13, removedLines: 5, netLineDelta: 8, changedLines: 18, fileCount: 3, editCount: 4 });
+    expect(merged.dailyChangeActivity).toEqual([{
+      date: '2026-05-08',
+      addedLines: 13,
+      removedLines: 5,
+      netLineDelta: 8,
+      changedLines: 18,
+      fileCount: 3,
+      editCount: 4,
+      sessionCount: 3,
+    }]);
     expect(merged.dailyModelTokens[0].tokensByModel).toEqual({ 'claude-opus-4': 1200, 'gpt-5.5': 198 });
     expect(merged.modelUsage['gpt-5.5'].reasoningOutputTokens).toBe(5);
     expect(merged.hourCounts).toEqual({ '10': 2, '11': 1 });

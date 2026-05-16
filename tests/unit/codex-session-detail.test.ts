@@ -74,6 +74,14 @@ describe('Codex session detail parser', () => {
         cacheWrite: 0,
         reasoningOutput: 5,
       },
+      changeTotals: {
+        addedLines: 1,
+        removedLines: 1,
+        netLineDelta: 0,
+        changedLines: 2,
+        fileCount: 1,
+        editCount: 1,
+      },
       compaction: { compactions: 1 },
     });
     expect(summary.searchTextPreview).toContain('fixture user text');

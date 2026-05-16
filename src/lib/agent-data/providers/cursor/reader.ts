@@ -1,4 +1,5 @@
 import type { DashboardStats, ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
+import { zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { zeroCosts } from '@/lib/claude-data/cost-utils';
 import { AgentDataCache } from '@/lib/agent-data/cache';
 import { makeRouteId, parseRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
@@ -13,6 +14,7 @@ import { getFileSignature } from './io';
 import { discoverCursorSessionFiles, type CursorSessionFileInfo } from './session-index';
 import { resetCursorStateDbCache } from './state-db';
 import { parseCursorSessionFile, parseCursorSessionSummaryFile, type CursorParsedSession } from './transcript-parser';
+import { getSessionChangeTotals } from '@/lib/session-diff';
 
 const parsedCache = new AgentDataCache<CursorParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
@@ -194,6 +196,8 @@ function getSourceFileInfo(source: SessionSummarySource): CursorSessionFileInfo 
 export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
   const fileInfo = getSourceFileInfo(source);
   const summary = parseCursorSessionSummaryFile(source.sourceFilePath, fileInfo);
+  const parsed = await parseCursorSessionFile(source.sourceFilePath, fileInfo);
+  const changeTotals = getSessionChangeTotals(parsed.detail.messages);
   const routeId = makeRouteId('cursor', summary.routeNativeId);
   const projectRouteId = qualifyProjectId('cursor', summary.nativeProjectId);
 
@@ -228,6 +232,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: summary.modelUsage,
+    changeTotals,
     toolsUsed: summary.toolsUsed,
     compaction: {
       compactions: 0,
@@ -278,6 +283,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
       reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: summary.modelUsage,
+    changeTotals: zeroChangeTotals(),
     toolsUsed: summary.toolsUsed,
     compaction: {
       compactions: 0,

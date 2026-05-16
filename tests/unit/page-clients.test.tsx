@@ -71,6 +71,9 @@ vi.mock('@/components/charts/activity-heatmap', () => ({
 vi.mock('@/components/charts/cost-chart', () => ({
   CostChart: ({ data }: { data: unknown[] }) => <div data-testid="cost-chart">cost {data.length}</div>,
 }));
+vi.mock('@/components/charts/lines-changed-over-time', () => ({
+  LinesChangedOverTime: ({ data }: { data: unknown[] }) => <div data-testid="lines-chart">lines {data.length}</div>,
+}));
 vi.mock('@/components/charts/model-breakdown', () => ({
   ModelBreakdown: ({ data }: { data: Record<string, unknown> }) => <div data-testid="model-chart">models {Object.keys(data).length}</div>,
 }));
@@ -167,6 +170,17 @@ const stats: DashboardStats = {
     tokensByModel: { 'claude-opus-4': 1550 },
     costsByModel: { 'claude-opus-4': costs(5, 2.5, 1.25) },
   }],
+  changeTotals: { addedLines: 3, removedLines: 1, netLineDelta: 2, changedLines: 4, fileCount: 2, editCount: 2 },
+  dailyChangeActivity: [{
+    date: '2026-05-08',
+    addedLines: 3,
+    removedLines: 1,
+    netLineDelta: 2,
+    changedLines: 4,
+    fileCount: 2,
+    editCount: 2,
+    sessionCount: 1,
+  }],
   modelUsage: {
     'claude-opus-4': {
       inputTokens: 1000,
@@ -230,12 +244,15 @@ describe('page client components', () => {
     expect(screen.getByText('All history')).toBeInTheDocument();
     expect(screen.getByText('Cache Savings')).toBeInTheDocument();
     expect(screen.getByText('Input Tokens')).toBeInTheDocument();
+    expect(screen.getByText('Lines Changed')).toBeInTheDocument();
+    expect(screen.getByText('+3 / -1')).toBeInTheDocument();
     expect(screen.getByText('1.3K')).toBeInTheDocument();
     expect(screen.getByText('fresh + cache read')).toBeInTheDocument();
     expect(screen.getByText('Estimated Cost by Project')).toBeInTheDocument();
     expect(screen.queryByText('unknown')).not.toBeInTheDocument();
     expect(screen.queryByText('Synthetic')).not.toBeInTheDocument();
     expect(screen.getByTestId('cost-chart')).toHaveTextContent('cost 1');
+    expect(screen.getByTestId('lines-chart')).toHaveTextContent('lines 1');
   });
 
   it('renders projects as navigable cards', () => {

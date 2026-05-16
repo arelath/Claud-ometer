@@ -39,6 +39,24 @@ describe('Codex stats', () => {
       sessionCount: 1,
       toolCallCount: 2,
     }]);
+    expect(stats.changeTotals).toEqual({
+      addedLines: 1,
+      removedLines: 1,
+      netLineDelta: 0,
+      changedLines: 2,
+      fileCount: 1,
+      editCount: 1,
+    });
+    expect(stats.dailyChangeActivity).toEqual([{
+      date: '2026-05-08',
+      addedLines: 1,
+      removedLines: 1,
+      netLineDelta: 0,
+      changedLines: 2,
+      fileCount: 1,
+      editCount: 1,
+      sessionCount: 1,
+    }]);
     expect(stats.modelUsage['gpt-5.5']).toMatchObject({
       inputTokens: 125,
       outputTokens: 18,

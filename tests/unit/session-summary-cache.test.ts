@@ -52,6 +52,7 @@ describe('session summary cache storage', () => {
       toolCallCount: 0,
       tokenTotals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       modelUsage: {},
+      changeTotals: { addedLines: 1, removedLines: 0, netLineDelta: 1, changedLines: 1, fileCount: 1, editCount: 1 },
       toolsUsed: {},
       compaction: { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
       ...overrides,
@@ -75,11 +76,11 @@ describe('session summary cache storage', () => {
       summaries: [makeSummary()],
     });
 
-    expect(getSessionSummaryCachePath()).toBe(path.join(root, 'agent-session-summary-v2.json'));
+    expect(getSessionSummaryCachePath()).toBe(path.join(root, 'agent-session-summary-v3.json'));
     expect(fs.readdirSync(root).some(file => file.endsWith('.tmp'))).toBe(false);
     expect(readSessionSummaryCache()).toMatchObject({
       generatedAt: '2026-05-08T10:00:00.000Z',
-      summaries: [{ nativeId: 'session' }],
+      summaries: [{ nativeId: 'session', changeTotals: { addedLines: 1, changedLines: 1 } }],
     });
   });
 

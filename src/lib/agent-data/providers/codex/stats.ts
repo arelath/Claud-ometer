@@ -1,5 +1,7 @@
-import type { DashboardStats, DailyActivity, DailyModelTokens, ModelUsage, SessionInfo } from '@/lib/claude-data/types';
+import type { DashboardStats, DailyActivity, DailyChangeActivity, DailyModelTokens, ModelUsage, SessionInfo } from '@/lib/claude-data/types';
 import { zeroCosts, addCosts } from '@/lib/claude-data/cost-utils';
+import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
+import { getSessionChangeTotals } from '@/lib/session-diff';
 import type { CodexParsedSession } from './transcript-parser';
 
 function datePart(timestamp: string): string {
@@ -15,10 +17,12 @@ function hourPart(timestamp: string): string {
 export function buildCodexDashboardStats(parsedSessions: CodexParsedSession[]): DashboardStats {
   const sessions = parsedSessions.map(parsed => parsed.info);
   const dailyActivity = new Map<string, DailyActivity>();
+  const dailyChangeActivity = new Map<string, DailyChangeActivity>();
   const dailyModelTokens = new Map<string, DailyModelTokens>();
   const modelUsage: DashboardStats['modelUsage'] = {};
   const hourCounts: Record<string, number> = {};
   let totalEstimatedCosts = zeroCosts();
+  let changeTotals = zeroChangeTotals();
 
   for (const parsed of parsedSessions) {
     const session = parsed.info;
@@ -28,6 +32,20 @@ export function buildCodexDashboardStats(parsedSessions: CodexParsedSession[]): 
     activity.messageCount += session.messageCount;
     activity.toolCallCount += session.toolCallCount;
     dailyActivity.set(date, activity);
+
+    const sessionChangeTotals = getSessionChangeTotals(parsed.detail.messages);
+    changeTotals = addChangeTotals(changeTotals, sessionChangeTotals);
+    const existingDailyChangeActivity = dailyChangeActivity.get(date) || {
+      date,
+      ...zeroChangeTotals(),
+      sessionCount: 0,
+    };
+    const nextDailyChangeTotals = addChangeTotals(existingDailyChangeActivity, sessionChangeTotals);
+    dailyChangeActivity.set(date, {
+      date,
+      ...nextDailyChangeTotals,
+      sessionCount: existingDailyChangeActivity.sessionCount + 1,
+    });
 
     const hour = hourPart(session.timestamp);
     hourCounts[hour] = (hourCounts[hour] || 0) + 1;
@@ -77,6 +95,8 @@ export function buildCodexDashboardStats(parsedSessions: CodexParsedSession[]): 
     estimatedCosts: totalEstimatedCosts,
     dailyActivity: Array.from(dailyActivity.values()).sort((a, b) => a.date.localeCompare(b.date)),
     dailyModelTokens: Array.from(dailyModelTokens.values()).sort((a, b) => a.date.localeCompare(b.date)),
+    changeTotals,
+    dailyChangeActivity: Array.from(dailyChangeActivity.values()).sort((a, b) => a.date.localeCompare(b.date)),
     modelUsage,
     hourCounts,
     firstSessionDate: sessions.map(session => session.timestamp).sort()[0] || '',

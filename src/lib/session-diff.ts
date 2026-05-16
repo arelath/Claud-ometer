@@ -1,6 +1,7 @@
-import type { SessionMessageDisplay } from '@/lib/claude-data/types';
+import type { ChangeTotals, SessionMessageDisplay } from '@/lib/claude-data/types';
 import { diffArrays } from 'diff';
 import { getSessionDiffArtifacts } from '@/lib/artifact-extractor';
+import { makeChangeTotals } from '@/lib/claude-data/change-utils';
 
 export type DiffFileStatus = 'modified' | 'added' | 'deleted';
 export type DiffRowType = 'context' | 'add' | 'remove';
@@ -270,6 +271,16 @@ export function getSessionDiffSummary(messages: SessionMessageDisplay[]): Sessio
     removedLines: files.reduce((sum, file) => sum + file.removedLines, 0),
     editCount: files.reduce((sum, file) => sum + file.editCount, 0),
   };
+}
+
+export function getSessionChangeTotals(messages: SessionMessageDisplay[]): ChangeTotals {
+  const summary = getSessionDiffSummary(messages);
+  return makeChangeTotals({
+    addedLines: summary.addedLines,
+    removedLines: summary.removedLines,
+    fileCount: summary.fileCount,
+    editCount: summary.editCount,
+  });
 }
 
 interface NetDiffRegion {

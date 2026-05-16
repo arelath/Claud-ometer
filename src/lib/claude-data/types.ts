@@ -18,6 +18,20 @@ export interface DailyModelTokens {
   costsByModel?: Record<string, CostEstimates>;
 }
 
+export interface ChangeTotals {
+  addedLines: number;
+  removedLines: number;
+  netLineDelta: number;
+  changedLines: number;
+  fileCount: number;
+  editCount: number;
+}
+
+export interface DailyChangeActivity extends ChangeTotals {
+  date: string;
+  sessionCount: number;
+}
+
 export interface ModelUsage {
   inputTokens: number;
   outputTokens: number;
@@ -304,6 +318,8 @@ export interface DashboardStats {
   estimatedCosts: CostEstimates;
   dailyActivity: DailyActivity[];
   dailyModelTokens: DailyModelTokens[];
+  changeTotals: ChangeTotals;
+  dailyChangeActivity: DailyChangeActivity[];
   modelUsage: Record<string, ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates }>;
   hourCounts: Record<string, number>;
   firstSessionDate: string;

@@ -1,5 +1,6 @@
 import type { DashboardStats, ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
 import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
 import { AgentDataCache } from '@/lib/agent-data/cache';
 import { makeRouteId, parseRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
@@ -15,6 +16,7 @@ import { getFileSignature } from './io';
 import { discoverCopilotSessionFiles, type CopilotSessionFileInfo } from './session-index';
 import { parseCopilotSessionFile, parseCopilotSessionSummaryFile, type CopilotParsedSession } from './transcript-parser';
 import { getCopilotChatSessionSummary, resetCopilotChatSessionCache, type CopilotChatSessionSummary } from './chat-session';
+import { getSessionChangeTotals } from '@/lib/session-diff';
 
 const parsedCache = new AgentDataCache<CopilotParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
@@ -293,6 +295,8 @@ function getSourceFileInfo(source: SessionSummarySource): CopilotSessionFileInfo
 export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
   const fileInfo = getSourceFileInfo(source);
   const summary = parseCopilotSessionSummaryFile(source.sourceFilePath, fileInfo);
+  const parsed = await parseCopilotSessionFile(source.sourceFilePath, fileInfo);
+  const changeTotals = getSessionChangeTotals(parsed.detail.messages);
   const routeId = makeRouteId('copilot', summary.routeNativeId);
   const projectRouteId = qualifyProjectId('copilot', summary.nativeProjectId);
 
@@ -327,6 +331,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: summary.modelUsage,
+    changeTotals,
     toolsUsed: summary.toolsUsed,
     compaction: {
       compactions: 0,
@@ -384,6 +389,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
         reasoningOutput: summary.reasoningOutputTokens,
       },
       modelUsage: summary.modelUsage,
+      changeTotals: zeroChangeTotals(),
       toolsUsed: summary.toolsUsed,
       compaction: {
         compactions: 0,
@@ -442,6 +448,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
       reasoningOutput: chatSummary.usage.reasoningOutputTokens,
     },
     modelUsage,
+    changeTotals: zeroChangeTotals(),
     toolsUsed: {},
     compaction: {
       compactions: 0,
@@ -473,6 +480,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     estimatedCosts: zeroCosts(),
     dailyActivity: [],
     dailyModelTokens: [],
+    changeTotals: zeroChangeTotals(),
+    dailyChangeActivity: [],
     modelUsage: {},
     hourCounts: {},
     firstSessionDate: parsed.map(session => session.info.timestamp).sort()[0]?.slice(0, 10) || '',

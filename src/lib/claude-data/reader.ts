@@ -20,7 +20,9 @@ import type {
   CostEstimates,
 } from './types';
 import { addCosts, zeroCosts } from './cost-utils';
+import { zeroChangeTotals } from './change-utils';
 import { getClaudeDir, getProjectsDir, getSessionAggregateFilePaths, getTopLevelSessionFiles, forEachJsonlLine } from './io';
+import { getSessionChangeTotals } from '@/lib/session-diff';
 import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
 import {
   SESSION_SUMMARY_CACHE_VERSION,
@@ -805,12 +807,14 @@ export async function discoverSessionSummarySources(): Promise<SessionSummarySou
 export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
   const projectId = source.nativeProjectId || '';
   const projectName = source.projectName || projectIdToName(projectId);
-  const info = await parseSessionFile(source.sourceFilePath, projectId, projectName);
+  const detail = await getSessionDetailFromFile(source.sourceFilePath, projectId, projectName);
+  const info = detail;
   const nativeId = info.nativeId || info.id;
   const nativeProjectId = info.nativeProjectId || projectId || info.projectId;
   const routeId = makeRouteId('claude', nativeId);
   const projectRouteId = qualifyProjectId('claude', nativeProjectId);
   const searchTextPreview = await collectClaudeSearchTextPreview(source.sourceFilePath, info);
+  const changeTotals = getSessionChangeTotals(detail.messages);
 
   return {
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
@@ -842,6 +846,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       cacheWrite: info.totalCacheWriteTokens,
     },
     modelUsage: getCachedModelUsage(info),
+    changeTotals,
     toolsUsed: info.toolsUsed,
     compaction: info.compaction,
     searchTextPreview,
@@ -1009,6 +1014,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     estimatedCosts: finalCosts,
     dailyActivity: mergedDailyActivity,
     dailyModelTokens: mergedDailyModelTokens,
+    changeTotals: zeroChangeTotals(),
+    dailyChangeActivity: [],
     modelUsage: modelUsageWithCost,
     hourCounts: mergedHourCounts,
     firstSessionDate: stats?.firstSessionDate || '',

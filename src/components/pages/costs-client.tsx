@@ -7,15 +7,17 @@ import { useCostMode } from '@/lib/cost-mode-context';
 import { CostModeSelector } from '@/components/cost-mode-selector';
 import { StatCard } from '@/components/cards/stat-card';
 import { CostChart } from '@/components/charts/cost-chart';
-import { formatCost, formatTokens } from '@/lib/format';
+import { LinesChangedOverTime } from '@/components/charts/lines-changed-over-time';
+import { formatCost, formatNumber, formatTokens } from '@/lib/format';
 import {
-  getModelDisplayName,
+  getModelCostDisplayName,
+  getModelCostGroupKey,
   getModelColor,
   getModelPricing,
   getPricingReferenceEntries,
   LITELLM_PRICING_SOURCE,
 } from '@/config/pricing';
-import { Coins, TrendingUp, Zap, Database, Info } from 'lucide-react';
+import { Coins, TrendingUp, Zap, Database, Info, GitPullRequest } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { Separator } from '@/components/ui/separator';
@@ -75,6 +77,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
 
   const totalCost = pickCost(stats.estimatedCosts, stats.estimatedCost);
   const totalPromptInputTokens = totalInputTokens + totalCacheReadTokens;
+  const changeTotals = stats.changeTotals;
 
   // Cost by project
   const projectCosts = projects
@@ -91,19 +94,44 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
     }));
 
   // Model cost breakdown
-  const modelCosts = Object.entries(stats.modelUsage)
-    .map(([model, usage]) => ({
-      name: getModelDisplayName(model),
-      model,
-      tokens: getUsageTokenTotal(usage),
-      cost: pickCost(usage.estimatedCosts, usage.estimatedCost),
-      color: getModelColor(model),
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheRead: usage.cacheReadInputTokens,
-      cacheWrite: usage.cacheCreationInputTokens,
-    }))
-    .filter(item => item.tokens > 0);
+  const modelCostGroups = new Map<string, {
+    name: string;
+    model: string;
+    tokens: number;
+    cost: number;
+    color: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheWrite: number;
+  }>();
+
+  Object.entries(stats.modelUsage).forEach(([model, usage]) => {
+    const groupKey = getModelCostGroupKey(model);
+    const group = modelCostGroups.get(groupKey) || {
+      name: getModelCostDisplayName(model),
+      model: groupKey,
+      tokens: 0,
+      cost: 0,
+      color: getModelColor(groupKey),
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+
+    group.tokens += getUsageTokenTotal(usage);
+    group.cost += pickCost(usage.estimatedCosts, usage.estimatedCost);
+    group.inputTokens += usage.inputTokens;
+    group.outputTokens += usage.outputTokens;
+    group.cacheRead += usage.cacheReadInputTokens;
+    group.cacheWrite += usage.cacheCreationInputTokens;
+    modelCostGroups.set(groupKey, group);
+  });
+
+  const modelCosts = Array.from(modelCostGroups.values())
+    .filter(item => item.tokens > 0)
+    .sort((a, b) => b.cost - a.cost);
   const pricingRows = getPricingReferenceEntries();
   const pricingUpdatedAt = new Date(LITELLM_PRICING_SOURCE.updatedAt).toLocaleDateString();
 
@@ -133,7 +161,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard
           title="Estimated Usage"
           value={formatCost(totalCost)}
@@ -157,10 +185,18 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
           value={formatTokens(totalOutputTokens)}
           icon={Database}
         />
+        <StatCard
+          title="Lines Changed"
+          value={formatNumber(changeTotals.changedLines)}
+          subtitle={`+${formatNumber(changeTotals.addedLines)} / -${formatNumber(changeTotals.removedLines)}`}
+          icon={GitPullRequest}
+        />
       </div>
 
       {/* Cost Over Time */}
       <CostChart data={stats.dailyModelTokens} />
+
+      <LinesChangedOverTime data={stats.dailyChangeActivity} />
 
       <div className="grid grid-cols-2 gap-4">
         {/* Cost by Project */}

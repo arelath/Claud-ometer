@@ -1,5 +1,6 @@
-import type { CostEstimates, DashboardStats, DailyActivity, DailyModelTokens, ModelUsage, ProjectInfo, SessionInfo } from '@/lib/claude-data/types';
+import type { CostEstimates, DashboardStats, DailyActivity, DailyChangeActivity, DailyModelTokens, ModelUsage, ProjectInfo, SessionInfo } from '@/lib/claude-data/types';
 import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { DEFAULT_COST_MODE } from '@/config/pricing';
 
 export function sortSessionsByTimestamp(sessions: SessionInfo[]): SessionInfo[] {
@@ -41,6 +42,26 @@ export function mergeDailyModelTokens(stats: DashboardStats[]): DailyModelTokens
   return Array.from(tokensByDate.values()).sort((left, right) => left.date.localeCompare(right.date));
 }
 
+export function mergeDailyChangeActivity(stats: DashboardStats[]): DailyChangeActivity[] {
+  const merged = new Map<string, DailyChangeActivity>();
+  for (const source of stats) {
+    for (const day of source.dailyChangeActivity || []) {
+      const existing = merged.get(day.date) || {
+        date: day.date,
+        ...zeroChangeTotals(),
+        sessionCount: 0,
+      };
+      const totals = addChangeTotals(existing, day);
+      merged.set(day.date, {
+        date: day.date,
+        ...totals,
+        sessionCount: existing.sessionCount + day.sessionCount,
+      });
+    }
+  }
+  return Array.from(merged.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
 export function mergeModelUsage(stats: DashboardStats[]): DashboardStats['modelUsage'] {
   const merged: DashboardStats['modelUsage'] = {};
   for (const source of stats) {
@@ -78,6 +99,7 @@ export function mergeDashboardStats(stats: DashboardStats[]): DashboardStats {
   if (stats.length === 1) return stats[0];
 
   const estimatedCosts = stats.reduce((sum, item) => addCosts(sum, item.estimatedCosts), zeroCosts());
+  const changeTotals = stats.reduce((sum, item) => addChangeTotals(sum, item.changeTotals), zeroChangeTotals());
   const recentSessions = sortSessionsByTimestamp(stats.flatMap(item => item.recentSessions)).slice(0, 10);
   const hourCounts: Record<string, number> = {};
   for (const source of stats) {
@@ -98,6 +120,8 @@ export function mergeDashboardStats(stats: DashboardStats[]): DashboardStats {
     estimatedCosts,
     dailyActivity: mergeDailyActivity(stats),
     dailyModelTokens: mergeDailyModelTokens(stats),
+    changeTotals,
+    dailyChangeActivity: mergeDailyChangeActivity(stats),
     modelUsage: mergeModelUsage(stats),
     hourCounts,
     firstSessionDate: stats.map(item => item.firstSessionDate).filter(Boolean).sort()[0] || '',

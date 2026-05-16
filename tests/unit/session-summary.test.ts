@@ -40,6 +40,7 @@ function makeSummary(overrides: Partial<CachedSessionSummary> = {}): CachedSessi
         reasoningOutputTokens: 3,
       },
     },
+    changeTotals: { addedLines: 2, removedLines: 1, netLineDelta: 1, changedLines: 3, fileCount: 1, editCount: 1 },
     toolsUsed: { shell_command: 1 },
     compaction: { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
     searchTextPreview: 'project one',
@@ -93,6 +94,7 @@ describe('session summary aggregation', () => {
             cacheCreationInputTokens: 0,
           },
         },
+        changeTotals: { addedLines: 5, removedLines: 2, netLineDelta: 3, changedLines: 7, fileCount: 2, editCount: 2 },
       }),
     ];
 
@@ -112,6 +114,17 @@ describe('session summary aggregation', () => {
       projectCount: 1,
     });
     expect(stats.dailyActivity).toEqual([{ date: '2026-05-08', messageCount: 5, sessionCount: 2, toolCallCount: 3 }]);
+    expect(stats.changeTotals).toEqual({ addedLines: 7, removedLines: 3, netLineDelta: 4, changedLines: 10, fileCount: 3, editCount: 3 });
+    expect(stats.dailyChangeActivity).toEqual([{
+      date: '2026-05-08',
+      addedLines: 7,
+      removedLines: 3,
+      netLineDelta: 4,
+      changedLines: 10,
+      fileCount: 3,
+      editCount: 3,
+      sessionCount: 2,
+    }]);
     expect(Object.keys(stats.modelUsage)).toEqual(expect.arrayContaining(['gpt-5.5', 'gpt-5.4']));
     expect(stats.recentSessions.map(session => session.id)).toEqual(['session-2', 'session-1']);
   });

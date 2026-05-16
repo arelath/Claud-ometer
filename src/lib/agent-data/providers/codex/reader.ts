@@ -1,5 +1,6 @@
 import type { DashboardStats, ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
 import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { DEFAULT_COST_MODE } from '@/config/pricing';
 import { makeRouteId, parseRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
 import { AgentDataCache } from '@/lib/agent-data/cache';
@@ -13,6 +14,7 @@ import { discoverCodexSessionFiles, type CodexSessionFileInfo } from './session-
 import { getFileSignature } from './io';
 import { parseCodexSessionFile, parseCodexSessionSummaryFile, type CodexParsedSession } from './transcript-parser';
 import { buildCodexDashboardStats } from './stats';
+import { getSessionChangeTotals } from '@/lib/session-diff';
 
 const parsedCache = new AgentDataCache<CodexParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
@@ -192,7 +194,10 @@ function getSourceFileInfo(source: SessionSummarySource): CodexSessionFileInfo {
 }
 
 export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
-  const summary = parseCodexSessionSummaryFile(source.sourceFilePath, getSourceFileInfo(source));
+  const fileInfo = getSourceFileInfo(source);
+  const summary = parseCodexSessionSummaryFile(source.sourceFilePath, fileInfo);
+  const parsed = await parseCodexSessionFile(source.sourceFilePath, fileInfo);
+  const changeTotals = getSessionChangeTotals(parsed.detail.messages);
   const nativeProjectId = getProjectNativeId(summary.cwd, source.sourceFilePath);
   const projectRouteId = qualifyProjectId('codex', nativeProjectId);
   const routeId = makeRouteId('codex', summary.nativeId);
@@ -246,6 +251,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
         reasoningOutputTokens: summary.reasoningOutputTokens,
       },
     },
+    changeTotals,
     toolsUsed: summary.toolsUsed,
     compaction: summary.compaction,
     searchTextPreview,
@@ -293,6 +299,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
       reasoningOutput: 0,
     },
     modelUsage: {},
+    changeTotals: zeroChangeTotals(),
     toolsUsed: {},
     compaction: {
       compactions: 0,

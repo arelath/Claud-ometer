@@ -8,6 +8,7 @@ import { CostChart } from '@/components/charts/cost-chart';
 import { ModelBreakdown } from '@/components/charts/model-breakdown';
 import { PeakHours } from '@/components/charts/peak-hours';
 import { UsageOverTime } from '@/components/charts/usage-over-time';
+import { LinesChangedOverTime } from '@/components/charts/lines-changed-over-time';
 
 vi.mock('recharts', () => {
   const Chart = ({ children, data }: { children?: React.ReactNode; data?: unknown[] }) => (
@@ -34,6 +35,7 @@ vi.mock('recharts', () => {
     Legend: Primitive,
     Pie: Primitive,
     PieChart: Chart,
+    ReferenceLine: Primitive,
     ResponsiveContainer: ({ children }: { children?: React.ReactNode }) => <div data-testid="responsive">{children}</div>,
     Tooltip: Primitive,
     XAxis: Primitive,
@@ -59,9 +61,10 @@ const dailyActivity = [
 const dailyModelTokens = [
   {
     date: '2026-05-06',
-    tokensByModel: { 'claude-opus-4': 1200, unknown: 0 },
+    tokensByModel: { 'claude-opus-4': 1200, 'anthropic.claude-opus-4': 800, unknown: 0 },
     costsByModel: {
       'claude-opus-4': { api: 1.2, conservative: 0.8, subscription: 0.4 },
+      'anthropic.claude-opus-4': { api: 0.8, conservative: 0.4, subscription: 0.2 },
       unknown: { api: 0, conservative: 0, subscription: 0 },
     },
   },
@@ -74,6 +77,11 @@ const dailyModelTokens = [
       '<synthetic>': { api: 0, conservative: 0, subscription: 0 },
     },
   },
+];
+
+const dailyChangeActivity = [
+  { date: '2026-05-06', addedLines: 3, removedLines: 1, netLineDelta: 2, changedLines: 4, fileCount: 2, editCount: 2, sessionCount: 1 },
+  { date: '2026-05-07', addedLines: 8, removedLines: 6, netLineDelta: 2, changedLines: 14, fileCount: 3, editCount: 5, sessionCount: 2 },
 ];
 
 describe('chart components', () => {
@@ -106,9 +114,19 @@ describe('chart components', () => {
 
     expect(screen.getByText('Estimated Usage Over Time')).toBeInTheDocument();
     const areaKeys = screen.getAllByTestId('mock-recharts-part').map(node => node.getAttribute('data-key'));
-    expect(areaKeys).toContain('Opus');
+    expect(areaKeys.filter(key => key === 'Opus 4')).toHaveLength(1);
+    expect(areaKeys).toContain('Sonnet 4');
     expect(areaKeys).not.toContain('unknown');
     expect(areaKeys).not.toContain('Synthetic');
+  });
+
+  it('renders lines changed over time', () => {
+    renderWithProviders(<LinesChangedOverTime data={dailyChangeActivity} />);
+
+    expect(screen.getByText('Lines Changed Over Time')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-chart')).toHaveAttribute('data-count', '2');
+    const barKeys = screen.getAllByTestId('mock-recharts-part').map(node => node.getAttribute('data-key'));
+    expect(barKeys).toEqual(expect.arrayContaining(['addedLines', 'removedLines']));
   });
 
   it('renders model usage rows and percentages', () => {
@@ -126,6 +144,18 @@ describe('chart components', () => {
             webSearchRequests: 0,
             estimatedCost: 1,
             estimatedCosts: { api: 2, conservative: 1.4, subscription: 1 },
+          },
+          'anthropic.claude-opus-4': {
+            inputTokens: 500,
+            outputTokens: 100,
+            cacheReadInputTokens: 150,
+            cacheCreationInputTokens: 50,
+            costUSD: 0,
+            contextWindow: 0,
+            maxOutputTokens: 0,
+            webSearchRequests: 0,
+            estimatedCost: 0.5,
+            estimatedCosts: { api: 1, conservative: 0.7, subscription: 0.5 },
           },
           'claude-sonnet-4': {
             inputTokens: 300,
@@ -168,10 +198,10 @@ describe('chart components', () => {
     );
 
     expect(screen.getByText('Model Usage')).toBeInTheDocument();
-    expect(screen.getByText('Opus')).toBeInTheDocument();
-    expect(screen.getByText('Sonnet')).toBeInTheDocument();
+    expect(screen.getAllByText('Opus 4')).toHaveLength(1);
+    expect(screen.getByText('Sonnet 4')).toBeInTheDocument();
     expect(screen.queryByText('unknown')).not.toBeInTheDocument();
     expect(screen.queryByText('Synthetic')).not.toBeInTheDocument();
-    expect(screen.getByText('$1.00')).toBeInTheDocument();
+    expect(screen.getByText('$1.50')).toBeInTheDocument();
   });
 });

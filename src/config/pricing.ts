@@ -93,6 +93,18 @@ export function getModelDisplayName(modelId: string): string {
   return modelId;
 }
 
+export function getModelCostGroupKey(modelId: string): string {
+  const normalized = normalizeModelId(modelId);
+  if (!normalized) return 'unknown';
+  return getClaudeVersionGroupKey(normalized) || normalized;
+}
+
+export function getModelCostDisplayName(modelId: string): string {
+  const groupKey = getModelCostGroupKey(modelId);
+  const claudeDisplayName = getClaudeVersionDisplayName(groupKey);
+  return claudeDisplayName || getModelDisplayName(modelId);
+}
+
 const CLAUDE_MODEL_COLORS: Record<'opus' | 'sonnet' | 'haiku', string> = {
   opus: '#D4764E',
   sonnet: '#6B8AE6',
@@ -252,6 +264,47 @@ function getClaudeFamily(model: string): 'opus' | 'sonnet' | 'haiku' | null {
   if (model.includes('sonnet')) return 'sonnet';
   if (model.includes('haiku')) return 'haiku';
   return null;
+}
+
+function getClaudeVersionGroupKey(model: string): string | null {
+  const parts = model.split('-');
+  const family = getClaudeFamily(model);
+  if (!family || parts[0] !== 'claude') return null;
+
+  const familyIndex = parts.indexOf(family);
+  if (familyIndex < 0) return null;
+
+  const versionParts = getClaudeVersionParts(parts, familyIndex);
+  if (versionParts.length === 0) return null;
+
+  return familyIndex === 1
+    ? ['claude', family, ...versionParts].join('-')
+    : ['claude', ...versionParts, family].join('-');
+}
+
+function getClaudeVersionDisplayName(model: string): string | null {
+  const parts = model.split('-');
+  const family = getClaudeFamily(model);
+  if (!family || parts[0] !== 'claude') return null;
+
+  const familyIndex = parts.indexOf(family);
+  if (familyIndex < 0) return null;
+
+  const familyLabel = family[0].toUpperCase() + family.slice(1);
+  const versionParts = getClaudeVersionParts(parts, familyIndex);
+  return versionParts.length > 0 ? `${familyLabel} ${versionParts.join('.')}` : familyLabel;
+}
+
+function getClaudeVersionParts(parts: string[], familyIndex: number): string[] {
+  const rawVersionParts = familyIndex === 1
+    ? parts.slice(2)
+    : parts.slice(1, familyIndex);
+
+  return rawVersionParts.filter(isClaudeVersionPart);
+}
+
+function isClaudeVersionPart(part: string): boolean {
+  return /^\d+$/.test(part) && !/^\d{8}$/.test(part);
 }
 
 function pickBestPricingEntry(entries: Array<[string, ModelPricing]>): [string, ModelPricing] | null {

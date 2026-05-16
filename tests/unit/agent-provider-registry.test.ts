@@ -56,6 +56,8 @@ vi.mock('@/lib/claude-data/reader', () => ({
     estimatedCosts: { api: 0, conservative: 0, subscription: 0 },
     dailyActivity: [],
     dailyModelTokens: [],
+    changeTotals: { addedLines: 0, removedLines: 0, netLineDelta: 0, changedLines: 0, fileCount: 0, editCount: 0 },
+    dailyChangeActivity: [],
     modelUsage: {},
     hourCounts: {},
     firstSessionDate: '',

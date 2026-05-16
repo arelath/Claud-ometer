@@ -442,6 +442,14 @@ describe('Copilot reader', () => {
       model: 'gpt-5.4',
       models: ['gpt-5.4'],
       tokenTotals: { input: 750, output: 80, cacheRead: 250, cacheWrite: 0, reasoningOutput: 20 },
+      changeTotals: {
+        addedLines: 1,
+        removedLines: 1,
+        netLineDelta: 0,
+        changedLines: 2,
+        fileCount: 1,
+        editCount: 1,
+      },
       modelUsage: {
         'gpt-5.4': {
           inputTokens: 750,

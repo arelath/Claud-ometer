@@ -4,6 +4,8 @@ import {
   calculateCostAllModes,
   DEFAULT_COST_MODE,
   getModelColor,
+  getModelCostDisplayName,
+  getModelCostGroupKey,
   getModelDisplayName,
   getModelPricing,
   getPricingReferenceEntries,
@@ -74,6 +76,17 @@ describe('pricing helpers', () => {
     expect(getModelColor('composer-1')).toBe('#00A884');
     expect(getModelColor('copilot-openai-auto')).toBe('#10A37F');
     expect(getModelColor('copilot-anthropic-auto')).toBe('#6B8AE6');
+  });
+
+  it('groups and labels concrete model versions for cost analytics', () => {
+    expect(getModelCostGroupKey('copilot/claude-opus-4.6')).toBe('claude-opus-4-6');
+    expect(getModelCostGroupKey('anthropic.claude-opus-4-6-20260205')).toBe('claude-opus-4-6');
+    expect(getModelCostGroupKey('claude-3-7-sonnet-20250219')).toBe('claude-3-7-sonnet');
+
+    expect(getModelCostDisplayName('copilot/claude-opus-4.6')).toBe('Opus 4.6');
+    expect(getModelCostDisplayName('claude-opus-4-7')).toBe('Opus 4.7');
+    expect(getModelCostDisplayName('claude-3-7-sonnet-20250219')).toBe('Sonnet 3.7');
+    expect(getModelCostDisplayName('gpt-5.5')).toBe('gpt-5.5');
   });
 
   it('maps Cursor aliases to concrete pricing models', () => {

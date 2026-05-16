@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { DailyModelTokens } from '@/lib/claude-data/types';
-import { getModelDisplayName, getModelColor } from '@/config/pricing';
+import { getModelCostDisplayName, getModelCostGroupKey, getModelColor } from '@/config/pricing';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { format, parseISO } from 'date-fns';
 
@@ -13,39 +13,57 @@ interface CostChartProps {
   data: DailyModelTokens[];
 }
 
+interface ModelCostGroup {
+  key: string;
+  name: string;
+  color: string;
+}
+
 export function CostChart({ data }: CostChartProps) {
   const { costMode } = useCostMode();
 
-  const allModels = new Set<string>();
+  const modelGroups = new Map<string, ModelCostGroup>();
+  const ensureModelGroup = (model: string): ModelCostGroup => {
+    const key = getModelCostGroupKey(model);
+    const existing = modelGroups.get(key);
+    if (existing) return existing;
+
+    const group = {
+      key,
+      name: getModelCostDisplayName(model),
+      color: getModelColor(key),
+    };
+    modelGroups.set(key, group);
+    return group;
+  };
+
   data.forEach(d => {
     Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
-      if (tokens > 0) allModels.add(model);
+      if (tokens > 0) ensureModelGroup(model);
     });
   });
 
   const chartData = data.map(d => {
-    const entry: Record<string, unknown> = {
+    const entry: Record<string, string | number> = {
       date: format(parseISO(d.date), 'MMM d'),
     };
-    for (const model of allModels) {
-      const displayName = getModelDisplayName(model);
+    const costsByGroup: Record<string, number> = {};
+
+    for (const [model, tokens] of Object.entries(d.tokensByModel)) {
+      if (tokens <= 0) continue;
+      const group = ensureModelGroup(model);
       const costs = d.costsByModel?.[model];
-      if (costs) {
-        entry[displayName] = parseFloat((costs[costMode] ?? 0).toFixed(2));
-      } else {
-        // Fallback: no pre-computed costs (should not happen with updated data)
-        entry[displayName] = 0;
-      }
+      costsByGroup[group.name] = (costsByGroup[group.name] || 0) + (costs?.[costMode] ?? 0);
     }
+
+    for (const group of modelGroups.values()) {
+      entry[group.name] = parseFloat((costsByGroup[group.name] || 0).toFixed(2));
+    }
+
     return entry;
   });
 
-  const modelNames = Array.from(allModels).map(getModelDisplayName);
-  const uniqueNames = [...new Set(modelNames)];
-  const modelColors: Record<string, string> = {};
-  Array.from(allModels).forEach(m => {
-    modelColors[getModelDisplayName(m)] = getModelColor(m);
-  });
+  const groups = Array.from(modelGroups.values());
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -81,14 +99,14 @@ export function CostChart({ data }: CostChartProps) {
               <Legend
                 wrapperStyle={{ fontSize: '11px' }}
               />
-              {uniqueNames.map(name => (
+              {groups.map(group => (
                 <Area
-                  key={name}
+                  key={group.key}
                   type="monotone"
-                  dataKey={name}
+                  dataKey={group.name}
                   stackId="1"
-                  stroke={modelColors[name]}
-                  fill={modelColors[name]}
+                  stroke={group.color}
+                  fill={group.color}
                   fillOpacity={0.3}
                   strokeWidth={2}
                 />
