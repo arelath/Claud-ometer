@@ -108,11 +108,13 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     [compactionInfo],
   );
   const diffSummary = useMemo(() => getSessionDiffSummary(messages), [messages]);
+  const assistantLabel = displaySession?.agentKind ? getAgentLabel(displaySession.agentKind) : 'Claude';
   const {
     state: {
       artifactViewer,
       copiedContextPath,
       copiedPatchKey,
+      copiedVisibleConversation,
       diffMode,
       effectiveSelectedDiffPath,
       groupedMessages,
@@ -129,6 +131,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     actions: {
       handleCopyContextPath,
       handleCopyPatch,
+      handleCopyVisibleConversation,
       handleJumpToDiffMessage,
       handleJumpToMessage,
       handleOpenDiffForPath,
@@ -149,6 +152,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     diffSummary,
     isLive,
     liveRevision,
+    assistantLabel,
   });
 
   if ((isLoading && !displaySession) || !displaySession?.id) {
@@ -180,7 +184,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const sessionRenderContext: SessionRenderContextValue = {
     projectRoot: displaySession.cwd || undefined,
     agentKind: displaySession.agentKind,
-    assistantLabel: displaySession.agentKind ? getAgentLabel(displaySession.agentKind) : 'Claude',
+    assistantLabel,
     openArtifact: setArtifactViewer,
   };
 
@@ -330,6 +334,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 onDiffModeChange={setDiffMode}
                 copiedPatchKey={copiedPatchKey}
                 onCopyPatch={handleCopyPatch}
+                copiedVisibleConversation={copiedVisibleConversation}
+                onCopyVisibleConversation={handleCopyVisibleConversation}
               />
               {mainView === 'conversation' && (
                 <FilterPresets preset={preset} onChange={handlePresetChange} counts={presetCounts} />

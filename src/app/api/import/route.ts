@@ -15,8 +15,17 @@ import {
   type AgentArchiveMeta,
 } from '@/lib/agent-data/archive';
 import type { AgentKind } from '@/lib/agent-data/types';
+import { getActiveProviders } from '@/lib/agent-data/registry';
+import { resetAnalyticsMemo } from '@/lib/agent-data/analytics';
+import { rebuildSessionIndex, resetSessionIndexer } from '@/lib/agent-data/indexer';
 
 export const dynamic = 'force-dynamic';
+
+function resetRuntimeCaches(): void {
+  resetAnalyticsMemo();
+  resetSessionIndexer();
+  for (const provider of getActiveProviders()) provider.resetCache?.();
+}
 
 export const POST = withErrorHandler(async (request: Request) => {
   const formData = await request.formData();
@@ -115,6 +124,8 @@ export const POST = withErrorHandler(async (request: Request) => {
     // Switch to imported data source
     setSelectedAgents(agents);
     setDataSource('imported');
+    resetRuntimeCaches();
+    await rebuildSessionIndex(getActiveProviders());
 
   return NextResponse.json({
     success: true,

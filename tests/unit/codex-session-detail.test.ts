@@ -268,6 +268,43 @@ describe('Codex session detail parser', () => {
     expect(summary.removedLines).toBe(1);
   });
 
+  it('feeds legacy Codex apply_patch input artifacts into the Changes diff summary', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const patchInput = [
+      '*** Begin Patch',
+      '*** Update File: d:\\dev\\repo\\src\\app.ts',
+      '@@',
+      '-export const enabled = false;',
+      '+export const enabled = true;',
+      '*** End Patch',
+    ].join('\n');
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-04-18T02:05:00.000Z', type: 'session_meta', payload: { id: 'legacy-patch', cwd: 'D:/repo' } },
+      { timestamp: '2026-04-18T02:05:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo' } },
+      { timestamp: '2026-04-18T02:05:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'patch-legacy', input: patchInput } },
+      {
+        timestamp: '2026-04-18T02:05:03.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'patch-legacy',
+          output: '{"output":"Success. Updated the following files:\\nM d:\\\\dev\\\\repo\\\\src\\\\app.ts\\n"}',
+        },
+      },
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/legacy-patch.jsonl', records);
+    const summary = getSessionDiffSummary(parsed.detail.messages);
+
+    expect(summary).toMatchObject({
+      fileCount: 1,
+      editCount: 1,
+      addedLines: 1,
+      removedLines: 1,
+    });
+    expect(summary.files[0].path).toBe('d:/dev/repo/src/app.ts');
+  });
+
   it('renders response output tool results when no enriched end event exists', async () => {
     const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
     const records: CodexEnvelope[] = [

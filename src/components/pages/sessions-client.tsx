@@ -14,6 +14,7 @@ import { LiveWorkingIndicator } from '@/components/session/live-working-indicato
 import { AgentBadge } from '@/components/agent-badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { CacheRefreshStatus } from '@/components/cache-refresh-status';
+import { TimeRangeControl, useAnalyticsTimeRange } from '@/components/time-range-control';
 import { ChevronLeft, ChevronRight, Clock, GitBranch, MessageSquare, FolderKanban, Minimize2, Radio, Search, X } from 'lucide-react';
 import Link from 'next/link';
 
@@ -66,12 +67,13 @@ export function SessionsClient({ initialSessions, initialQuery }: {
 }) {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const timeRange = useAnalyticsTimeRange();
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || initialQuery || '');
   const debouncedQuery = useDebounce(searchQuery, 300);
   const currentPage = parsePageNumber(searchParams.get('page'));
   const offset = (currentPage - 1) * SESSIONS_PAGE_SIZE;
   const fallbackData = initialSessions && currentPage === 1 && debouncedQuery === (initialQuery || '') ? initialSessions : undefined;
-  const { data: sessionPage, isLoading, mutate } = useSessions(SESSIONS_PAGE_SIZE, offset, debouncedQuery, fallbackData);
+  const { data: sessionPage, isLoading, mutate } = useSessions(SESSIONS_PAGE_SIZE, offset, debouncedQuery, fallbackData, timeRange.apiParams);
   const { data: liveSessions } = useLiveSessions();
   const { data: sourceInfo } = useDataSourceInfo();
   const { data: cacheStatus } = useCacheStatus();
@@ -141,7 +143,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Sessions</h1>
           <p className="text-sm text-muted-foreground">
@@ -149,6 +151,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
             {debouncedQuery && ` matching "${debouncedQuery}"`}
           </p>
         </div>
+        <TimeRangeControl value={timeRange.value} onChange={timeRange.setValue} />
       </div>
       <CacheRefreshStatus status={cacheStatus} />
 

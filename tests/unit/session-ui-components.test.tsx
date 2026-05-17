@@ -327,10 +327,23 @@ describe('session UI building blocks', () => {
   it('renders diff tabs, file list, hunk rows, and empty diff state', () => {
     const select = vi.fn();
     const copy = vi.fn();
+    const copyConversation = vi.fn();
     const jump = vi.fn();
 
     renderWithProviders(
       <>
+        <SessionViewTabs
+          view="conversation"
+          onChange={select}
+          conversationCount={3}
+          diffSummary={diffSummary}
+          diffMode="net"
+          onDiffModeChange={select}
+          copiedPatchKey={null}
+          onCopyPatch={copy}
+          copiedVisibleConversation={false}
+          onCopyVisibleConversation={copyConversation}
+        />
         <SessionViewTabs
           view="changes"
           onChange={select}
@@ -363,8 +376,10 @@ describe('session UI building blocks', () => {
 
     expect(normalizeDiffPathKey('./SRC/App.ts')).toBe('src/app.ts');
     expect(screen.getByTestId('session-changes-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Visible Conversation to Clipboard' }));
     fireEvent.click(screen.getAllByRole('button', { name: /copy patch/i })[0]);
     fireEvent.click(screen.getByRole('button', { name: /jump to message/i }));
+    expect(copyConversation).toHaveBeenCalled();
     expect(copy).toHaveBeenCalled();
     expect(jump).toHaveBeenCalledWith(2);
     expect(screen.getByText('No file changes found in this session.')).toBeInTheDocument();

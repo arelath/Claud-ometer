@@ -79,6 +79,50 @@ describe('Codex tool parser', () => {
     ]));
   });
 
+  it('creates apply_patch diff artifacts from legacy patch input', () => {
+    const patchInput = [
+      '*** Begin Patch',
+      '*** Update File: d:\\dev\\repo\\src\\app.ts',
+      '@@',
+      '-export const enabled = false;',
+      '+export const enabled = true;',
+      '*** Add File: d:\\dev\\repo\\src\\new.ts',
+      '+export const added = true;',
+      '*** End Patch',
+    ].join('\n');
+
+    const calls = buildCodexToolCalls({
+      type: 'custom_tool_call',
+      name: 'apply_patch',
+      call_id: 'patch-legacy',
+      input: patchInput,
+    }, collectCodexToolResults([{
+      timestamp: '2026-04-18T02:05:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'patch-legacy',
+        output: '{"output":"Success. Updated the following files:\\nM d:\\\\dev\\\\repo\\\\src\\\\app.ts\\nA d:\\\\dev\\\\repo\\\\src\\\\new.ts\\n"}',
+      },
+    }]));
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].artifact).toMatchObject({
+      kind: 'diff',
+      oldText: 'export const enabled = false;',
+      newText: 'export const enabled = true;',
+    });
+    expect(calls[1].artifact).toMatchObject({
+      kind: 'diff',
+      oldText: '',
+      newText: 'export const added = true;',
+    });
+    expect(calls.map(call => call.summary)).toEqual([
+      'd:\\dev\\repo\\src\\app.ts',
+      'd:\\dev\\repo\\src\\new.ts',
+    ]);
+  });
+
   it('leaves missing results as pending generic tool calls', () => {
     const calls = buildCodexToolCalls({
       type: 'function_call',

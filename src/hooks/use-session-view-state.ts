@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { SessionMessageDisplay } from '@/lib/claude-data/types';
-import { buildTranscriptItems, getMinimapTargets, messagePassesPreset, type FilterPreset } from '@/lib/session-transcript';
+import { buildTranscriptItems, buildTranscriptMarkdown, getMinimapTargets, messagePassesPreset, type FilterPreset } from '@/lib/session-transcript';
 import type { SessionDiffSummary } from '@/lib/session-diff';
 import { MinimapSegment, MinimapViewport } from '@/components/session/minimap';
 import { normalizeDiffPathKey, type DiffDisplayMode, type MainSessionView } from '@/components/session/diff-viewer';
@@ -34,6 +34,7 @@ interface UseSessionViewStateInput {
   diffSummary: SessionDiffSummary;
   isLive?: boolean;
   liveRevision?: string;
+  assistantLabel?: string;
 }
 
 export function useSessionViewState({
@@ -43,6 +44,7 @@ export function useSessionViewState({
   diffSummary,
   isLive = false,
   liveRevision,
+  assistantLabel = 'Assistant',
 }: UseSessionViewStateInput) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -53,6 +55,7 @@ export function useSessionViewState({
   const [artifactViewer, setArtifactViewer] = useState<ArtifactViewerState | null>(null);
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null);
   const [copiedPatchKey, setCopiedPatchKey] = useState<string | null>(null);
+  const [copiedVisibleConversation, setCopiedVisibleConversation] = useState(false);
   const [pendingConversationJump, setPendingConversationJump] = useState<number | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [unseenMessageCount, setUnseenMessageCount] = useState(0);
@@ -194,6 +197,18 @@ export function useSessionViewState({
     () => buildTranscriptItems(messages, preset, compactionTimestamps, toolFilter),
     [messages, preset, toolFilter, compactionTimestamps],
   );
+  const visibleConversationMarkdown = useMemo(
+    () => buildTranscriptMarkdown(groupedMessages, { assistantLabel }),
+    [assistantLabel, groupedMessages],
+  );
+  const handleCopyVisibleConversation = useCallback(() => {
+    void navigator.clipboard.writeText(visibleConversationMarkdown).then(() => {
+      setCopiedVisibleConversation(true);
+      window.setTimeout(() => {
+        setCopiedVisibleConversation(false);
+      }, 1200);
+    });
+  }, [visibleConversationMarkdown]);
   const presetCounts = useMemo(() => ({
     narrative: messages.filter(message => messagePassesPreset(message, 'narrative')).length,
     tools: messages.filter(message => messagePassesPreset(message, 'tools')).length,
@@ -346,6 +361,7 @@ export function useSessionViewState({
       artifactViewer,
       copiedContextPath,
       copiedPatchKey,
+      copiedVisibleConversation,
       diffMode,
       effectiveSelectedDiffPath,
       groupedMessages,
@@ -365,6 +381,7 @@ export function useSessionViewState({
     actions: {
       handleCopyContextPath,
       handleCopyPatch,
+      handleCopyVisibleConversation,
       handleJumpToDiffMessage,
       handleJumpToMessage,
       handleOpenDiffForPath,

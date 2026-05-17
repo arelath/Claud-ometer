@@ -266,10 +266,20 @@ test('session detail shows compaction markers in transcript and minimap', async 
   await expect(followingUserTurn).toContainText('Continue Context Builder pass 5.');
 
   await expect.poll(async () => {
-    const outputTop = await sentinelOutput.evaluate((element) => (element as HTMLElement).offsetTop);
-    const untimestampedTop = await untimestampedSystemEvent.evaluate((element) => (element as HTMLElement).offsetTop);
-    const markerTop = await transcriptMarker.evaluate((element) => (element as HTMLElement).offsetTop);
-    const followingTop = await followingUserTurn.evaluate((element) => (element as HTMLElement).offsetTop);
-    return outputTop < untimestampedTop && untimestampedTop < markerTop && markerTop < followingTop;
+    const systemHandle = await untimestampedSystemEvent.elementHandle();
+    const markerHandle = await transcriptMarker.elementHandle();
+    const userHandle = await followingUserTurn.elementHandle();
+    if (!systemHandle || !markerHandle || !userHandle) return false;
+
+    const outputBeforeSystem = await sentinelOutput.evaluate((left, right) => (
+      Boolean(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING)
+    ), systemHandle);
+    const systemBeforeMarker = await untimestampedSystemEvent.evaluate((left, right) => (
+      Boolean(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING)
+    ), markerHandle);
+    const markerBeforeUser = await transcriptMarker.evaluate((left, right) => (
+      Boolean(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING)
+    ), userHandle);
+    return outputBeforeSystem && systemBeforeMarker && markerBeforeUser;
   }).toBe(true);
 });

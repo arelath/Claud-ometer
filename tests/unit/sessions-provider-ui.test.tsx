@@ -16,6 +16,7 @@ const hookCalls = vi.hoisted(() => ({
 }));
 
 vi.mock('next/navigation', () => ({
+  usePathname: () => '/sessions',
   useRouter: () => ({ replace: navState.replace }),
   useSearchParams: () => new URLSearchParams(navState.searchParams),
 }));

@@ -67,11 +67,17 @@ export function useCostAnalytics(fallbackData?: CostAnalyticsPayload, timeRange?
   return useSWR<CostAnalyticsPayload>(`/api/costs${query}`, fetcher, { fallbackData: query ? undefined : fallbackData });
 }
 
-export function useSessions(limit = 50, offset = 0, query = '', fallbackData?: SessionInfo[]) {
-  const url = query
-    ? `/api/sessions?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}&includeTotal=1`
-    : `/api/sessions?limit=${limit}&offset=${offset}&includeTotal=1`;
-  const fallbackPage = fallbackData
+export function useSessions(limit = 50, offset = 0, query = '', fallbackData?: SessionInfo[], timeRange?: TimeRangeParams) {
+  const params = new URLSearchParams();
+  if (query) params.set('q', query);
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  params.set('includeTotal', '1');
+  if (timeRange?.start) params.set('start', timeRange.start);
+  if (timeRange?.end) params.set('end', timeRange.end);
+  const hasTimeRange = Boolean(timeRange?.start || timeRange?.end);
+  const url = `/api/sessions?${params.toString()}`;
+  const fallbackPage = fallbackData && !hasTimeRange
     ? { sessions: fallbackData.slice(offset, offset + limit), total: fallbackData.length, limit, offset }
     : undefined;
   return useSWR<SessionsPage>(url, fetcher, { fallbackData: fallbackPage });

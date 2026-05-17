@@ -110,9 +110,14 @@ function defineScrollMetrics(element: HTMLElement, metrics: { scrollTop?: number
     clientHeight: { configurable: true, get: () => values.clientHeight },
   });
 
-  element.scrollTo = vi.fn((options?: ScrollToOptions) => {
-    if (typeof options?.top === 'number') values.scrollTop = options.top;
-  });
+  element.scrollTo = vi.fn((...args: [ScrollToOptions?] | [number, number]) => {
+    const options = args[0];
+    if (typeof options === 'number') {
+      values.scrollTop = options;
+    } else if (typeof options?.top === 'number') {
+      values.scrollTop = options.top;
+    }
+  }) as typeof element.scrollTo;
 }
 
 function Harness({
@@ -192,6 +197,7 @@ function Harness({
           view.state.effectiveSelectedDiffPath || 'no-diff',
           view.state.copiedContextPath || 'no-copied-context',
           view.state.copiedPatchKey || 'no-copied-patch',
+          view.state.copiedVisibleConversation ? 'copied-conversation' : 'no-copied-conversation',
           view.state.showScrollToBottom ? 'show-bottom' : 'hide-bottom',
           view.state.unseenMessageCount,
           view.state.groupedMessages.length,
@@ -212,6 +218,7 @@ function Harness({
       <button type="button" onClick={() => view.actions.handleJumpToDiffMessage(1)}>jump diff</button>
       <button type="button" onClick={() => view.actions.handleCopyContextPath('src/app.ts')}>copy context</button>
       <button type="button" onClick={() => view.actions.handleCopyPatch('patch text', 'patch-1')}>copy patch</button>
+      <button type="button" onClick={() => view.actions.handleCopyVisibleConversation()}>copy conversation</button>
       <button type="button" onClick={() => view.actions.scrollToConversationBottom('smooth')}>bottom</button>
       <button type="button" onClick={() => view.actions.setArtifactViewer({ kind: 'text', title: 'Note', content: 'artifact' })}>artifact</button>
       <button type="button" onClick={() => view.actions.scrollElementIntoConversation('missing')}>missing</button>
@@ -285,17 +292,20 @@ describe('useSessionViewState', () => {
 
     fireEvent.click(screen.getByText('copy context'));
     fireEvent.click(screen.getByText('copy patch'));
+    fireEvent.click(screen.getByText('copy conversation'));
     await act(async () => {
       await Promise.resolve();
     });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('src/app.ts');
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('patch text');
-    expect(screen.getByTestId('state')).toHaveTextContent('src/app.ts|patch-1');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('## Assistant (2026-05-08T12:00:01.000Z)'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('### Tool: Read (tool-1)'));
+    expect(screen.getByTestId('state')).toHaveTextContent('src/app.ts|patch-1|copied-conversation');
 
     act(() => {
       vi.advanceTimersByTime(1200);
     });
-    expect(screen.getByTestId('state')).toHaveTextContent('no-copied-context|no-copied-patch');
+    expect(screen.getByTestId('state')).toHaveTextContent('no-copied-context|no-copied-patch|no-copied-conversation');
 
     fireEvent.click(screen.getByText('jump message'));
     fireEvent.click(screen.getByText('jump diff'));

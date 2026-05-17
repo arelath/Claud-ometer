@@ -4,7 +4,8 @@ import { getProvidersForFilter, resolveSessionProvider } from '@/lib/agent-data/
 import { sortSessionsByTimestamp } from '@/lib/agent-data/aggregate';
 import { parseRouteId } from '@/lib/agent-data/route-id';
 import { getIndexedSessionSummaries } from '@/lib/agent-data/indexer';
-import { summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
+import { filterVisibleSessionSummaries, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
+import { filterByTimeRange, parseApiTimeRangeParams, type TimeRangeParams } from '@/lib/time-range';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 
 export const dynamic = 'force-dynamic';
@@ -36,14 +37,19 @@ function parseNonNegativeInt(value: string | null, fallback: number): number {
 }
 
 function paginatedResponse(summaries: CachedSessionSummary[], limit: number, offset: number, includeTotal: boolean) {
-  const sessions = summariesToSessions(summaries).slice(offset, offset + limit);
+  const visibleSummaries = filterVisibleSessionSummaries(summaries);
+  const sessions = summariesToSessions(visibleSummaries).slice(offset, offset + limit);
   if (!includeTotal) return NextResponse.json(sessions);
   return NextResponse.json({
     sessions,
-    total: summaries.length,
+    total: visibleSummaries.length,
     limit,
     offset,
   });
+}
+
+function getTimeFilteredSummaries(providers: AgentDataProvider[], range: TimeRangeParams): CachedSessionSummary[] {
+  return filterByTimeRange(getIndexedSessionSummaries(providers), range, summary => summary.createdAt);
 }
 
 export const GET = withErrorHandler(async (request: Request) => {
@@ -56,9 +62,11 @@ export const GET = withErrorHandler(async (request: Request) => {
   const includeTotal = searchParams.get('includeTotal') === '1';
   const providers = getProvidersForFilter(agent);
   if (agent && agent !== 'active' && providers.length === 0) apiError('Invalid provider filter', 400);
+  const { range, error } = parseApiTimeRangeParams(searchParams);
+  if (error) apiError(error, 400);
 
   if (query) {
-    const summaries = getIndexedSessionSummaries(providers);
+    const summaries = getTimeFilteredSummaries(providers, range);
     const lowerQuery = query.toLowerCase();
     const matchingSummaries = summaries.filter(summary => summarySearchText(summary).includes(lowerQuery));
     return paginatedResponse(matchingSummaries, limit, offset, includeTotal);
@@ -69,7 +77,7 @@ export const GET = withErrorHandler(async (request: Request) => {
     const projectProviders = parsedProjectId.agentKind
       ? [resolveSessionProvider(projectId)].filter((provider): provider is AgentDataProvider => Boolean(provider))
       : providers;
-    const summaries = getIndexedSessionSummaries(projectProviders);
+    const summaries = getTimeFilteredSummaries(projectProviders, range);
     const nativeProjectId = parsedProjectId.nativeId;
     const sessions = sortSessionsByTimestamp(summariesToSessions(summaries.filter(summary => {
       if (parsedProjectId.agentKind && summary.provider !== parsedProjectId.agentKind) return false;
@@ -78,6 +86,6 @@ export const GET = withErrorHandler(async (request: Request) => {
     return NextResponse.json(sessions);
   }
 
-  const summaries = getIndexedSessionSummaries(providers);
+  const summaries = getTimeFilteredSummaries(providers, range);
   return paginatedResponse(summaries, limit, offset, includeTotal);
 }, 'Error fetching sessions', 'Failed to fetch sessions');

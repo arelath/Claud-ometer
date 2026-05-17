@@ -12,6 +12,7 @@ import {
 import { getCodeLanguageLabel, guessCodeLanguage, tokenizeCode, type CodeLanguage } from '@/lib/code-highlighting';
 import { formatDisplayPath, normalizeDisplayPath, splitDisplayPath } from '@/lib/path-utils';
 import { renderHighlightedTokens } from './artifact-viewer';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 export type MainSessionView = 'conversation' | 'changes';
 export type DiffDisplayMode = 'net' | 'edits';
@@ -25,7 +26,18 @@ function formatDiffFileCountLabel(summary: SessionDiffSummary): string {
   return summary.fileCount === 1 ? '1 file' : `${summary.fileCount} files`;
 }
 
-export function SessionViewTabs({ view, onChange, conversationCount, diffSummary, diffMode, onDiffModeChange, copiedPatchKey, onCopyPatch }: {
+export function SessionViewTabs({
+  view,
+  onChange,
+  conversationCount,
+  diffSummary,
+  diffMode,
+  onDiffModeChange,
+  copiedPatchKey,
+  onCopyPatch,
+  copiedVisibleConversation = false,
+  onCopyVisibleConversation,
+}: {
   view: MainSessionView;
   onChange: (view: MainSessionView) => void;
   conversationCount: number;
@@ -34,6 +46,8 @@ export function SessionViewTabs({ view, onChange, conversationCount, diffSummary
   onDiffModeChange: (mode: DiffDisplayMode) => void;
   copiedPatchKey: string | null;
   onCopyPatch: (patchText: string, key: string) => void;
+  copiedVisibleConversation?: boolean;
+  onCopyVisibleConversation?: () => void;
 }) {
   const buttonClass = (active: boolean) => (
     `-mb-px inline-flex items-center gap-2 border-b-2 px-2 py-2 text-sm font-semibold transition-colors ${
@@ -44,6 +58,7 @@ export function SessionViewTabs({ view, onChange, conversationCount, diffSummary
   );
   const allPatchKey = `${diffMode}:__all__`;
   const allCopied = copiedPatchKey === allPatchKey;
+  const showCopyVisibleConversation = view === 'conversation' && Boolean(onCopyVisibleConversation);
 
   return (
     <div className="-mx-4 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-4">
@@ -70,14 +85,33 @@ export function SessionViewTabs({ view, onChange, conversationCount, diffSummary
           </span>
         </button>
       </div>
-      {diffSummary.fileCount > 0 && (
+      {(diffSummary.fileCount > 0 || showCopyVisibleConversation) && (
         <div className="flex items-center gap-2">
-          <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-0.5 font-mono text-[11px] text-green-700 dark:text-green-300">
-            +{diffSummary.addedLines}
-          </span>
-          <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 font-mono text-[11px] text-red-700 dark:text-red-300">
-            -{diffSummary.removedLines}
-          </span>
+          {diffSummary.fileCount > 0 && (
+            <>
+              <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-0.5 font-mono text-[11px] text-green-700 dark:text-green-300">
+                +{diffSummary.addedLines}
+              </span>
+              <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 font-mono text-[11px] text-red-700 dark:text-red-300">
+                -{diffSummary.removedLines}
+              </span>
+            </>
+          )}
+          {showCopyVisibleConversation && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onCopyVisibleConversation}
+                  aria-label="Copy Visible Conversation to Clipboard"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/60 bg-background text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+                >
+                  {copiedVisibleConversation ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Copy Visible Conversation to Clipboard</TooltipContent>
+            </Tooltip>
+          )}
           {view === 'changes' && (
             <>
               <DiffModeToggle mode={diffMode} onChange={onDiffModeChange} />

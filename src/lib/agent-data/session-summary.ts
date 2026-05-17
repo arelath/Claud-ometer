@@ -98,6 +98,22 @@ function summaryTokenTotal(summary: CachedSessionSummary): number {
   return summary.tokenTotals.input + summary.tokenTotals.output + summary.tokenTotals.cacheRead + summary.tokenTotals.cacheWrite;
 }
 
+function sessionInfoTokenTotal(session: SessionInfo): number {
+  return session.totalInputTokens + session.totalOutputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens;
+}
+
+export function isVisibleSessionSummary(summary: CachedSessionSummary): boolean {
+  return !(summary.messageCount <= 0 && summary.toolCallCount <= 0 && summaryTokenTotal(summary) <= 0);
+}
+
+export function isVisibleSessionInfo(session: SessionInfo): boolean {
+  return !(session.messageCount <= 0 && session.toolCallCount <= 0 && sessionInfoTokenTotal(session) <= 0);
+}
+
+export function filterVisibleSessionSummaries(summaries: CachedSessionSummary[]): CachedSessionSummary[] {
+  return summaries.filter(isVisibleSessionSummary);
+}
+
 export function getSummaryModelUsage(summary: CachedSessionSummary): Record<string, CachedModelUsage> {
   if (Object.keys(summary.modelUsage || {}).length > 0) return summary.modelUsage;
   return {
@@ -170,13 +186,14 @@ export function sortSummariesByTimestamp(summaries: CachedSessionSummary[]): Cac
 }
 
 export function summariesToSessions(summaries: CachedSessionSummary[]): SessionInfo[] {
-  return sortSummariesByTimestamp(summaries).map(summaryToSessionInfo);
+  return sortSummariesByTimestamp(filterVisibleSessionSummaries(summaries)).map(summaryToSessionInfo);
 }
 
 export function summariesToProjects(summaries: CachedSessionSummary[]): ProjectInfo[] {
+  const visibleSummaries = filterVisibleSessionSummaries(summaries);
   const projects = new Map<string, ProjectInfo>();
 
-  for (const summary of summaries) {
+  for (const summary of visibleSummaries) {
     const session = summaryToSessionInfo(summary);
     const publicProjectId = summary.provider === 'claude' ? summary.nativeProjectId : summary.projectRouteId;
     const project = projects.get(summary.projectRouteId) || {
@@ -209,7 +226,8 @@ export function summariesToProjects(summaries: CachedSessionSummary[]): ProjectI
 }
 
 export function summariesToDashboardStats(summaries: CachedSessionSummary[]): DashboardStats {
-  const sortedSummaries = sortSummariesByTimestamp(summaries);
+  const visibleSummaries = filterVisibleSessionSummaries(summaries);
+  const sortedSummaries = sortSummariesByTimestamp(visibleSummaries);
   const sessions = sortedSummaries.map(summaryToSessionInfo);
   const dailyActivity = new Map<string, DailyActivity>();
   const dailyModelTokens = new Map<string, DailyModelTokens>();
@@ -291,9 +309,9 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
   }, null);
 
   return {
-    totalSessions: summaries.length,
-    totalMessages: summaries.reduce((sum, summary) => sum + summary.messageCount, 0),
-    totalTokens: summaries.reduce((sum, summary) => sum + summaryTokenTotal(summary), 0),
+    totalSessions: visibleSummaries.length,
+    totalMessages: visibleSummaries.reduce((sum, summary) => sum + summary.messageCount, 0),
+    totalTokens: visibleSummaries.reduce((sum, summary) => sum + summaryTokenTotal(summary), 0),
     estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
     estimatedCosts,
     dailyActivity: Array.from(dailyActivity.values()).sort((left, right) => left.date.localeCompare(right.date)),
@@ -302,7 +320,7 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
     dailyChangeActivity: Array.from(dailyChangeActivity.values()).sort((left, right) => left.date.localeCompare(right.date)),
     modelUsage,
     hourCounts,
-    firstSessionDate: summaries.map(summary => summary.createdAt).sort()[0]?.slice(0, 10) || '',
+    firstSessionDate: visibleSummaries.map(summary => summary.createdAt).sort()[0]?.slice(0, 10) || '',
     longestSession: longestSession
       ? {
           sessionId: longestSession.id,
@@ -311,7 +329,7 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
           timestamp: longestSession.timestamp,
         }
       : { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
-    projectCount: new Set(summaries.map(summary => summary.projectRouteId)).size,
+    projectCount: new Set(visibleSummaries.map(summary => summary.projectRouteId)).size,
     recentSessions: sessions.slice(0, 10),
   };
 }

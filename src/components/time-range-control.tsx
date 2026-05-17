@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useId, useMemo } from 'react';
+import { useCallback, useEffect, useId, useMemo } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { CalendarRange } from 'lucide-react';
+import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -10,12 +10,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
+  canShiftTimeRangeForward,
   getDefaultTimeRangeSelection,
   getTodayDateOnly,
   isDateOnly,
+  normalizeTimeRangeSelection,
   parseTimeRangeSearchParams,
+  shiftTimeRangeSelection,
   TIME_RANGE_OPTIONS,
   toTimeRangeParams,
   writeTimeRangeSearchParams,
@@ -23,6 +27,8 @@ import {
   type TimeRangePreset,
   type TimeRangeSelection,
 } from '@/lib/time-range';
+
+const TIME_RANGE_STORAGE_KEY = 'claudometer.analyticsTimeRange';
 
 export function useAnalyticsTimeRange(): {
   value: TimeRangeSelection;
@@ -34,15 +40,28 @@ export function useAnalyticsTimeRange(): {
   const searchParams = useSearchParams();
   const searchText = searchParams.toString();
 
-  const value = useMemo(() => parseTimeRangeSearchParams(new URLSearchParams(searchText)), [searchText]);
+  const value = useMemo(() => {
+    const currentSearchParams = new URLSearchParams(searchText);
+    if (currentSearchParams.has('range')) {
+      return parseTimeRangeSearchParams(currentSearchParams);
+    }
+    return readStoredTimeRangeSelection() ?? parseTimeRangeSearchParams(currentSearchParams);
+  }, [searchText]);
   const apiParams = useMemo(() => toTimeRangeParams(value), [value]);
 
   const setValue = useCallback((selection: TimeRangeSelection) => {
+    const normalized = normalizeTimeRangeSelection(selection);
+    writeStoredTimeRangeSelection(normalized);
     const nextSearchParams = new URLSearchParams(searchText);
-    writeTimeRangeSearchParams(nextSearchParams, selection);
+    writeTimeRangeSearchParams(nextSearchParams, normalized);
+    nextSearchParams.delete('page');
     const query = nextSearchParams.toString();
     router.replace(`${pathname}${query ? `?${query}` : ''}`, { scroll: false });
   }, [pathname, router, searchText]);
+
+  useEffect(() => {
+    writeStoredTimeRangeSelection(value);
+  }, [value]);
 
   return { value, apiParams, setValue };
 }
@@ -57,6 +76,7 @@ export function TimeRangeControl({ value, onChange, className }: TimeRangeContro
   const id = useId();
   const today = getTodayDateOnly();
   const isAllHistory = value.preset === 'all';
+  const canGoForward = canShiftTimeRangeForward(value);
 
   const updatePreset = (preset: string) => {
     onChange(getDefaultTimeRangeSelection(preset as TimeRangePreset));
@@ -80,6 +100,10 @@ export function TimeRangeControl({ value, onChange, className }: TimeRangeContro
     });
   };
 
+  const shiftRange = (direction: -1 | 1) => {
+    onChange(shiftTimeRangeSelection(value, direction));
+  };
+
   return (
     <div className={cn('flex flex-wrap items-center gap-2', className)}>
       <div className="flex items-center gap-1.5">
@@ -96,6 +120,37 @@ export function TimeRangeControl({ value, onChange, className }: TimeRangeContro
             ))}
           </SelectContent>
         </Select>
+        {!isAllHistory && (
+          <div className="flex items-center rounded-md border border-border/60 bg-card shadow-xs">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Previous time range"
+                  onClick={() => shiftRange(-1)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Previous time range</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Next time range"
+                  onClick={() => shiftRange(1)}
+                  disabled={!canGoForward}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-r-md border-l border-border/60 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-45"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Next time range</TooltipContent>
+            </Tooltip>
+          </div>
+        )}
       </div>
 
       {!isAllHistory && (
@@ -127,4 +182,26 @@ export function TimeRangeControl({ value, onChange, className }: TimeRangeContro
       )}
     </div>
   );
+}
+
+function readStoredTimeRangeSelection(): TimeRangeSelection | undefined {
+  if (typeof window === 'undefined') return undefined;
+
+  try {
+    const stored = window.localStorage.getItem(TIME_RANGE_STORAGE_KEY);
+    if (!stored) return undefined;
+    return normalizeTimeRangeSelection(JSON.parse(stored) as Partial<TimeRangeSelection>);
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredTimeRangeSelection(selection: TimeRangeSelection): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(TIME_RANGE_STORAGE_KEY, JSON.stringify(selection));
+  } catch {
+    // Storage can be unavailable in restricted browser contexts; URL state still works.
+  }
 }

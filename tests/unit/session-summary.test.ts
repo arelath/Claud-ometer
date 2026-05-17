@@ -3,6 +3,7 @@ import {
   SESSION_SUMMARY_CACHE_VERSION,
   summariesToDashboardStats,
   summariesToProjects,
+  summariesToSessions,
   summaryToSessionInfo,
   type CachedSessionSummary,
 } from '@/lib/agent-data/session-summary';
@@ -127,5 +128,34 @@ describe('session summary aggregation', () => {
     }]);
     expect(Object.keys(stats.modelUsage)).toEqual(expect.arrayContaining(['gpt-5.5', 'gpt-5.4']));
     expect(stats.recentSessions.map(session => session.id)).toEqual(['session-2', 'session-1']);
+  });
+
+  it('excludes empty zero-token placeholder sessions from user-facing lists and counts', () => {
+    const visible = makeSummary();
+    const emptyPlaceholder = makeSummary({
+      nativeId: 'empty-session',
+      routeId: 'copilot:workspace:empty-session',
+      provider: 'copilot',
+      sourceFilePath: 'D:/repo/empty.jsonl',
+      createdAt: '2026-05-08T12:00:00.000Z',
+      updatedAt: '2026-05-08T12:00:00.000Z',
+      messageCount: 0,
+      userMessageCount: 0,
+      assistantMessageCount: 0,
+      toolCallCount: 0,
+      tokenTotals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoningOutput: 0 },
+      modelUsage: {},
+      toolsUsed: {},
+      changeTotals: { addedLines: 0, removedLines: 0, netLineDelta: 0, changedLines: 0, fileCount: 0, editCount: 0 },
+    });
+
+    expect(summariesToSessions([emptyPlaceholder, visible]).map(session => session.nativeId)).toEqual(['session-1']);
+    expect(summariesToProjects([emptyPlaceholder, visible])).toMatchObject([{ sessionCount: 1, totalMessages: 2 }]);
+    expect(summariesToDashboardStats([emptyPlaceholder, visible])).toMatchObject({
+      totalSessions: 1,
+      totalMessages: 2,
+      totalTokens: 127,
+      projectCount: 1,
+    });
   });
 });

@@ -18,7 +18,7 @@ import { getSessionChangeTotals } from '@/lib/session-diff';
 
 const parsedCache = new AgentDataCache<CodexParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v4';
+export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v5';
 
 async function parseDiscoveredSession(fileInfo: CodexSessionFileInfo): Promise<CodexParsedSession> {
   const signature = getFileSignature(fileInfo.filePath);

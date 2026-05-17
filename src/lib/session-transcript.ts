@@ -659,3 +659,226 @@ export function getMinimapTargets(items: TranscriptItem[]): TranscriptTarget[] {
 
   return targets;
 }
+
+export interface TranscriptMarkdownOptions {
+  assistantLabel?: string;
+}
+
+const MARKDOWN_DETAIL_NOISE_KEYS = new Set([
+  'type',
+  'description',
+  'cache_control',
+  'sourceToolAssistantUUID',
+  'tool_use_id',
+  'toolUseId',
+  'leafUuid',
+  'messageId',
+  'uuid',
+  'parent_tool_use_id',
+]);
+
+function normalizeMarkdownText(value: string | undefined): string {
+  return (value || '').replace(/\r\n?/g, '\n').trim();
+}
+
+function formatMarkdownTimestamp(timestamp: string | undefined): string {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString();
+}
+
+function headingWithTimestamp(level: number, title: string, timestamp: string | undefined): string {
+  const stamp = formatMarkdownTimestamp(timestamp);
+  return `${'#'.repeat(level)} ${title}${stamp ? ` (${stamp})` : ''}`;
+}
+
+function maxBacktickRun(value: string): number {
+  return Math.max(0, ...Array.from(value.matchAll(/`+/g), match => match[0].length));
+}
+
+function markdownCodeSpan(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '``';
+  const fence = '`'.repeat(maxBacktickRun(normalized) + 1);
+  const needsPadding = normalized.startsWith('`') || normalized.endsWith('`');
+  return `${fence}${needsPadding ? ' ' : ''}${normalized}${needsPadding ? ' ' : ''}${fence}`;
+}
+
+function markdownFence(content: string, language = 'text'): string {
+  const normalized = content.replace(/\r\n?/g, '\n').replace(/\s+$/g, '');
+  const fence = '`'.repeat(Math.max(3, maxBacktickRun(normalized) + 1));
+  return `${fence}${language}\n${normalized}\n${fence}`;
+}
+
+function shouldIncludeMarkdownDetail(detail: SessionToolCallDisplay['details'][number]): boolean {
+  const keyTail = detail.key.split('.').pop() || detail.key;
+  const value = normalizeMarkdownText(detail.value);
+  if (!value || value === '[]' || value === '""' || value === '{}') return false;
+  return !MARKDOWN_DETAIL_NOISE_KEYS.has(keyTail);
+}
+
+function appendMarkdownDetails(parts: string[], details: SessionToolCallDisplay['details']): void {
+  const visibleDetails = details.filter(shouldIncludeMarkdownDetail);
+  if (visibleDetails.length === 0) return;
+
+  parts.push('#### Details');
+  for (const detail of visibleDetails) {
+    const value = normalizeMarkdownText(detail.value);
+    if (value.includes('\n')) {
+      parts.push(`- ${detail.label || detail.key}:\n\n${markdownFence(value)}`);
+    } else {
+      parts.push(`- ${detail.label || detail.key}: ${markdownCodeSpan(value)}`);
+    }
+  }
+}
+
+function appendMarkdownBlocks(parts: string[], blocks: SessionMessageBlockDisplay[] | undefined, type: SessionMessageBlockDisplay['type']): void {
+  for (const block of (blocks || []).filter(item => item.type === type)) {
+    if (type === 'thinking') {
+      const summary = normalizeMarkdownText(block.summary);
+      if (summary) parts.push(`> Thinking: ${summary}`);
+      continue;
+    }
+
+    parts.push(`### ${block.title || 'Event'}`);
+    const summary = normalizeMarkdownText(block.summary);
+    const content = normalizeMarkdownText(block.content);
+    if (summary && summary !== content) parts.push(summary);
+    appendMarkdownDetails(parts, block.details);
+    if (content) parts.push(markdownFence(content));
+  }
+}
+
+function appendMarkdownArtifact(parts: string[], tool: SessionToolCallDisplay): void {
+  const artifact = tool.artifact;
+  if (!artifact) return;
+
+  const title = normalizeMarkdownText(artifact.title) || 'Artifact';
+  parts.push(`#### Artifact: ${title}`);
+
+  if (artifact.kind === 'text') {
+    const content = normalizeMarkdownText(artifact.content);
+    if (content) parts.push(markdownFence(content));
+    return;
+  }
+
+  if (artifact.kind === 'diff') {
+    const oldText = normalizeMarkdownText(artifact.oldText);
+    const newText = normalizeMarkdownText(artifact.newText);
+    const diffText = [
+      '--- old',
+      '+++ new',
+      oldText ? oldText.split('\n').map(line => `-${line}`).join('\n') : '',
+      newText ? newText.split('\n').map(line => `+${line}`).join('\n') : '',
+    ].filter(Boolean).join('\n');
+    if (diffText) parts.push(markdownFence(diffText, 'diff'));
+  }
+}
+
+function appendMarkdownToolCall(parts: string[], tool: SessionToolCallDisplay): void {
+  const idLabel = tool.id ? ` (${tool.id})` : '';
+  parts.push(`### Tool: ${tool.name}${idLabel}`);
+
+  const summary = normalizeMarkdownText(tool.summary);
+  if (summary && summary !== tool.name) parts.push(summary);
+  appendMarkdownDetails(parts, tool.details);
+  appendMarkdownArtifact(parts, tool);
+}
+
+function appendMarkdownToolResult(parts: string[], message: SessionMessageDisplay): void {
+  const resultId = getToolResultId(message);
+  const blocks = message.blocks || [];
+  const messageContent = normalizeMarkdownText(message.content);
+
+  if (blocks.length === 0) {
+    parts.push(`### Tool Result${resultId ? ` (${resultId})` : ''}`);
+    if (messageContent) parts.push(markdownFence(messageContent));
+    return;
+  }
+
+  for (const block of blocks) {
+    const content = normalizeMarkdownText(block.content);
+    const summary = normalizeMarkdownText(block.summary);
+    parts.push(`### Tool Result: ${block.title || 'Output'}${resultId ? ` (${resultId})` : ''}`);
+    if (messageContent && messageContent !== content && messageContent !== summary) {
+      parts.push(messageContent);
+    }
+    if (summary && summary !== content) parts.push(summary);
+    appendMarkdownDetails(parts, block.details);
+    if (content) parts.push(markdownFence(content));
+  }
+}
+
+function appendMarkdownToolPair(parts: string[], pair: ToolPair): void {
+  if (pair.toolUse) {
+    const toolUse = pair.toolUse.message;
+    if (toolUse.content.trim()) parts.push(normalizeMarkdownText(toolUse.content));
+    for (const tool of toolUse.toolCalls || []) appendMarkdownToolCall(parts, tool);
+    appendMarkdownBlocks(parts, toolUse.blocks, 'thinking');
+  }
+
+  if (pair.toolResult) appendMarkdownToolResult(parts, pair.toolResult.message);
+}
+
+function appendMarkdownAssistant(parts: string[], item: Extract<GroupedItem, { type: 'assistant' }>, assistantLabel: string): void {
+  parts.push(headingWithTimestamp(2, assistantLabel, item.message.timestamp));
+
+  const content = normalizeMarkdownText(item.message.content);
+  if (content) parts.push(content);
+
+  appendMarkdownBlocks(parts, item.message.blocks, 'thinking');
+
+  for (const tool of item.message.toolCalls || []) appendMarkdownToolCall(parts, tool);
+  appendMarkdownBlocks(parts, item.message.blocks, 'event');
+
+  const timeline = item.toolTimeline || item.toolPairs.map(pair => ({ type: 'tool-pair' as const, pair }));
+  for (const timelineItem of timeline) {
+    if (timelineItem.type === 'compaction') {
+      appendMarkdownCompaction(parts, timelineItem);
+    } else {
+      appendMarkdownToolPair(parts, timelineItem.pair);
+    }
+  }
+}
+
+function appendMarkdownSystemGroup(parts: string[], item: Extract<GroupedItem, { type: 'system-group' }>): void {
+  parts.push('## System Events');
+  for (const { message } of item.messages) {
+    const title = message.role === 'command' ? 'Command' : 'System';
+    parts.push(headingWithTimestamp(3, title, message.timestamp));
+    const content = normalizeMarkdownText(message.content);
+    if (content) {
+      parts.push(message.role === 'command' ? markdownFence(content, 'sh') : content);
+    }
+    appendMarkdownBlocks(parts, message.blocks, 'event');
+  }
+}
+
+function appendMarkdownCompaction(parts: string[], item: CompactionMarker): void {
+  const stamp = formatMarkdownTimestamp(item.timestamp);
+  parts.push('---');
+  parts.push(`_Context Window Compaction${stamp ? `: ${stamp}` : ''}_`);
+}
+
+export function buildTranscriptMarkdown(items: TranscriptItem[], options: TranscriptMarkdownOptions = {}): string {
+  const parts: string[] = [];
+  const assistantLabel = options.assistantLabel || 'Assistant';
+
+  for (const item of items) {
+    if (item.type === 'compaction') {
+      appendMarkdownCompaction(parts, item);
+    } else if (item.type === 'user') {
+      parts.push(headingWithTimestamp(2, 'User', item.message.timestamp));
+      const content = normalizeMarkdownText(item.message.content);
+      if (content) parts.push(content);
+    } else if (item.type === 'assistant') {
+      appendMarkdownAssistant(parts, item, assistantLabel);
+    } else if (item.type === 'system-group') {
+      appendMarkdownSystemGroup(parts, item);
+    }
+  }
+
+  const markdown = parts.filter(part => part.trim()).join('\n\n');
+  return markdown ? `${markdown}\n` : '';
+}

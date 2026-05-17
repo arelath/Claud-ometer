@@ -7,8 +7,17 @@ import {
   setSelectedAgents,
 } from '@/lib/claude-data/data-source';
 import { isAgentKind } from '@/lib/agent-data/types';
+import { getActiveProviders } from '@/lib/agent-data/registry';
+import { resetAnalyticsMemo } from '@/lib/agent-data/analytics';
+import { rebuildSessionIndex, resetSessionIndexer } from '@/lib/agent-data/indexer';
 
 export const dynamic = 'force-dynamic';
+
+function resetRuntimeCaches(): void {
+  resetAnalyticsMemo();
+  resetSessionIndexer();
+  for (const provider of getActiveProviders()) provider.resetCache?.();
+}
 
 export async function GET() {
   return NextResponse.json(getActiveAgentDataSource());
@@ -29,5 +38,7 @@ export const PUT = withErrorHandler(async (request: Request) => {
     setSelectedAgents(agents);
   }
   setDataSource(source);
+  resetRuntimeCaches();
+  await rebuildSessionIndex(getActiveProviders());
   return NextResponse.json(getActiveAgentDataSource());
 }, 'Error switching data source', 'Failed to switch data source');

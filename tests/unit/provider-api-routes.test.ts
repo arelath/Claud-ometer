@@ -115,7 +115,9 @@ describe('provider API routes', () => {
     const stats = await (await getStats(new Request('http://localhost/api/stats?agent=codex'))).json();
     const filteredStats = await (await getStats(new Request('http://localhost/api/stats?agent=codex&start=2026-05-09&end=2026-05-10'))).json();
     const filteredProjects = await (await getProjects(new Request('http://localhost/api/projects?agent=codex&start=2026-05-09&end=2026-05-10'))).json();
+    const filteredSessions = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex&start=2026-05-09&end=2026-05-10&includeTotal=1'))).json();
     const matchingStats = await (await getStats(new Request('http://localhost/api/stats?agent=codex&start=2026-05-08&end=2026-05-08'))).json();
+    const matchingSessions = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex&start=2026-05-08&end=2026-05-08&includeTotal=1'))).json();
 
     expect(projects[0]).toMatchObject({ agentKind: 'codex', name: 'Claud-ometer' });
     expect(sessions[0]).toMatchObject({ agentKind: 'codex', id: `codex:${codexFixtureSessionId}` });
@@ -125,7 +127,9 @@ describe('provider API routes', () => {
     expect(stats).toMatchObject({ totalSessions: 1, projectCount: 1 });
     expect(filteredStats).toMatchObject({ totalSessions: 0, projectCount: 0 });
     expect(filteredProjects).toEqual([]);
+    expect(filteredSessions).toMatchObject({ sessions: [], total: 0 });
     expect(matchingStats).toMatchObject({ totalSessions: 1, projectCount: 1 });
+    expect(matchingSessions).toMatchObject({ total: 1 });
   });
 
   it('returns Copilot projects, sessions, details, and stats through provider routes', async () => {
@@ -165,7 +169,7 @@ describe('provider API routes', () => {
     expect(stats).toMatchObject({ totalSessions: 3, totalMessages: 10, projectCount: 1 });
   });
 
-  it('keeps sessions reads cache-only until the summary cache is rebuilt', async () => {
+  it('keeps sessions reads cache-only and hides empty zero-token sessions after rebuild', async () => {
     const [{ POST: rebuildCache }, { GET: getSessions }] = await Promise.all([
       import('@/app/api/cache/route'),
       import('@/app/api/sessions/route'),
@@ -205,13 +209,8 @@ describe('provider API routes', () => {
     const page = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex&limit=5&includeTotal=1'))).json();
     const liveSession = page.sessions.find((session: { id: string }) => session.id === `codex:${liveId}`);
 
-    expect(page.total).toBe(2);
-    expect(liveSession).toMatchObject({
-      agentKind: 'codex',
-      title: 'Live Codex Session',
-      projectName: 'LiveCodex',
-      model: 'gpt-5.5',
-    });
+    expect(page.total).toBe(1);
+    expect(liveSession).toBeUndefined();
   });
 
   it('aggregates mixed providers, searches both, and preserves legacy Claude details', async () => {

@@ -9,6 +9,7 @@ import { ModelBreakdown } from '@/components/charts/model-breakdown';
 import { PeakHours } from '@/components/charts/peak-hours';
 import { UsageOverTime } from '@/components/charts/usage-over-time';
 import { LinesChangedOverTime } from '@/components/charts/lines-changed-over-time';
+import type { DailyModelTokens } from '@/lib/claude-data/types';
 
 vi.mock('recharts', () => {
   const Chart = ({ children, data }: { children?: React.ReactNode; data?: unknown[] }) => (
@@ -58,7 +59,7 @@ const dailyActivity = [
   { date: '2026-05-07', messageCount: 8, sessionCount: 2, toolCallCount: 12 },
 ];
 
-const dailyModelTokens = [
+const dailyModelTokens: DailyModelTokens[] = [
   {
     date: '2026-05-06',
     tokensByModel: { 'claude-opus-4': 1200, 'anthropic.claude-opus-4': 800, unknown: 0 },

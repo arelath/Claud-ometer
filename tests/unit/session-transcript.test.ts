@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildTranscriptItems,
+  buildTranscriptMarkdown,
   getMinimapTargets,
   getToolResultId,
   groupMessages,
@@ -362,5 +363,33 @@ describe('session transcript grouping', () => {
     const assistantItems = readItems.filter(item => item.type === 'assistant');
     expect(assistantItems).toHaveLength(1);
     expect(assistantItems[0].toolPairs[0].toolUse?.message.toolCalls?.[0]?.name).toBe('Read');
+  });
+
+  it('serializes the currently visible transcript items as markdown', () => {
+    const read = toolCall('Read', 'read-markdown-1', { file_path: 'src/one.ts' });
+    const messages: SessionMessageDisplay[] = [
+      { role: 'user', content: 'Use a tool.', timestamp: '2026-05-03T10:00:00.000Z' },
+      toolUse(1, read),
+      toolResult(2, 'read-markdown-1', 'READ_MARKDOWN_OUTPUT'),
+      { role: 'system', content: 'hidden until all events', timestamp: '2026-05-03T10:00:03.000Z' },
+    ];
+
+    const narrativeMarkdown = buildTranscriptMarkdown(buildTranscriptItems(messages, 'narrative'), { assistantLabel: 'Claude' });
+    expect(narrativeMarkdown).toContain('## User (2026-05-03T10:00:00.000Z)');
+    expect(narrativeMarkdown).toContain('Use a tool.');
+    expect(narrativeMarkdown).not.toContain('### Tool: Read');
+    expect(narrativeMarkdown).not.toContain('READ_MARKDOWN_OUTPUT');
+
+    const toolsMarkdown = buildTranscriptMarkdown(buildTranscriptItems(messages, 'tools'), { assistantLabel: 'Claude' });
+    expect(toolsMarkdown).toContain('## Claude (2026-05-03T10:00:01.000Z)');
+    expect(toolsMarkdown).toContain('### Tool: Read (read-markdown-1)');
+    expect(toolsMarkdown).toContain('- file_path: `src/one.ts`');
+    expect(toolsMarkdown).toContain('### Tool Result: Text (read-markdown-1)');
+    expect(toolsMarkdown).toContain("```text\nREAD_MARKDOWN_OUTPUT\n```");
+    expect(toolsMarkdown).not.toContain('hidden until all events');
+
+    const allMarkdown = buildTranscriptMarkdown(buildTranscriptItems(messages, 'all'), { assistantLabel: 'Claude' });
+    expect(allMarkdown).toContain('## System Events');
+    expect(allMarkdown).toContain('hidden until all events');
   });
 });

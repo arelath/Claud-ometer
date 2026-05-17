@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canShiftTimeRangeForward,
   filterByTimeRange,
   getDefaultTimeRangeSelection,
   parseApiTimeRangeParams,
+  shiftTimeRangeSelection,
 } from '@/lib/time-range';
 
 describe('analytics time ranges', () => {
@@ -43,5 +45,29 @@ describe('analytics time ranges', () => {
     });
     expect(parseApiTimeRangeParams(new URLSearchParams('start=2026-05-31&end=2026-05-01')).error).toBe('Start date must be before or equal to end date');
     expect(parseApiTimeRangeParams(new URLSearchParams('start=bad-date')).error).toBe('Invalid start date');
+  });
+
+  it('moves preset ranges backward and forward by the selected interval', () => {
+    const baseDate = new Date(2026, 4, 17);
+    const range = { preset: '1m' as const, start: '2026-03-17', end: '2026-04-17' };
+
+    expect(shiftTimeRangeSelection(range, -1, baseDate)).toEqual({
+      preset: '1m',
+      start: '2026-02-17',
+      end: '2026-03-17',
+    });
+    expect(shiftTimeRangeSelection(range, 1, baseDate)).toEqual({
+      preset: '1m',
+      start: '2026-04-17',
+      end: '2026-05-17',
+    });
+  });
+
+  it('clamps forward range movement at today', () => {
+    const baseDate = new Date(2026, 4, 17);
+    const currentRange = { preset: '1w' as const, start: '2026-05-11', end: '2026-05-17' };
+
+    expect(canShiftTimeRangeForward(currentRange, baseDate)).toBe(false);
+    expect(shiftTimeRangeSelection(currentRange, 1, baseDate)).toEqual(currentRange);
   });
 });

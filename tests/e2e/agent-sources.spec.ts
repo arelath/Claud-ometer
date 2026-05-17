@@ -16,7 +16,9 @@ test('provider switching flow moves between Claude and Codex fixture data', asyn
   await expect(page.getByLabel('Claude agent').first()).toBeVisible();
   await expect(page.getByLabel('Codex agent').first()).toBeVisible();
 
-  await page.locator('button').filter({ hasText: 'Codex data detected' }).click();
+  await page.getByLabel('Toggle Claude data').click();
+  await expect(page.getByText('No agent sources selected. Dashboard will show no sessions.')).toBeVisible();
+  await page.getByLabel('Toggle Codex data').click();
   await expect(page.getByText('Selected Codex data.')).toBeVisible();
 
   await page.goto('/sessions');
@@ -31,7 +33,9 @@ test('provider switching flow moves between Claude and Codex fixture data', asyn
   await expect(page.getByText('Please add Codex support to the dashboard.')).toBeVisible();
 
   await page.goto('/data');
-  await page.locator('button').filter({ hasText: 'Claude data detected' }).click();
+  await page.getByLabel('Toggle Codex data').click();
+  await expect(page.getByText('No agent sources selected. Dashboard will show no sessions.')).toBeVisible();
+  await page.getByLabel('Toggle Claude data').click();
   await expect(page.getByText('Selected Claude data.')).toBeVisible();
 
   await page.goto('/sessions');

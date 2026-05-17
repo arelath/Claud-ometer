@@ -200,13 +200,13 @@ describe('data, settings, and layout surfaces', () => {
     appState.data.set('/api/data-source', dataSource('live'));
     const click = vi.fn();
     const createElement = vi.spyOn(document, 'createElement');
-    createElement.mockImplementation((tagName: string) => {
+    createElement.mockImplementation(((tagName: string) => {
       const element = document.createElementNS('http://www.w3.org/1999/xhtml', tagName);
       if (tagName === 'a') {
         Object.defineProperty(element, 'click', { configurable: true, value: click });
       }
       return element as HTMLElement;
-    });
+    }) as unknown as typeof document.createElement);
     URL.createObjectURL = vi.fn(() => 'blob:export');
     URL.revokeObjectURL = vi.fn();
     vi.mocked(fetch).mockResolvedValue(new Response(new Blob(['zip']), {

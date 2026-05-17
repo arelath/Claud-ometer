@@ -13,6 +13,13 @@ export interface CodexToolResult {
   source: 'response-output' | 'event-end';
 }
 
+interface ParsedApplyPatchEdit {
+  path: string;
+  oldText: string;
+  newText: string;
+  location?: string;
+}
+
 function detail(key: string, value: unknown, label = key): SessionToolCallDetail | null {
   if (value == null || value === '') return null;
   const rendered = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
@@ -126,7 +133,125 @@ function parseUnifiedDiff(diffText: string): { oldText: string; newText: string;
   return { oldText: oldLines.join('\n'), newText: newLines.join('\n'), location };
 }
 
-function getPatchArtifacts(result?: CodexToolResult): Array<{ path: string; artifact: SessionArtifactDisplay }> {
+function isApplyPatchFileHeader(line: string): boolean {
+  return /^\*\*\* (?:Update|Add|Delete) File: /.test(line);
+}
+
+function parseApplyPatchInput(input: string): ParsedApplyPatchEdit[] {
+  const edits: ParsedApplyPatchEdit[] = [];
+  let filePath = '';
+  let operation = '';
+  let oldLines: string[] = [];
+  let newLines: string[] = [];
+  let location: string | undefined;
+  let hunkCountForFile = 0;
+
+  const flushHunk = () => {
+    if (!filePath) return;
+    if (oldLines.length === 0 && newLines.length === 0) return;
+    edits.push({
+      path: filePath,
+      oldText: oldLines.join('\n'),
+      newText: newLines.join('\n'),
+      location: location && location !== '@@' ? location : hunkCountForFile > 1 ? `hunk ${hunkCountForFile}` : undefined,
+    });
+    oldLines = [];
+    newLines = [];
+  };
+
+  const startFile = (nextOperation: 'update' | 'add' | 'delete', nextPath: string) => {
+    flushHunk();
+    filePath = nextPath.trim();
+    operation = nextOperation;
+    oldLines = [];
+    newLines = [];
+    location = operation === 'add' || operation === 'delete' ? 'line 1' : undefined;
+    hunkCountForFile = operation === 'add' || operation === 'delete' ? 1 : 0;
+  };
+
+  for (const line of input.replace(/\r\n?/g, '\n').split('\n')) {
+    const updateMatch = line.match(/^\*\*\* Update File: (.+)$/);
+    if (updateMatch) {
+      startFile('update', updateMatch[1]);
+      continue;
+    }
+
+    const addMatch = line.match(/^\*\*\* Add File: (.+)$/);
+    if (addMatch) {
+      startFile('add', addMatch[1]);
+      continue;
+    }
+
+    const deleteMatch = line.match(/^\*\*\* Delete File: (.+)$/);
+    if (deleteMatch) {
+      startFile('delete', deleteMatch[1]);
+      continue;
+    }
+
+    const moveMatch = line.match(/^\*\*\* Move to: (.+)$/);
+    if (moveMatch) {
+      filePath = moveMatch[1].trim();
+      continue;
+    }
+
+    if (line.startsWith('@@')) {
+      flushHunk();
+      hunkCountForFile += 1;
+      location = line.trim();
+      continue;
+    }
+
+    if (!filePath || line === '*** Begin Patch' || line === '*** End Patch' || line === '*** End of File') continue;
+    if (line.startsWith('*** ') && !isApplyPatchFileHeader(line)) continue;
+    if (line.startsWith('\\')) continue;
+
+    if (line.startsWith('+')) {
+      if (operation !== 'delete') newLines.push(line.slice(1));
+    } else if (line.startsWith('-')) {
+      if (operation !== 'add') oldLines.push(line.slice(1));
+    } else if (line.startsWith(' ')) {
+      const content = line.slice(1);
+      oldLines.push(content);
+      newLines.push(content);
+    } else if (operation === 'update') {
+      oldLines.push(line);
+      newLines.push(line);
+    }
+  }
+
+  flushHunk();
+  return edits;
+}
+
+function getApplyPatchInput(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.input === 'string' && payload.input.trim()) return payload.input;
+  if (typeof payload.patch === 'string' && payload.patch.trim()) return payload.patch;
+  if (typeof payload.arguments !== 'string' || !payload.arguments.trim()) return undefined;
+  const args = parseJsonObject(payload.arguments);
+  if (typeof args.input === 'string' && args.input.trim()) return args.input;
+  if (typeof args.patch === 'string' && args.patch.trim()) return args.patch;
+  if (payload.arguments.includes('*** Begin Patch')) return payload.arguments;
+  return undefined;
+}
+
+function getPatchArtifactsFromInput(payload: Record<string, unknown>): Array<{ path: string; artifact: SessionArtifactDisplay }> {
+  const input = getApplyPatchInput(payload);
+  if (!input) return [];
+
+  return parseApplyPatchInput(input).map(edit => ({
+    path: edit.path,
+    artifact: {
+      kind: 'diff' as const,
+      title: `${edit.path} diff`,
+      oldText: edit.oldText,
+      newText: edit.newText,
+      location: edit.location,
+      includeWhenEmpty: true,
+    },
+  }));
+}
+
+function getPatchArtifactsFromResult(result?: CodexToolResult): Array<{ path: string; artifact: SessionArtifactDisplay }> {
   const changes = asRecord(result?.payload.changes);
   if (!changes) return [];
 
@@ -155,14 +280,15 @@ function getPatchArtifacts(result?: CodexToolResult): Array<{ path: string; arti
 
 function buildPatchTools(payload: Record<string, unknown>, result?: CodexToolResult): SessionToolCallDisplay[] {
   const callId = getCallId(payload);
-  const artifacts = getPatchArtifacts(result);
+  const artifacts = getPatchArtifactsFromResult(result);
+  const fallbackArtifacts = artifacts.length > 0 ? artifacts : getPatchArtifactsFromInput(payload);
   const baseDetails = compactDetails([
     detail('tool_use_id', callId, 'tool use id'),
     detail('input', payload.input, 'input'),
     detail('status', result ? (result.payload.success === false ? 'failed' : 'success') : 'pending', 'status'),
   ]);
 
-  if (artifacts.length === 0) {
+  if (fallbackArtifacts.length === 0) {
     return [{
       name: 'apply_patch',
       id: callId,
@@ -171,9 +297,9 @@ function buildPatchTools(payload: Record<string, unknown>, result?: CodexToolRes
     }];
   }
 
-  return artifacts.map(({ path, artifact }, index) => ({
+  return fallbackArtifacts.map(({ path, artifact }, index) => ({
     name: 'apply_patch',
-    id: artifacts.length === 1 ? callId : `${callId}:${index + 1}`,
+    id: fallbackArtifacts.length === 1 ? callId : `${callId}:${index + 1}`,
     summary: path,
     details: compactDetails([
       detail('tool_use_id', callId, 'tool use id'),

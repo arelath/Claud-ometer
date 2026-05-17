@@ -54,6 +54,35 @@ export function getDefaultTimeRangeSelection(preset: TimeRangePreset, baseDate =
   };
 }
 
+export function shiftTimeRangeSelection(
+  selection: TimeRangeSelection,
+  direction: -1 | 1,
+  baseDate = new Date(),
+): TimeRangeSelection {
+  const normalized = normalizeTimeRangeSelection(selection, baseDate);
+  if (normalized.preset === 'all') return normalized;
+
+  const startDate = parseDateOnly(normalized.start!);
+  const endDate = parseDateOnly(normalized.end!);
+  const shiftedStart = shiftDateByPreset(startDate, normalized.preset, direction);
+  const shiftedEnd = shiftDateByPreset(endDate, normalized.preset, direction);
+
+  if (direction > 0 && formatDateOnly(shiftedEnd) > getTodayDateOnly(baseDate)) {
+    return getDefaultTimeRangeSelection(normalized.preset, baseDate);
+  }
+
+  return {
+    preset: normalized.preset,
+    start: formatDateOnly(shiftedStart),
+    end: formatDateOnly(shiftedEnd),
+  };
+}
+
+export function canShiftTimeRangeForward(selection: TimeRangeSelection, baseDate = new Date()): boolean {
+  const normalized = normalizeTimeRangeSelection(selection, baseDate);
+  return normalized.preset !== 'all' && Boolean(normalized.end && normalized.end < getTodayDateOnly(baseDate));
+}
+
 export function normalizeTimeRangeSelection(
   selection: Partial<TimeRangeSelection> | undefined,
   baseDate = new Date(),
@@ -160,4 +189,17 @@ function shiftMonths(date: Date, months: number): Date {
 
 function shiftDays(date: Date, days: number): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function parseDateOnly(value: string): Date {
+  const [year, month, day] = value.split('-').map(part => Number.parseInt(part, 10));
+  return new Date(year, month - 1, day);
+}
+
+function shiftDateByPreset(date: Date, preset: Exclude<TimeRangePreset, 'all'>, direction: -1 | 1): Date {
+  if (preset === '1y') return shiftMonths(date, 12 * direction);
+  if (preset === '6m') return shiftMonths(date, 6 * direction);
+  if (preset === '3m') return shiftMonths(date, 3 * direction);
+  if (preset === '1m') return shiftMonths(date, direction);
+  return shiftDays(date, 7 * direction);
 }
