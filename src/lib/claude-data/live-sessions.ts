@@ -16,15 +16,19 @@ interface LiveSessionCacheEntry {
   lastValidValue: LiveSessionInfo | null;
 }
 
+interface TranscriptPreviewValue {
+  messageCount: number;
+  toolCallCount: number;
+  lastPreview: string;
+  activeToolName?: string;
+  cacheLastActivityAtMs: number;
+}
+
 interface TranscriptPreviewCacheEntry {
   signature: string;
-  value: {
-    messageCount: number;
-    toolCallCount: number;
-    lastPreview: string;
-    activeToolName?: string;
-    cacheLastActivityAtMs: number;
-  };
+  fileSize: number;
+  trailingText: string;
+  value: TranscriptPreviewValue;
 }
 
 const liveSessionCache = new Map<string, LiveSessionCacheEntry>();
@@ -251,49 +255,93 @@ function getCacheActivityTimestampMs(msg: SessionMessage): number {
   return toEpochMs(msg.timestamp, 0);
 }
 
-function readTranscriptPreview(filePath: string | null): TranscriptPreviewCacheEntry['value'] & { signature?: string } {
-  if (!filePath || !fs.existsSync(filePath)) {
-    return { messageCount: 0, toolCallCount: 0, lastPreview: '', cacheLastActivityAtMs: 0 };
+function createEmptyTranscriptPreview(): TranscriptPreviewValue {
+  return { messageCount: 0, toolCallCount: 0, lastPreview: '', cacheLastActivityAtMs: 0 };
+}
+
+function applyCompleteTranscriptLine(value: TranscriptPreviewValue, line: string): void {
+  if (!line.trim()) return;
+  value.messageCount += 1;
+
+  try {
+    const parsed = sessionMessageSchema.safeParse(JSON.parse(line));
+    if (!parsed.success) return;
+    const msg = parsed.data as SessionMessage;
+    value.cacheLastActivityAtMs = Math.max(value.cacheLastActivityAtMs, getCacheActivityTimestampMs(msg));
+    const tools = countToolCalls(msg);
+    value.toolCallCount += tools;
+    if (tools > 0 && Array.isArray(msg.message?.content)) {
+      const tool = msg.message.content.find(block => isRecord(block) && block.type === 'tool_use');
+      value.activeToolName = isRecord(tool) && typeof tool.name === 'string' ? tool.name : value.activeToolName;
+    }
+    const preview = getMessagePreview(msg);
+    if (preview) value.lastPreview = preview;
+  } catch {
+    // Ignore malformed transcript lines. The full reader does the same.
+  }
+}
+
+function applyTranscriptText(value: TranscriptPreviewValue, text: string, leadingText = ''): string {
+  const combined = `${leadingText}${text}`;
+  if (!combined) return '';
+
+  const endsWithNewline = /(?:\r?\n)$/.test(combined);
+  const lines = combined.split(/\r?\n/);
+  let trailingText = '';
+  if (!endsWithNewline) {
+    trailingText = lines.pop() || '';
   }
 
-  const signature = getFileSignature(filePath);
-  const cached = transcriptPreviewCache.get(filePath);
-  if (cached?.signature === signature) return { ...cached.value, signature };
+  for (const line of lines) applyCompleteTranscriptLine(value, line);
 
-  const text = fs.readFileSync(filePath, 'utf-8');
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  let toolCallCount = 0;
-  let lastPreview = '';
-  let activeToolName: string | undefined;
-  let cacheLastActivityAtMs = 0;
-
-  for (const line of lines) {
+  if (trailingText.trim()) {
     try {
-      const parsed = sessionMessageSchema.safeParse(JSON.parse(line));
-      if (!parsed.success) continue;
-      const msg = parsed.data as SessionMessage;
-      cacheLastActivityAtMs = Math.max(cacheLastActivityAtMs, getCacheActivityTimestampMs(msg));
-      const tools = countToolCalls(msg);
-      toolCallCount += tools;
-      if (tools > 0 && Array.isArray(msg.message?.content)) {
-        const tool = msg.message.content.find(block => isRecord(block) && block.type === 'tool_use');
-        activeToolName = isRecord(tool) && typeof tool.name === 'string' ? tool.name : activeToolName;
-      }
-      const preview = getMessagePreview(msg);
-      if (preview) lastPreview = preview;
+      JSON.parse(trailingText);
+      applyCompleteTranscriptLine(value, trailingText);
+      trailingText = '';
     } catch {
-      // Ignore malformed transcript lines. The full reader does the same.
+      // Keep a partial trailing JSON object around until the next append.
     }
   }
 
-  const value = {
-    messageCount: lines.length,
-    toolCallCount,
-    lastPreview,
-    activeToolName,
-    cacheLastActivityAtMs,
-  };
-  transcriptPreviewCache.set(filePath, { signature, value });
+  return trailingText;
+}
+
+function readFileAppend(filePath: string, start: number, end: number): string {
+  const length = Math.max(0, end - start);
+  if (length === 0) return '';
+
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead).toString('utf-8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readTranscriptPreview(filePath: string | null): TranscriptPreviewValue & { signature?: string } {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return createEmptyTranscriptPreview();
+  }
+
+  const stat = fs.statSync(filePath);
+  const signature = `${stat.mtimeMs}:${stat.size}`;
+  const cached = transcriptPreviewCache.get(filePath);
+  if (cached?.signature === signature) return { ...cached.value, signature };
+
+  if (cached && stat.size > cached.fileSize) {
+    const value = { ...cached.value };
+    const appendedText = readFileAppend(filePath, cached.fileSize, stat.size);
+    const trailingText = applyTranscriptText(value, appendedText, cached.trailingText);
+    transcriptPreviewCache.set(filePath, { signature, fileSize: stat.size, trailingText, value });
+    return { ...value, signature };
+  }
+
+  const value = createEmptyTranscriptPreview();
+  const trailingText = applyTranscriptText(value, fs.readFileSync(filePath, 'utf-8'));
+  transcriptPreviewCache.set(filePath, { signature, fileSize: stat.size, trailingText, value });
   return { ...value, signature };
 }
 

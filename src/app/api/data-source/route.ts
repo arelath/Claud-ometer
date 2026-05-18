@@ -9,7 +9,7 @@ import {
 import { isAgentKind } from '@/lib/agent-data/types';
 import { getActiveProviders } from '@/lib/agent-data/registry';
 import { resetAnalyticsMemo } from '@/lib/agent-data/analytics';
-import { rebuildSessionIndex, resetSessionIndexer } from '@/lib/agent-data/indexer';
+import { ensureSessionIndexRefresh, resetSessionIndexer } from '@/lib/agent-data/indexer';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,6 +39,6 @@ export const PUT = withErrorHandler(async (request: Request) => {
   }
   setDataSource(source);
   resetRuntimeCaches();
-  await rebuildSessionIndex(getActiveProviders());
+  ensureSessionIndexRefresh(getActiveProviders());
   return NextResponse.json(getActiveAgentDataSource());
 }, 'Error switching data source', 'Failed to switch data source');

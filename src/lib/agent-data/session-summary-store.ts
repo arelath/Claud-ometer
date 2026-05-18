@@ -26,14 +26,20 @@ const memo = new Map<string, MemoEntry>();
 const inflight = new Map<string, Promise<CachedSessionSummary[]>>();
 const SUMMARY_BUILD_CONCURRENCY = 1;
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
 function providerHasSummarySupport(provider: AgentDataProvider): boolean {
   return Boolean(provider.parserVersion && provider.discoverSessionSources && provider.buildSessionSummary);
 }
 
 async function discoverSources(providers: AgentDataProvider[]): Promise<SessionSummarySource[]> {
-  const results = await Promise.all(providers
-    .filter(providerHasSummarySupport)
-    .map(provider => provider.discoverSessionSources!()));
+  const results: SessionSummarySource[][] = [];
+  for (const provider of providers.filter(providerHasSummarySupport)) {
+    await yieldToEventLoop();
+    results.push(await provider.discoverSessionSources!());
+  }
   return results.flat().sort((left, right) => {
     const providerCompare = left.provider.localeCompare(right.provider);
     if (providerCompare) return providerCompare;
@@ -73,6 +79,7 @@ async function mapWithConcurrency<T, R>(
     while (nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
+      await yieldToEventLoop();
       results[index] = await callback(items[index], index);
     }
   }));

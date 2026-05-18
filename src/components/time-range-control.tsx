@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { getAnalyticsGranularity, getBrowserTimeZone } from '@/lib/analytics-time';
 import { cn } from '@/lib/utils';
 import {
   canShiftTimeRangeForward,
@@ -47,7 +48,11 @@ export function useAnalyticsTimeRange(): {
     }
     return readStoredTimeRangeSelection() ?? parseTimeRangeSearchParams(currentSearchParams);
   }, [searchText]);
-  const apiParams = useMemo(() => toTimeRangeParams(value), [value]);
+  const apiParams = useMemo(() => ({
+    ...toTimeRangeParams(value),
+    timeZone: getBrowserTimeZone(),
+    granularity: getAnalyticsGranularity(value),
+  }), [value]);
 
   const setValue = useCallback((selection: TimeRangeSelection) => {
     const normalized = normalizeTimeRangeSelection(selection);

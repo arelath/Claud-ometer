@@ -7,7 +7,7 @@ import {
 } from './session-summary';
 import { sortProjectsByLastActive } from './aggregate';
 import type { DashboardStats, ProjectInfo } from '@/lib/claude-data/types';
-import { filterByTimeRange, type TimeRangeParams } from '@/lib/time-range';
+import type { TimeRangeParams } from '@/lib/time-range';
 
 export interface CostAnalyticsPayload {
   stats: DashboardStats;
@@ -32,7 +32,7 @@ function providerKey(providers: AgentDataProvider[]): string {
 }
 
 function rangeKey(range: TimeRangeParams): string {
-  return `${range.start || ''}:${range.end || ''}`;
+  return `${range.start || ''}:${range.end || ''}:${range.timeZone || ''}:${range.granularity || ''}`;
 }
 
 function getMemoEntry(providers: AgentDataProvider[], range: TimeRangeParams): MemoEntry {
@@ -41,8 +41,7 @@ function getMemoEntry(providers: AgentDataProvider[], range: TimeRangeParams): M
   const cached = memo.get(key);
   if (cached) return cached;
 
-  const summaries = filterByTimeRange(snapshot.summaries, range, summary => summary.createdAt);
-  const entry: MemoEntry = { key, summaries };
+  const entry: MemoEntry = { key, summaries: snapshot.summaries };
   memo.set(key, entry);
   return entry;
 }
@@ -52,7 +51,7 @@ export function getCachedDashboardStats(
   range: TimeRangeParams = {},
 ): DashboardStats {
   const entry = getMemoEntry(providers, range);
-  entry.stats ||= summariesToDashboardStats(entry.summaries);
+  entry.stats ||= summariesToDashboardStats(entry.summaries, range);
   return entry.stats;
 }
 
@@ -61,7 +60,7 @@ export function getCachedProjects(
   range: TimeRangeParams = {},
 ): ProjectInfo[] {
   const entry = getMemoEntry(providers, range);
-  entry.projects ||= sortProjectsByLastActive(summariesToProjects(entry.summaries));
+  entry.projects ||= sortProjectsByLastActive(summariesToProjects(entry.summaries, range));
   return entry.projects;
 }
 
@@ -72,8 +71,8 @@ export function getCachedCostAnalytics(
   const entry = getMemoEntry(providers, range);
   if (!entry.costs) {
     entry.costs = {
-      stats: entry.stats || summariesToDashboardStats(entry.summaries),
-      projects: entry.projects || sortProjectsByLastActive(summariesToProjects(entry.summaries)),
+      stats: entry.stats || summariesToDashboardStats(entry.summaries, range),
+      projects: entry.projects || sortProjectsByLastActive(summariesToProjects(entry.summaries, range)),
     };
     entry.stats = entry.costs.stats;
     entry.projects = entry.costs.projects;

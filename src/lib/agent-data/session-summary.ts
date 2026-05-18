@@ -1,7 +1,19 @@
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
+import {
+  bucketKeyToDate,
+  getBucketKey,
+  getEventLocalDate,
+  getLocalTimeParts,
+  isDateInRange,
+  listBucketKeys,
+  normalizeBucketGranularity,
+  normalizeTimeZone,
+} from '@/lib/analytics-time';
 import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
 import type {
+  AnalyticsTimeBucket,
+  BucketGranularity,
   ChangeTotals,
   CompactionInfo,
   CostEstimates,
@@ -13,9 +25,16 @@ import type {
   ProjectInfo,
   SessionInfo,
 } from '@/lib/claude-data/types';
+import type { TimeRangeParams } from '@/lib/time-range';
+import {
+  buildLegacyChangeEvents,
+  buildLegacyUsageEvents,
+  type CachedChangeEvent,
+  type CachedUsageEvent,
+} from './event-metrics';
 import type { AgentKind } from './types';
 
-export const SESSION_SUMMARY_CACHE_VERSION = 3;
+export const SESSION_SUMMARY_CACHE_VERSION = 4;
 
 export interface SessionSourceSignature {
   size: number;
@@ -75,23 +94,11 @@ export interface CachedSessionSummary {
   };
   modelUsage: Record<string, CachedModelUsage>;
   changeTotals?: ChangeTotals;
+  usageEvents?: CachedUsageEvent[];
+  changeEvents?: CachedChangeEvent[];
   toolsUsed: Record<string, number>;
   compaction: CompactionInfo;
   searchTextPreview?: string;
-}
-
-function datePart(timestamp: string): string {
-  return timestamp.slice(0, 10);
-}
-
-function hourPart(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return '0';
-  return String(date.getHours());
-}
-
-function tokenTotal(usage: CachedModelUsage): number {
-  return usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
 }
 
 function summaryTokenTotal(summary: CachedSessionSummary): number {
@@ -159,6 +166,7 @@ export function summaryToSessionInfo(summary: CachedSessionSummary): SessionInfo
     projectName: summary.projectName,
     title: summary.title,
     sourceFilePath: summary.sourceFilePath,
+    sourceFilePaths: [summary.sourceFilePath],
     timestamp: summary.createdAt,
     duration: Math.max(0, new Date(summary.updatedAt).getTime() - new Date(summary.createdAt).getTime()),
     messageCount: summary.messageCount,
@@ -189,12 +197,15 @@ export function summariesToSessions(summaries: CachedSessionSummary[]): SessionI
   return sortSummariesByTimestamp(filterVisibleSessionSummaries(summaries)).map(summaryToSessionInfo);
 }
 
-export function summariesToProjects(summaries: CachedSessionSummary[]): ProjectInfo[] {
+export function summariesToProjects(summaries: CachedSessionSummary[], range: TimeRangeParams = {}): ProjectInfo[] {
   const visibleSummaries = filterVisibleSessionSummaries(summaries);
   const projects = new Map<string, ProjectInfo>();
+  const context = getAggregationContext(range);
 
   for (const summary of visibleSummaries) {
-    const session = summaryToSessionInfo(summary);
+    const usageEvents = getSummaryUsageEvents(summary).filter(event => isEventInRange(event.timestamp, context));
+    if (usageEvents.length === 0) continue;
+
     const publicProjectId = summary.provider === 'claude' ? summary.nativeProjectId : summary.projectRouteId;
     const project = projects.get(summary.projectRouteId) || {
       id: publicProjectId,
@@ -213,11 +224,14 @@ export function summariesToProjects(summaries: CachedSessionSummary[]): ProjectI
     };
 
     project.sessionCount += 1;
-    project.totalMessages += summary.messageCount;
-    project.totalTokens += summaryTokenTotal(summary);
-    project.estimatedCosts = addCosts(project.estimatedCosts, session.estimatedCosts);
+    for (const event of usageEvents) {
+      const tokens = usageEventTokenTotal(event);
+      project.totalMessages += event.messageCount;
+      project.totalTokens += tokens;
+      project.estimatedCosts = addCosts(project.estimatedCosts, event.estimatedCosts);
+      if (!project.lastActive || event.timestamp > project.lastActive) project.lastActive = event.timestamp;
+    }
     project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
-    project.lastActive = project.lastActive && project.lastActive > summary.updatedAt ? project.lastActive : summary.updatedAt;
     project.models = Array.from(new Set([...project.models, ...summary.models]));
     projects.set(summary.projectRouteId, project);
   }
@@ -225,83 +239,87 @@ export function summariesToProjects(summaries: CachedSessionSummary[]): ProjectI
   return Array.from(projects.values()).sort((left, right) => right.lastActive.localeCompare(left.lastActive));
 }
 
-export function summariesToDashboardStats(summaries: CachedSessionSummary[]): DashboardStats {
+export function summariesToDashboardStats(summaries: CachedSessionSummary[], range: TimeRangeParams = {}): DashboardStats {
   const visibleSummaries = filterVisibleSessionSummaries(summaries);
   const sortedSummaries = sortSummariesByTimestamp(visibleSummaries);
   const sessions = sortedSummaries.map(summaryToSessionInfo);
-  const dailyActivity = new Map<string, DailyActivity>();
-  const dailyModelTokens = new Map<string, DailyModelTokens>();
-  const dailyChangeActivity = new Map<string, DailyChangeActivity>();
+  const context = getAggregationContext(range);
+  const buckets = new Map<string, MutableAnalyticsTimeBucket>();
   const modelUsage: DashboardStats['modelUsage'] = {};
   const hourCounts: Record<string, number> = {};
   let estimatedCosts = zeroCosts();
   let changeTotals = zeroChangeTotals();
+  let totalMessages = 0;
+  let totalTokens = 0;
+  const activeSessionIds = new Set<string>();
+  const activeProjectIds = new Set<string>();
+  const activeSummaryKeys = new Set<string>();
+
+  for (const key of listBucketKeys(range, context.granularity)) {
+    ensureBucket(buckets, key, context.granularity);
+  }
 
   for (const summary of sortedSummaries) {
-    const date = datePart(summary.createdAt);
-    const activity = dailyActivity.get(date) || { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
-    activity.sessionCount += 1;
-    activity.messageCount += summary.messageCount;
-    activity.toolCallCount += summary.toolCallCount;
-    dailyActivity.set(date, activity);
+    const summaryKey = summary.routeId || summary.nativeId;
+    const sessionId = summaryKey;
+    const projectId = summary.projectRouteId;
+    recordSessionStart(summary, context, buckets, sessionId);
 
-    const summaryChangeTotals = summary.changeTotals || zeroChangeTotals();
-    changeTotals = addChangeTotals(changeTotals, summaryChangeTotals);
-    const existingDailyChangeActivity = dailyChangeActivity.get(date) || {
-      date,
-      ...zeroChangeTotals(),
-      sessionCount: 0,
-    };
-    const nextDailyChangeTotals = addChangeTotals(existingDailyChangeActivity, summaryChangeTotals);
-    dailyChangeActivity.set(date, {
-      date,
-      ...nextDailyChangeTotals,
-      sessionCount: existingDailyChangeActivity.sessionCount + 1,
-    });
+    for (const event of getSummaryUsageEvents(summary)) {
+      if (!isEventInRange(event.timestamp, context)) continue;
+      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!bucketKey || !localParts) continue;
 
-    const hour = hourPart(summary.createdAt);
-    hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+      const bucket = ensureBucket(buckets, bucketKey, context.granularity);
+      bucket.messageCount += event.messageCount;
+      bucket.userMessageCount += event.userMessageCount;
+      bucket.assistantMessageCount += event.assistantMessageCount;
+      bucket.toolCallCount += event.toolCallCount;
+      bucket.activeSessionIds.add(sessionId);
 
-    const dailyTokens = dailyModelTokens.get(date) || { date, tokensByModel: {}, costsByModel: {} };
-    for (const [model, usage] of Object.entries(getSummaryModelUsage(summary))) {
-      const costs = calculateCostAllModes(
-        model,
-        usage.inputTokens,
-        usage.outputTokens,
-        usage.cacheCreationInputTokens,
-        usage.cacheReadInputTokens,
-      );
-      const tokens = tokenTotal(usage);
-      dailyTokens.tokensByModel[model] = (dailyTokens.tokensByModel[model] || 0) + tokens;
-      dailyTokens.costsByModel![model] = addCosts(dailyTokens.costsByModel![model] || zeroCosts(), costs);
-      estimatedCosts = addCosts(estimatedCosts, costs);
+      activeSessionIds.add(sessionId);
+      activeProjectIds.add(projectId);
+      activeSummaryKeys.add(summaryKey);
+      totalMessages += event.messageCount;
 
-      const existing = modelUsage[model] || {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        reasoningOutputTokens: 0,
-        costUSD: 0,
-        contextWindow: usage.contextWindow || 0,
-        maxOutputTokens: usage.maxOutputTokens || 0,
-        webSearchRequests: 0,
-        estimatedCost: 0,
-        estimatedCosts: zeroCosts(),
-      } satisfies ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates };
+      const tokens = usageEventTokenTotal(event);
+      if (tokens > 0) {
+        const model = event.model || 'unknown';
+        bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
+        bucket.costsByModel[model] = addCosts(bucket.costsByModel[model] || zeroCosts(), event.estimatedCosts);
+        estimatedCosts = addCosts(estimatedCosts, event.estimatedCosts);
+        totalTokens += tokens;
+        addEventModelUsage(modelUsage, model, event);
+      }
 
-      existing.inputTokens += usage.inputTokens;
-      existing.outputTokens += usage.outputTokens;
-      existing.cacheReadInputTokens += usage.cacheReadInputTokens;
-      existing.cacheCreationInputTokens += usage.cacheCreationInputTokens;
-      existing.reasoningOutputTokens = (existing.reasoningOutputTokens || 0) + (usage.reasoningOutputTokens || 0);
-      existing.webSearchRequests += usage.webSearchRequests || 0;
-      existing.estimatedCosts = addCosts(existing.estimatedCosts, costs);
-      existing.estimatedCost = existing.estimatedCosts[DEFAULT_COST_MODE];
-      modelUsage[model] = existing;
+      if (event.assistantMessageCount > 0 || tokens > 0) {
+        hourCounts[String(localParts.hour)] = (hourCounts[String(localParts.hour)] || 0) + 1;
+      }
     }
-    dailyModelTokens.set(date, dailyTokens);
+
+    for (const event of getSummaryChangeEvents(summary)) {
+      if (!isEventInRange(event.timestamp, context)) continue;
+      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
+      if (!bucketKey) continue;
+      const bucket = ensureBucket(buckets, bucketKey, context.granularity);
+      bucket.changeTotals = addChangeTotals(bucket.changeTotals, event);
+      bucket.activeSessionIds.add(sessionId);
+      activeSessionIds.add(sessionId);
+      activeProjectIds.add(projectId);
+      activeSummaryKeys.add(summaryKey);
+      changeTotals = addChangeTotals(changeTotals, event);
+    }
   }
+
+  const usageBuckets = finalizeBuckets(buckets);
+  const dailyActivity = bucketsToDailyActivity(usageBuckets);
+  const dailyModelTokens = bucketsToDailyModelTokens(usageBuckets);
+  const dailyChangeActivity = bucketsToDailyChangeActivity(usageBuckets);
+  const recentSessions = sessions
+    .filter(session => activeSummaryKeys.has(session.routeId || session.id))
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .slice(0, 10);
 
   const longestSession = sessions.reduce<SessionInfo | null>((longest, session) => {
     if (!longest || session.duration > longest.duration) return session;
@@ -309,18 +327,21 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
   }, null);
 
   return {
-    totalSessions: visibleSummaries.length,
-    totalMessages: visibleSummaries.reduce((sum, summary) => sum + summary.messageCount, 0),
-    totalTokens: visibleSummaries.reduce((sum, summary) => sum + summaryTokenTotal(summary), 0),
+    totalSessions: activeSessionIds.size,
+    totalMessages,
+    totalTokens,
     estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
     estimatedCosts,
-    dailyActivity: Array.from(dailyActivity.values()).sort((left, right) => left.date.localeCompare(right.date)),
-    dailyModelTokens: Array.from(dailyModelTokens.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    dailyActivity,
+    dailyModelTokens,
     changeTotals,
-    dailyChangeActivity: Array.from(dailyChangeActivity.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    dailyChangeActivity,
+    timeZone: context.timeZone,
+    bucketGranularity: context.granularity,
+    usageBuckets,
     modelUsage,
     hourCounts,
-    firstSessionDate: visibleSummaries.map(summary => summary.createdAt).sort()[0]?.slice(0, 10) || '',
+    firstSessionDate: dailyActivity.find(day => day.messageCount > 0 || day.sessionCount > 0)?.date || '',
     longestSession: longestSession
       ? {
           sessionId: longestSession.id,
@@ -329,9 +350,188 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[]): Da
           timestamp: longestSession.timestamp,
         }
       : { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
-    projectCount: new Set(visibleSummaries.map(summary => summary.projectRouteId)).size,
-    recentSessions: sessions.slice(0, 10),
+    projectCount: activeProjectIds.size,
+    recentSessions,
   };
+}
+
+interface AggregationContext {
+  range: TimeRangeParams;
+  timeZone: string;
+  granularity: BucketGranularity;
+}
+
+interface MutableAnalyticsTimeBucket extends AnalyticsTimeBucket {
+  activeSessionIds: Set<string>;
+  sessionStartIds: Set<string>;
+}
+
+function getAggregationContext(range: TimeRangeParams): AggregationContext {
+  return {
+    range,
+    timeZone: normalizeTimeZone(range.timeZone),
+    granularity: normalizeBucketGranularity(range.granularity),
+  };
+}
+
+function getSummaryUsageEvents(summary: CachedSessionSummary): CachedUsageEvent[] {
+  return summary.usageEvents?.length ? summary.usageEvents : buildLegacyUsageEvents(summary);
+}
+
+function getSummaryChangeEvents(summary: CachedSessionSummary): CachedChangeEvent[] {
+  return summary.changeEvents?.length
+    ? summary.changeEvents
+    : buildLegacyChangeEvents({
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        changeTotals: summary.changeTotals,
+      });
+}
+
+function isEventInRange(timestamp: string, context: AggregationContext): boolean {
+  const localDate = getEventLocalDate(timestamp, context.timeZone);
+  if (!localDate) return false;
+  return isDateInRange(localDate, context.range);
+}
+
+function usageEventTokenTotal(event: CachedUsageEvent): number {
+  return event.inputTokens + event.outputTokens + event.cacheReadTokens + event.cacheWriteTokens;
+}
+
+function ensureBucket(
+  buckets: Map<string, MutableAnalyticsTimeBucket>,
+  key: string,
+  granularity: BucketGranularity,
+): MutableAnalyticsTimeBucket {
+  const existing = buckets.get(key);
+  if (existing) return existing;
+
+  const bucket: MutableAnalyticsTimeBucket = {
+    key,
+    startLocal: key,
+    granularity,
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolCallCount: 0,
+    sessionStartCount: 0,
+    activeSessionCount: 0,
+    tokensByModel: {},
+    costsByModel: {},
+    changeTotals: zeroChangeTotals(),
+    activeSessionIds: new Set<string>(),
+    sessionStartIds: new Set<string>(),
+  };
+  buckets.set(key, bucket);
+  return bucket;
+}
+
+function recordSessionStart(
+  summary: CachedSessionSummary,
+  context: AggregationContext,
+  buckets: Map<string, MutableAnalyticsTimeBucket>,
+  sessionId: string,
+): void {
+  if (!isEventInRange(summary.createdAt, context)) return;
+  const key = getBucketKey(summary.createdAt, context.timeZone, context.granularity);
+  if (!key) return;
+  ensureBucket(buckets, key, context.granularity).sessionStartIds.add(sessionId);
+}
+
+function finalizeBuckets(buckets: Map<string, MutableAnalyticsTimeBucket>): AnalyticsTimeBucket[] {
+  return Array.from(buckets.values())
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map(bucket => ({
+      key: bucket.key,
+      startLocal: bucket.startLocal,
+      granularity: bucket.granularity,
+      messageCount: bucket.messageCount,
+      userMessageCount: bucket.userMessageCount,
+      assistantMessageCount: bucket.assistantMessageCount,
+      toolCallCount: bucket.toolCallCount,
+      sessionStartCount: bucket.sessionStartIds.size,
+      activeSessionCount: bucket.activeSessionIds.size,
+      tokensByModel: bucket.tokensByModel,
+      costsByModel: bucket.costsByModel,
+      changeTotals: bucket.changeTotals,
+    }));
+}
+
+function bucketsToDailyActivity(buckets: AnalyticsTimeBucket[]): DailyActivity[] {
+  const days = new Map<string, DailyActivity>();
+  for (const bucket of buckets) {
+    const date = bucketKeyToDate(bucket.key);
+    const day = days.get(date) || { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+    day.messageCount += bucket.messageCount;
+    day.sessionCount += bucket.sessionStartCount;
+    day.toolCallCount += bucket.toolCallCount;
+    days.set(date, day);
+  }
+  return Array.from(days.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function bucketsToDailyModelTokens(buckets: AnalyticsTimeBucket[]): DailyModelTokens[] {
+  const days = new Map<string, DailyModelTokens>();
+  for (const bucket of buckets) {
+    const date = bucketKeyToDate(bucket.key);
+    const day = days.get(date) || { date, tokensByModel: {}, costsByModel: {} };
+    for (const [model, tokens] of Object.entries(bucket.tokensByModel)) {
+      day.tokensByModel[model] = (day.tokensByModel[model] || 0) + tokens;
+    }
+    for (const [model, costs] of Object.entries(bucket.costsByModel)) {
+      day.costsByModel![model] = addCosts(day.costsByModel![model] || zeroCosts(), costs);
+    }
+    days.set(date, day);
+  }
+  return Array.from(days.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function bucketsToDailyChangeActivity(buckets: AnalyticsTimeBucket[]): DailyChangeActivity[] {
+  const days = new Map<string, DailyChangeActivity>();
+  for (const bucket of buckets) {
+    const date = bucketKeyToDate(bucket.key);
+    const day = days.get(date) || {
+      date,
+      ...zeroChangeTotals(),
+      sessionCount: 0,
+    };
+    const totals = addChangeTotals(day, bucket.changeTotals);
+    days.set(date, {
+      date,
+      ...totals,
+      sessionCount: day.sessionCount + bucket.activeSessionCount,
+    });
+  }
+  return Array.from(days.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function addEventModelUsage(
+  modelUsage: DashboardStats['modelUsage'],
+  model: string,
+  event: CachedUsageEvent,
+): void {
+  const existing = modelUsage[model] || {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    costUSD: 0,
+    contextWindow: 0,
+    maxOutputTokens: 0,
+    webSearchRequests: 0,
+    estimatedCost: 0,
+    estimatedCosts: zeroCosts(),
+  } satisfies ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates };
+
+  existing.inputTokens += event.inputTokens;
+  existing.outputTokens += event.outputTokens;
+  existing.cacheReadInputTokens += event.cacheReadTokens;
+  existing.cacheCreationInputTokens += event.cacheWriteTokens;
+  existing.reasoningOutputTokens = (existing.reasoningOutputTokens || 0) + (event.reasoningOutputTokens || 0);
+  existing.estimatedCosts = addCosts(existing.estimatedCosts, event.estimatedCosts);
+  existing.estimatedCost = existing.estimatedCosts[DEFAULT_COST_MODE];
+  modelUsage[model] = existing;
 }
 
 export function normalizeSearchText(parts: Array<string | undefined>): string {

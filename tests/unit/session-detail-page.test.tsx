@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionDetail, SessionMessageDisplay } from '@/lib/claude-data/types';
 import type { TranscriptItem } from '@/lib/session-transcript';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 const detailState = vi.hoisted(() => ({
   session: undefined as SessionDetail | undefined | null,
@@ -183,6 +184,8 @@ function session(overrides: Partial<SessionDetail> = {}): SessionDetail {
     id: 'session-1',
     projectId: 'project-1',
     projectName: 'Claudometer',
+    sourceFilePath: 'D:/dev/Claudometer/session-1.jsonl',
+    sourceFilePaths: ['D:/dev/Claudometer/session-1.jsonl'],
     timestamp: '2026-05-08T12:00:00.000Z',
     duration: 90_000,
     messageCount: 5,
@@ -218,7 +221,9 @@ function session(overrides: Partial<SessionDetail> = {}): SessionDetail {
 
 function renderPage() {
   return render(
-    <SessionDetailPage params={{ id: 'session-1' } as unknown as Promise<{ id: string }>} />,
+    <TooltipProvider>
+      <SessionDetailPage params={{ id: 'session-1' } as unknown as Promise<{ id: string }>} />
+    </TooltipProvider>,
   );
 }
 
@@ -267,6 +272,9 @@ describe('session detail page', () => {
     expect(screen.getByText('Tools Used')).toBeInTheDocument();
     expect(screen.getByText('Context Compaction')).toBeInTheDocument();
     expect(screen.getByText('Metadata')).toBeInTheDocument();
+    expect(screen.getByText('Raw Session File')).toBeInTheDocument();
+    expect(screen.getByText('session-1.jsonl')).toBeInTheDocument();
+    expect(screen.getByLabelText('Copy raw session file path: session-1.jsonl')).toBeInTheDocument();
   });
 
   it('renders live changes mode and live send controls', async () => {

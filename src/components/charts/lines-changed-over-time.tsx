@@ -5,11 +5,13 @@ import {
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { DailyChangeActivity } from '@/lib/claude-data/types';
+import type { AnalyticsTimeBucket, BucketGranularity, DailyChangeActivity } from '@/lib/claude-data/types';
 import { formatNumber } from '@/lib/format';
 
 interface LinesChangedOverTimeProps {
   data: DailyChangeActivity[];
+  buckets?: AnalyticsTimeBucket[];
+  granularity?: BucketGranularity;
 }
 
 interface ChartRow {
@@ -23,18 +25,29 @@ interface ChartRow {
   sessionCount: number;
 }
 
-export function LinesChangedOverTime({ data }: LinesChangedOverTimeProps) {
-  const chartData: ChartRow[] = data.map(day => ({
-    date: format(parseISO(day.date), 'MMM d'),
-    addedLines: day.addedLines,
-    removedLines: -day.removedLines,
-    netLineDelta: day.netLineDelta,
-    changedLines: day.changedLines,
-    fileCount: day.fileCount,
-    editCount: day.editCount,
-    sessionCount: day.sessionCount,
-  }));
-  const hasTrackedChanges = data.some(day => day.changedLines > 0);
+export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: LinesChangedOverTimeProps) {
+  const chartData: ChartRow[] = buckets?.length
+    ? buckets.map(bucket => ({
+        date: formatBucketLabel(bucket, granularity),
+        addedLines: bucket.changeTotals.addedLines,
+        removedLines: -bucket.changeTotals.removedLines,
+        netLineDelta: bucket.changeTotals.netLineDelta,
+        changedLines: bucket.changeTotals.changedLines,
+        fileCount: bucket.changeTotals.fileCount,
+        editCount: bucket.changeTotals.editCount,
+        sessionCount: bucket.activeSessionCount,
+      }))
+    : data.map(day => ({
+        date: format(parseISO(day.date), 'MMM d'),
+        addedLines: day.addedLines,
+        removedLines: -day.removedLines,
+        netLineDelta: day.netLineDelta,
+        changedLines: day.changedLines,
+        fileCount: day.fileCount,
+        editCount: day.editCount,
+        sessionCount: day.sessionCount,
+      }));
+  const hasTrackedChanges = chartData.some(day => day.changedLines > 0);
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -88,6 +101,12 @@ export function LinesChangedOverTime({ data }: LinesChangedOverTimeProps) {
       </CardContent>
     </Card>
   );
+}
+
+function formatBucketLabel(bucket: AnalyticsTimeBucket, granularity: BucketGranularity): string {
+  const date = parseISO(bucket.startLocal);
+  if (granularity === 'day') return format(date, 'MMM d');
+  return format(date, 'MMM d ha');
 }
 
 function formatSignedLines(value: number): string {

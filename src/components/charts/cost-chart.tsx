@@ -4,13 +4,15 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { DailyModelTokens } from '@/lib/claude-data/types';
+import type { AnalyticsTimeBucket, BucketGranularity, DailyModelTokens } from '@/lib/claude-data/types';
 import { getModelCostDisplayName, getModelCostGroupKey, getModelColor } from '@/config/pricing';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { format, parseISO } from 'date-fns';
 
 interface CostChartProps {
   data: DailyModelTokens[];
+  buckets?: AnalyticsTimeBucket[];
+  granularity?: BucketGranularity;
 }
 
 interface ModelCostGroup {
@@ -19,7 +21,7 @@ interface ModelCostGroup {
   color: string;
 }
 
-export function CostChart({ data }: CostChartProps) {
+export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps) {
   const { costMode } = useCostMode();
 
   const modelGroups = new Map<string, ModelCostGroup>();
@@ -37,15 +39,27 @@ export function CostChart({ data }: CostChartProps) {
     return group;
   };
 
-  data.forEach(d => {
+  const sourceRows = buckets?.length
+    ? buckets.map(bucket => ({
+        label: formatBucketLabel(bucket, granularity),
+        tokensByModel: bucket.tokensByModel,
+        costsByModel: bucket.costsByModel,
+      }))
+    : data.map(day => ({
+        label: format(parseISO(day.date), 'MMM d'),
+        tokensByModel: day.tokensByModel,
+        costsByModel: day.costsByModel || {},
+      }));
+
+  sourceRows.forEach(d => {
     Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
       if (tokens > 0) ensureModelGroup(model);
     });
   });
 
-  const chartData = data.map(d => {
+  const chartData = sourceRows.map(d => {
     const entry: Record<string, string | number> = {
-      date: format(parseISO(d.date), 'MMM d'),
+      date: d.label,
     };
     const costsByGroup: Record<string, number> = {};
 
@@ -117,4 +131,10 @@ export function CostChart({ data }: CostChartProps) {
       </CardContent>
     </Card>
   );
+}
+
+function formatBucketLabel(bucket: AnalyticsTimeBucket, granularity: BucketGranularity): string {
+  const date = parseISO(bucket.startLocal);
+  if (granularity === 'day') return format(date, 'MMM d');
+  return format(date, 'MMM d ha');
 }

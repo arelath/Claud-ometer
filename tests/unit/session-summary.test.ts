@@ -130,6 +130,101 @@ describe('session summary aggregation', () => {
     expect(stats.recentSessions.map(session => session.id)).toEqual(['session-2', 'session-1']);
   });
 
+  it('aggregates usage by event local day instead of session start day', () => {
+    const summary = makeSummary({
+      createdAt: '2026-05-08T06:30:00.000Z',
+      updatedAt: '2026-05-08T07:30:00.000Z',
+      messageCount: 1,
+      userMessageCount: 0,
+      assistantMessageCount: 1,
+      toolCallCount: 0,
+      tokenTotals: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+      modelUsage: {
+        'gpt-5.5': {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      },
+      changeTotals: { addedLines: 0, removedLines: 0, netLineDelta: 0, changedLines: 0, fileCount: 0, editCount: 0 },
+      usageEvents: [{
+        timestamp: '2026-05-08T07:30:00.000Z',
+        model: 'gpt-5.5',
+        messageCount: 1,
+        userMessageCount: 0,
+        assistantMessageCount: 1,
+        toolCallCount: 0,
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningOutputTokens: 0,
+        estimatedCosts: { api: 0.01, conservative: 0.005, subscription: 0.0025 },
+      }],
+      changeEvents: [],
+    });
+
+    const stats = summariesToDashboardStats([summary], {
+      start: '2026-05-08',
+      end: '2026-05-08',
+      timeZone: 'America/Los_Angeles',
+      granularity: 'day',
+    });
+
+    expect(stats.totalSessions).toBe(1);
+    expect(stats.totalMessages).toBe(1);
+    expect(stats.dailyActivity).toEqual([{ date: '2026-05-08', messageCount: 1, sessionCount: 0, toolCallCount: 0 }]);
+    expect(stats.usageBuckets).toEqual([expect.objectContaining({
+      key: '2026-05-08',
+      messageCount: 1,
+      sessionStartCount: 0,
+      activeSessionCount: 1,
+    })]);
+  });
+
+  it('uses four-hour buckets for short event-time ranges', () => {
+    const summary = makeSummary({
+      createdAt: '2026-05-08T07:10:00.000Z',
+      updatedAt: '2026-05-08T07:30:00.000Z',
+      messageCount: 1,
+      userMessageCount: 0,
+      assistantMessageCount: 1,
+      tokenTotals: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+      modelUsage: {},
+      usageEvents: [{
+        timestamp: '2026-05-08T07:30:00.000Z',
+        model: 'gpt-5.5',
+        messageCount: 1,
+        userMessageCount: 0,
+        assistantMessageCount: 1,
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningOutputTokens: 0,
+        estimatedCosts: { api: 0, conservative: 0, subscription: 0 },
+      }],
+    });
+
+    const stats = summariesToDashboardStats([summary], {
+      start: '2026-05-08',
+      end: '2026-05-08',
+      timeZone: 'America/Los_Angeles',
+      granularity: '4h',
+    });
+
+    expect(stats.bucketGranularity).toBe('4h');
+    expect(stats.usageBuckets).toHaveLength(6);
+    expect(stats.usageBuckets?.[0]).toMatchObject({
+      key: '2026-05-08T00:00',
+      messageCount: 1,
+      activeSessionCount: 1,
+    });
+    expect(stats.usageBuckets?.slice(1).every(bucket => bucket.messageCount === 0)).toBe(true);
+  });
+
   it('excludes empty zero-token placeholder sessions from user-facing lists and counts', () => {
     const visible = makeSummary();
     const emptyPlaceholder = makeSummary({

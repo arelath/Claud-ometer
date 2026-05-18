@@ -90,7 +90,7 @@ export function DashboardClient({ initialStats }: { initialStats?: DashboardStat
       {/* Charts Row 1 */}
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2">
-          <UsageOverTime data={stats.dailyActivity} />
+          <UsageOverTime data={stats.dailyActivity} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
         </div>
         <ModelBreakdown data={stats.modelUsage} />
       </div>

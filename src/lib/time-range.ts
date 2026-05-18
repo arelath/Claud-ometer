@@ -1,3 +1,5 @@
+import type { BucketGranularity } from '@/lib/claude-data/types';
+
 export type TimeRangePreset = 'all' | '1y' | '6m' | '3m' | '1m' | '1w';
 
 export interface TimeRangeSelection {
@@ -9,6 +11,8 @@ export interface TimeRangeSelection {
 export interface TimeRangeParams {
   start?: string;
   end?: string;
+  timeZone?: string;
+  granularity?: BucketGranularity;
 }
 
 export const TIME_RANGE_OPTIONS: Array<{ value: TimeRangePreset; label: string }> = [
@@ -138,6 +142,8 @@ export function buildTimeRangeQuery(params?: TimeRangeParams): string {
   const query = new URLSearchParams();
   if (params?.start) query.set('start', params.start);
   if (params?.end) query.set('end', params.end);
+  if (params?.timeZone) query.set('tz', params.timeZone);
+  if (params?.granularity) query.set('granularity', params.granularity);
   const text = query.toString();
   return text ? `?${text}` : '';
 }
@@ -145,12 +151,24 @@ export function buildTimeRangeQuery(params?: TimeRangeParams): string {
 export function parseApiTimeRangeParams(searchParams: URLSearchParams): { range: TimeRangeParams; error?: string } {
   const start = searchParams.get('start') || undefined;
   const end = searchParams.get('end') || undefined;
+  const timeZone = searchParams.get('tz') || undefined;
+  const granularityParam = searchParams.get('granularity') || undefined;
 
   if (start && !isDateOnly(start)) return { range: {}, error: 'Invalid start date' };
   if (end && !isDateOnly(end)) return { range: {}, error: 'Invalid end date' };
   if (start && end && start > end) return { range: {}, error: 'Start date must be before or equal to end date' };
+  if (granularityParam && !['day', '4h', 'hour'].includes(granularityParam)) {
+    return { range: {}, error: 'Invalid granularity' };
+  }
 
-  return { range: { start, end } };
+  return {
+    range: {
+      start,
+      end,
+      timeZone,
+      granularity: granularityParam as BucketGranularity | undefined,
+    },
+  };
 }
 
 export function filterByTimeRange<T>(

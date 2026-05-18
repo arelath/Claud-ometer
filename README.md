@@ -226,6 +226,8 @@ Export your data to share across machines or keep as a backup:
 
 Codex exports include rollout JSONL files plus `session_index.jsonl`/`version.json` when present. They intentionally exclude `auth.json`, capability/session ids, sandbox/temp folders, SQLite/log files, plugin caches, and skill caches.
 
+Exports also include a provider-normalized copy under `agent-data/standardized/`. The raw provider folders remain unchanged, while `projects.json`, `sessions.json`, and per-session detail files use the same dashboard schema for every provider.
+
 ## License
 
 MIT

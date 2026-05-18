@@ -76,7 +76,7 @@ describe('session summary cache storage', () => {
       summaries: [makeSummary()],
     });
 
-    expect(getSessionSummaryCachePath()).toBe(path.join(root, 'agent-session-summary-v3.json'));
+    expect(getSessionSummaryCachePath()).toBe(path.join(root, 'agent-session-summary-v4.json'));
     expect(fs.readdirSync(root).some(file => file.endsWith('.tmp'))).toBe(false);
     expect(readSessionSummaryCache()).toMatchObject({
       generatedAt: '2026-05-08T10:00:00.000Z',

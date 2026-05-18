@@ -32,6 +32,23 @@ export interface DailyChangeActivity extends ChangeTotals {
   sessionCount: number;
 }
 
+export type BucketGranularity = 'day' | '4h' | 'hour';
+
+export interface AnalyticsTimeBucket {
+  key: string;
+  startLocal: string;
+  granularity: BucketGranularity;
+  messageCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  toolCallCount: number;
+  sessionStartCount: number;
+  activeSessionCount: number;
+  tokensByModel: Record<string, number>;
+  costsByModel: Record<string, CostEstimates>;
+  changeTotals: ChangeTotals;
+}
+
 export interface ModelUsage {
   inputTokens: number;
   outputTokens: number;
@@ -172,6 +189,7 @@ export interface SessionInfo {
   projectName: string;
   title?: string;
   sourceFilePath?: string;
+  sourceFilePaths?: string[];
   timestamp: string;
   duration: number;
   messageCount: number;
@@ -320,6 +338,9 @@ export interface DashboardStats {
   dailyModelTokens: DailyModelTokens[];
   changeTotals: ChangeTotals;
   dailyChangeActivity: DailyChangeActivity[];
+  timeZone?: string;
+  bucketGranularity?: BucketGranularity;
+  usageBuckets?: AnalyticsTimeBucket[];
   modelUsage: Record<string, ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates }>;
   hourCounts: Record<string, number>;
   firstSessionDate: string;

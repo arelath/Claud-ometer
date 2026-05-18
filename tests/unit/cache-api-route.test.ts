@@ -12,7 +12,7 @@ const status = {
   exists: true,
   generatedAt: '2026-05-08T10:00:00.000Z',
   summaryCount: 1,
-  activeProviders: ['claude'],
+  activeProviders: ['claude' as const],
   sourceCount: 1,
   validCount: 1,
   staleCount: 0,
@@ -36,6 +36,7 @@ vi.mock('@/lib/agent-data/session-summary-store', () => ({
 }));
 
 vi.mock('@/lib/agent-data/indexer', () => ({
+  ensureSessionIndexRefresh: vi.fn(),
   getQuickSessionIndexStatus: vi.fn(() => clearedStatus),
   getSessionIndexStatus: vi.fn(async () => status),
   rebuildSessionIndex: vi.fn(async () => [{ nativeId: 'session-1' }]),
@@ -77,5 +78,19 @@ describe('cache API route', () => {
     expect(provider.resetCache).toHaveBeenCalledTimes(2);
     expect(rebuild).toMatchObject({ rebuilt: 1 });
     expect(cleared).toMatchObject({ summaryCount: 0 });
+  });
+
+  it('quick status schedules stale refreshes without rebuilding inline', async () => {
+    const indexer = await import('@/lib/agent-data/indexer');
+    vi.mocked(indexer.getQuickSessionIndexStatus)
+      .mockReturnValueOnce({ ...clearedStatus, status: 'stale', staleCount: 1 })
+      .mockReturnValueOnce({ ...clearedStatus, status: 'refreshing', staleCount: 1 });
+    const { GET } = await import('@/app/api/cache/route');
+
+    const body = await (await GET(new Request('http://localhost/api/cache?quick=1'))).json();
+
+    expect(indexer.ensureSessionIndexRefresh).toHaveBeenCalledWith([provider]);
+    expect(indexer.rebuildSessionIndex).not.toHaveBeenCalled();
+    expect(body).toMatchObject({ status: 'refreshing', staleCount: 1 });
   });
 });

@@ -97,6 +97,10 @@ describe('agent archives', () => {
 
     expect(response.status).toBe(200);
     expect(names).toContain('agent-data/export-meta.json');
+    expect(names).toContain('agent-data/standardized/export-meta.json');
+    expect(names).toContain('agent-data/standardized/projects.json');
+    expect(names).toContain('agent-data/standardized/sessions.json');
+    expect(names).toContain('agent-data/standardized/session-details-index.json');
     expect(names).toContain('agent-data/codex/sessions/2026/05/08/rollout.jsonl');
     expect(names).not.toContain('agent-data/codex/sessions/2026/05/08/notes.txt');
     expect(names).toContain('agent-data/codex/session_index.jsonl');
@@ -109,6 +113,80 @@ describe('agent archives', () => {
       exportVersion: 2,
       agents: ['codex'],
       agentCounts: { codex: { sessionCount: 1 } },
+    });
+
+    const standardizedMeta = JSON.parse(await zip.file('agent-data/standardized/export-meta.json')!.async('string'));
+    expect(standardizedMeta).toMatchObject({
+      standardizedExportVersion: 1,
+      schema: 'claud-ometer.standardized.v1',
+      agents: ['codex'],
+      files: {
+        projects: 'agent-data/standardized/projects.json',
+        sessions: 'agent-data/standardized/sessions.json',
+        sessionDetailsIndex: 'agent-data/standardized/session-details-index.json',
+      },
+    });
+  });
+
+  it('exports a provider-normalized standardized session layer', async () => {
+    fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
+
+    vi.resetModules();
+    const { GET } = await import('@/app/api/export/route');
+    const response = await GET();
+    const zip = await JSZip.loadAsync(await response.arrayBuffer());
+
+    expect(response.status).toBe(200);
+    const rawMeta = JSON.parse(await zip.file('agent-data/export-meta.json')!.async('string'));
+    const standardizedMeta = JSON.parse(await zip.file('agent-data/standardized/export-meta.json')!.async('string'));
+    const projectsPayload = JSON.parse(await zip.file('agent-data/standardized/projects.json')!.async('string'));
+    const sessionsPayload = JSON.parse(await zip.file('agent-data/standardized/sessions.json')!.async('string'));
+    const detailsIndexPayload = JSON.parse(await zip.file('agent-data/standardized/session-details-index.json')!.async('string'));
+
+    expect(rawMeta).toMatchObject({
+      exportVersion: 2,
+      agents: ['codex'],
+      agentCounts: { codex: { projectCount: 1, sessionCount: 1 } },
+    });
+    expect(standardizedMeta).toMatchObject({
+      standardizedExportVersion: 1,
+      schema: 'claud-ometer.standardized.v1',
+      agents: ['codex'],
+      projectCount: 1,
+      sessionCount: 1,
+      sessionDetailCount: 1,
+      agentCounts: { codex: { projectCount: 1, sessionCount: 1, sessionDetailCount: 1 } },
+      errors: [],
+    });
+    expect(projectsPayload.projects).toEqual([
+      expect.objectContaining({
+        agentKind: 'codex',
+        id: expect.stringMatching(/^codex:/),
+      }),
+    ]);
+    expect(sessionsPayload.sessions).toEqual([
+      expect.objectContaining({
+        id: 'codex:00000000-0000-0000-0000-000000000001',
+        agentKind: 'codex',
+        projectId: expect.stringMatching(/^codex:/),
+      }),
+    ]);
+
+    const detailEntry = detailsIndexPayload.sessionDetails[0];
+    expect(detailEntry).toMatchObject({
+      id: 'codex:00000000-0000-0000-0000-000000000001',
+      agentKind: 'codex',
+      path: expect.stringMatching(/^agent-data\/standardized\/session-details\/codex\//),
+    });
+
+    const detail = JSON.parse(await zip.file(detailEntry.path)!.async('string'));
+    expect(detail).toMatchObject({
+      id: 'codex:00000000-0000-0000-0000-000000000001',
+      agentKind: 'codex',
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({ role: 'assistant' }),
+      ]),
     });
   });
 

@@ -15,6 +15,7 @@ import { getFileSignature } from './io';
 import { parseCodexSessionFile, parseCodexSessionSummaryFile, type CodexParsedSession } from './transcript-parser';
 import { buildCodexDashboardStats } from './stats';
 import { getSessionChangeTotals } from '@/lib/session-diff';
+import { buildChangeEvents, buildUsageEvents } from '@/lib/agent-data/event-metrics';
 
 const parsedCache = new AgentDataCache<CodexParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
@@ -69,6 +70,7 @@ function buildLightweightSessionInfo(fileInfo: CodexSessionFileInfo): SessionInf
     projectName: fileInfo.cwd ? fileInfo.cwd.split(/[\\/]/).filter(Boolean).at(-1) || nativeProjectId : nativeProjectId,
     title: fileInfo.title,
     sourceFilePath: fileInfo.filePath,
+    sourceFilePaths: [fileInfo.filePath],
     timestamp,
     duration,
     messageCount: 0,
@@ -198,6 +200,32 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
   const summary = parseCodexSessionSummaryFile(source.sourceFilePath, fileInfo);
   const parsed = await parseCodexSessionFile(source.sourceFilePath, fileInfo);
   const changeTotals = getSessionChangeTotals(parsed.detail.messages);
+  const modelUsage = {
+    [summary.model || 'unknown']: {
+      inputTokens: summary.tokenUsage.input_tokens,
+      outputTokens: summary.tokenUsage.output_tokens,
+      cacheReadInputTokens: summary.tokenUsage.cache_read_input_tokens,
+      cacheCreationInputTokens: summary.tokenUsage.cache_creation_input_tokens,
+      reasoningOutputTokens: summary.reasoningOutputTokens,
+    },
+  };
+  const summaryMetrics = {
+    createdAt: summary.createdAt,
+    updatedAt: summary.updatedAt,
+    model: summary.model,
+    messageCount: summary.messageCount,
+    userMessageCount: summary.userMessageCount,
+    assistantMessageCount: summary.assistantMessageCount,
+    toolCallCount: summary.toolCallCount,
+    tokenTotals: {
+      input: summary.tokenUsage.input_tokens,
+      output: summary.tokenUsage.output_tokens,
+      cacheRead: summary.tokenUsage.cache_read_input_tokens,
+      cacheWrite: summary.tokenUsage.cache_creation_input_tokens,
+      reasoningOutput: summary.reasoningOutputTokens,
+    },
+    modelUsage,
+  };
   const nativeProjectId = getProjectNativeId(summary.cwd, source.sourceFilePath);
   const projectRouteId = qualifyProjectId('codex', nativeProjectId);
   const routeId = makeRouteId('codex', summary.nativeId);
@@ -242,16 +270,10 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       cacheWrite: summary.tokenUsage.cache_creation_input_tokens,
       reasoningOutput: summary.reasoningOutputTokens,
     },
-    modelUsage: {
-      [summary.model || 'unknown']: {
-        inputTokens: summary.tokenUsage.input_tokens,
-        outputTokens: summary.tokenUsage.output_tokens,
-        cacheReadInputTokens: summary.tokenUsage.cache_read_input_tokens,
-        cacheCreationInputTokens: summary.tokenUsage.cache_creation_input_tokens,
-        reasoningOutputTokens: summary.reasoningOutputTokens,
-      },
-    },
+    modelUsage,
     changeTotals,
+    usageEvents: buildUsageEvents(parsed.detail.messages, summaryMetrics),
+    changeEvents: buildChangeEvents(parsed.detail.messages),
     toolsUsed: summary.toolsUsed,
     compaction: summary.compaction,
     searchTextPreview,

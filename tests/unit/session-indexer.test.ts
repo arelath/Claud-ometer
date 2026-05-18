@@ -5,6 +5,7 @@ import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import {
   ensureSessionIndexRefresh,
   getIndexedSessionSummaries,
+  getQuickSessionIndexStatus,
   getSessionIndexStatus,
   resetSessionIndexerForTests,
 } from '@/lib/agent-data/indexer';
@@ -111,6 +112,8 @@ describe('session indexer', () => {
     expect(buildSessionSummary).not.toHaveBeenCalled();
 
     ensureSessionIndexRefresh([provider]);
+    expect(buildSessionSummary).not.toHaveBeenCalled();
+    expect(getQuickSessionIndexStatus([provider])).toMatchObject({ status: 'refreshing', staleCount: 1 });
 
     await vi.waitFor(() => expect(buildSessionSummary).toHaveBeenCalledTimes(1));
     await expect(getSessionIndexStatus([provider])).resolves.toMatchObject({ status: 'refreshing', staleCount: 1 });

@@ -32,13 +32,18 @@ describe('lib hook URL builders', () => {
     expect(swrMock).toHaveBeenNthCalledWith(3, '/api/sessions?limit=25&offset=10&includeTotal=1', expect.any(Function), { fallbackData: fallbackPage });
     expect(swrMock).toHaveBeenNthCalledWith(4, '/api/sessions?q=hello+world&limit=25&offset=10&includeTotal=1', expect.any(Function), { fallbackData: fallbackPage });
     expect(swrMock).toHaveBeenNthCalledWith(5, '/api/sessions?projectId=project-1', expect.any(Function), { fallbackData: [] });
-    expect(swrMock).toHaveBeenNthCalledWith(6, '/api/sessions/session-1', expect.any(Function), { refreshInterval: expect.any(Function) });
+    expect(swrMock).toHaveBeenNthCalledWith(6, '/api/sessions/session-1', expect.any(Function), {
+      refreshInterval: expect.any(Function),
+      dedupingInterval: 2000,
+      keepPreviousData: true,
+      compare: expect.any(Function),
+    });
     expect(swrMock).toHaveBeenNthCalledWith(7, '/api/data-source', expect.any(Function), { refreshInterval: 5000 });
     expect(swrMock).toHaveBeenNthCalledWith(8, '/api/live-sessions', expect.any(Function), { refreshInterval: 1000 });
     expect(swrMock).toHaveBeenNthCalledWith(9, '/api/live-sessions/by-session/session-1', expect.any(Function), { refreshInterval: 1000 });
 
     const detailOptions = swrMock.mock.calls[5][2] as { refreshInterval: (data?: { isLive?: boolean }) => number };
-    expect(detailOptions.refreshInterval({ isLive: true })).toBe(1000);
+    expect(detailOptions.refreshInterval({ isLive: true })).toBe(2500);
     expect(detailOptions.refreshInterval({ isLive: false })).toBe(0);
   });
 

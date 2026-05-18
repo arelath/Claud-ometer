@@ -1,4 +1,4 @@
-import type { CostEstimates, DashboardStats, DailyActivity, DailyChangeActivity, DailyModelTokens, ModelUsage, ProjectInfo, SessionInfo } from '@/lib/claude-data/types';
+import type { AnalyticsTimeBucket, CostEstimates, DashboardStats, DailyActivity, DailyChangeActivity, DailyModelTokens, ModelUsage, ProjectInfo, SessionInfo } from '@/lib/claude-data/types';
 import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
 import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { DEFAULT_COST_MODE } from '@/config/pricing';
@@ -95,6 +95,43 @@ export function mergeModelUsage(stats: DashboardStats[]): DashboardStats['modelU
   return merged;
 }
 
+export function mergeUsageBuckets(stats: DashboardStats[]): AnalyticsTimeBucket[] {
+  const merged = new Map<string, AnalyticsTimeBucket>();
+  for (const source of stats) {
+    for (const bucket of source.usageBuckets || []) {
+      const existing = merged.get(bucket.key) || {
+        key: bucket.key,
+        startLocal: bucket.startLocal,
+        granularity: bucket.granularity,
+        messageCount: 0,
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        toolCallCount: 0,
+        sessionStartCount: 0,
+        activeSessionCount: 0,
+        tokensByModel: {},
+        costsByModel: {},
+        changeTotals: zeroChangeTotals(),
+      };
+      existing.messageCount += bucket.messageCount;
+      existing.userMessageCount += bucket.userMessageCount;
+      existing.assistantMessageCount += bucket.assistantMessageCount;
+      existing.toolCallCount += bucket.toolCallCount;
+      existing.sessionStartCount += bucket.sessionStartCount;
+      existing.activeSessionCount += bucket.activeSessionCount;
+      existing.changeTotals = addChangeTotals(existing.changeTotals, bucket.changeTotals);
+      for (const [model, tokens] of Object.entries(bucket.tokensByModel)) {
+        existing.tokensByModel[model] = (existing.tokensByModel[model] || 0) + tokens;
+      }
+      for (const [model, costs] of Object.entries(bucket.costsByModel)) {
+        existing.costsByModel[model] = addCosts(existing.costsByModel[model] || zeroCosts(), costs);
+      }
+      merged.set(bucket.key, existing);
+    }
+  }
+  return Array.from(merged.values()).sort((left, right) => left.key.localeCompare(right.key));
+}
+
 export function mergeDashboardStats(stats: DashboardStats[]): DashboardStats {
   if (stats.length === 1) return stats[0];
 
@@ -122,6 +159,9 @@ export function mergeDashboardStats(stats: DashboardStats[]): DashboardStats {
     dailyModelTokens: mergeDailyModelTokens(stats),
     changeTotals,
     dailyChangeActivity: mergeDailyChangeActivity(stats),
+    timeZone: stats.find(item => item.timeZone)?.timeZone,
+    bucketGranularity: stats.find(item => item.bucketGranularity)?.bucketGranularity,
+    usageBuckets: mergeUsageBuckets(stats),
     modelUsage: mergeModelUsage(stats),
     hourCounts,
     firstSessionDate: stats.map(item => item.firstSessionDate).filter(Boolean).sort()[0] || '',

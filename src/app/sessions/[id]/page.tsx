@@ -1,14 +1,16 @@
 'use client';
 
-import { use, useMemo, type CSSProperties, type ReactNode } from 'react';
+import { use, useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import {
   Activity,
   ArrowDown,
   ArrowLeft,
+  Check,
   Clock,
   Coins,
+  Copy,
   FileText,
   GitBranch,
   MessageSquare,
@@ -23,11 +25,13 @@ import type { SessionInfo } from '@/lib/claude-data/types';
 import { getSessionDiffSummary } from '@/lib/session-diff';
 import { useSessionViewState } from '@/hooks/use-session-view-state';
 import { formatCost, formatDuration, formatTokens } from '@/lib/format';
+import { formatDisplayPath, splitDisplayPath } from '@/lib/path-utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AgentBadge } from '@/components/agent-badge';
 import { getAgentLabel } from '@/lib/agent-data/types';
 import { Separator } from '@/components/ui/separator';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArtifactFullscreenViewer } from '@/components/session/artifact-viewer';
 import { ContextFilesPanel, ContextWindowMeter } from '@/components/session/context-panel';
 import {
@@ -86,6 +90,80 @@ const TRANSCRIPT_ITEM_STYLE: CSSProperties = {
   containIntrinsicSize: '96px',
 };
 
+type SessionWithRawPaths = SessionInfo & {
+  liveMetadataFilePath?: string;
+  liveTranscriptFilePath?: string;
+};
+
+function getRawSessionPaths(session: SessionWithRawPaths | null | undefined): string[] {
+  if (!session) return [];
+
+  const sourcePaths = session.sourceFilePaths?.length
+    ? session.sourceFilePaths
+    : [session.sourceFilePath];
+  const paths = [
+    ...sourcePaths,
+    session.liveTranscriptFilePath,
+    session.liveMetadataFilePath,
+  ];
+  const seen = new Set<string>();
+
+  return paths.reduce<string[]>((result, rawPath) => {
+    const filePath = rawPath?.trim();
+    if (!filePath || seen.has(filePath)) return result;
+    seen.add(filePath);
+    result.push(filePath);
+    return result;
+  }, []);
+}
+
+function RawSessionPathRow({
+  filePath,
+  projectRoot,
+  copiedPath,
+  onCopyPath,
+}: {
+  filePath: string;
+  projectRoot?: string;
+  copiedPath: string | null;
+  onCopyPath: (filePath: string) => void;
+}) {
+  const isCopied = copiedPath === filePath;
+  const displayPath = formatDisplayPath(filePath, projectRoot);
+  const displayPathParts = splitDisplayPath(displayPath);
+
+  return (
+    <div className="group flex min-w-0 items-baseline justify-between gap-2 rounded-sm py-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex min-w-0 flex-1 items-baseline font-mono text-[11px] text-foreground">
+            {displayPathParts.prefix && (
+              <span className="min-w-0 truncate text-muted-foreground">{displayPathParts.prefix}</span>
+            )}
+            <span className="min-w-0 truncate">{displayPathParts.basename}</span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-[300px]">
+          <span className="font-mono text-[10px] break-all">{displayPath}</span>
+        </TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`Copy raw session file path: ${displayPath}`}
+            onClick={() => onCopyPath(filePath)}
+            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            {isCopied ? <Check className="h-2.5 w-2.5" /> : <Copy className="h-2.5 w-2.5" />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{isCopied ? 'Copied full path' : 'Copy full path'}</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
 export default function SessionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: session, isLoading, error } = useSessionDetail(id);
@@ -93,7 +171,17 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const displaySession: SessionInfo | undefined = session || summary;
   const { data: sourceInfo } = useDataSourceInfo();
   const { pickCost } = useCostMode();
+  const [copiedRawSessionPath, setCopiedRawSessionPath] = useState<string | null>(null);
   const messages = useMemo(() => session?.messages || [], [session]);
+  const rawSessionPaths = useMemo(() => getRawSessionPaths(session || summary), [session, summary]);
+  const handleCopyRawSessionPath = useCallback((filePath: string) => {
+    void navigator.clipboard.writeText(filePath).then(() => {
+      setCopiedRawSessionPath(filePath);
+      window.setTimeout(() => {
+        setCopiedRawSessionPath(current => (current === filePath ? null : current));
+      }, 1200);
+    });
+  }, []);
   const hasTranscript = Boolean(session?.messages);
   const isLive = Boolean(session?.isLive);
   const liveRevision = session?.isLive
@@ -548,6 +636,32 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     <span className="text-muted-foreground">Branch</span>
                     <span className="font-mono truncate max-w-[120px]">{displaySession.gitBranch}</span>
                   </div>
+                )}
+                {rawSessionPaths.length > 0 && (
+                  <>
+                    <Separator />
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">
+                          {rawSessionPaths.length === 1 ? 'Raw Session File' : 'Raw Session Files'}
+                        </span>
+                        {rawSessionPaths.length > 1 && (
+                          <span className="font-mono text-[10px] text-muted-foreground">{rawSessionPaths.length}</span>
+                        )}
+                      </div>
+                      <div className="space-y-0.5">
+                        {rawSessionPaths.map(filePath => (
+                          <RawSessionPathRow
+                            key={filePath}
+                            filePath={filePath}
+                            projectRoot={displaySession.cwd || undefined}
+                            copiedPath={copiedRawSessionPath}
+                            onCopyPath={handleCopyRawSessionPath}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </>
                 )}
               </CardContent>
             </Card>

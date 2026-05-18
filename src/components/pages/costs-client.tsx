@@ -194,9 +194,9 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
       </div>
 
       {/* Cost Over Time */}
-      <CostChart data={stats.dailyModelTokens} />
+      <CostChart data={stats.dailyModelTokens} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
 
-      <LinesChangedOverTime data={stats.dailyChangeActivity} />
+      <LinesChangedOverTime data={stats.dailyChangeActivity} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
 
       <div className="grid grid-cols-2 gap-4">
         {/* Cost by Project */}

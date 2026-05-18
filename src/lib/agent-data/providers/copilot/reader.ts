@@ -17,6 +17,7 @@ import { discoverCopilotSessionFiles, type CopilotSessionFileInfo } from './sess
 import { parseCopilotSessionFile, parseCopilotSessionSummaryFile, type CopilotParsedSession } from './transcript-parser';
 import { getCopilotChatSessionSummary, resetCopilotChatSessionCache, type CopilotChatSessionSummary } from './chat-session';
 import { getSessionChangeTotals } from '@/lib/session-diff';
+import { buildChangeEvents, buildUsageEvents } from '@/lib/agent-data/event-metrics';
 
 const parsedCache = new AgentDataCache<CopilotParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
@@ -43,6 +44,16 @@ function getRouteNativeId(fileInfo: CopilotSessionFileInfo): string {
 
 function routeNativeId(id: string): string {
   return parseRouteId(id).nativeId;
+}
+
+function getRawSessionFilePaths(fileInfo: CopilotSessionFileInfo): string[] {
+  const paths = [
+    fileInfo.filePath,
+    fileInfo.transcriptFilePath,
+    fileInfo.chatSessionFilePath,
+  ].filter((filePath): filePath is string => Boolean(filePath));
+
+  return Array.from(new Set(paths));
 }
 
 function buildModelUsage(chatSummary: CopilotChatSessionSummary): Record<string, CachedModelUsage> {
@@ -99,6 +110,7 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
       projectName: fileInfo.projectName,
       title: summary.title,
       sourceFilePath: fileInfo.filePath,
+      sourceFilePaths: getRawSessionFilePaths(fileInfo),
       timestamp: summary.createdAt,
       duration: summary.duration,
       messageCount: summary.messageCount,
@@ -147,6 +159,7 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
     projectName: fileInfo.projectName,
     title: fileInfo.title,
     sourceFilePath: fileInfo.filePath,
+    sourceFilePaths: getRawSessionFilePaths(fileInfo),
     timestamp,
     duration: Number.isNaN(duration) ? 0 : duration,
     messageCount: 0,
@@ -235,7 +248,11 @@ export async function getSessionDetail(routeOrNativeId: string): Promise<Session
     || makeRouteId('copilot', session.routeNativeId) === routeOrNativeId
   ));
   if (!fileInfo) return null;
-  return (await parseDiscoveredSession(fileInfo)).detail;
+  const detail = (await parseDiscoveredSession(fileInfo)).detail;
+  return {
+    ...detail,
+    sourceFilePaths: getRawSessionFilePaths(fileInfo),
+  };
 }
 
 export async function searchSessions(query: string, limit = 50): Promise<SessionInfo[]> {
@@ -299,6 +316,23 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
   const changeTotals = getSessionChangeTotals(parsed.detail.messages);
   const routeId = makeRouteId('copilot', summary.routeNativeId);
   const projectRouteId = qualifyProjectId('copilot', summary.nativeProjectId);
+  const summaryMetrics = {
+    createdAt: summary.createdAt,
+    updatedAt: summary.updatedAt,
+    model: summary.model,
+    messageCount: summary.messageCount,
+    userMessageCount: summary.userMessageCount,
+    assistantMessageCount: summary.assistantMessageCount,
+    toolCallCount: summary.toolCallCount,
+    tokenTotals: {
+      input: summary.tokenUsage.input_tokens,
+      output: summary.tokenUsage.output_tokens,
+      cacheRead: summary.tokenUsage.cache_read_input_tokens,
+      cacheWrite: summary.tokenUsage.cache_creation_input_tokens,
+      reasoningOutput: summary.reasoningOutputTokens,
+    },
+    modelUsage: summary.modelUsage,
+  };
 
   return {
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
@@ -332,6 +366,8 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
     },
     modelUsage: summary.modelUsage,
     changeTotals,
+    usageEvents: buildUsageEvents(parsed.detail.messages, summaryMetrics),
+    changeEvents: buildChangeEvents(parsed.detail.messages),
     toolsUsed: summary.toolsUsed,
     compaction: {
       compactions: 0,

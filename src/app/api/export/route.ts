@@ -10,6 +10,7 @@ import { addClaudeDataToArchive } from '@/lib/agent-data/providers/claude/export
 import { addCodexDataToArchive } from '@/lib/agent-data/providers/codex/export';
 import { addCopilotDataToArchive } from '@/lib/agent-data/providers/copilot/export';
 import { addCursorDataToArchive } from '@/lib/agent-data/providers/cursor/export';
+import { addStandardizedDataToArchive } from '@/lib/agent-data/standardized-export';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,10 +61,13 @@ export const GET = withErrorHandler(async () => {
       agentCounts.cursor = countCursorData(cursorDir);
     }
 
-    // Add export metadata
+    const exportedAt = new Date().toISOString();
+    await addStandardizedDataToArchive(archive, availableAgents, exportedAt);
+
+    // Add raw export metadata
     const meta: AgentArchiveMeta = {
       exportVersion: 2,
-      exportedAt: new Date().toISOString(),
+      exportedAt,
       exportedFrom: os.hostname(),
       platform: process.platform,
       agents: availableAgents,

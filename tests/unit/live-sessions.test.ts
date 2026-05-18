@@ -227,6 +227,59 @@ describe('live session metadata helpers', () => {
     expect(session?.transcriptRevision).toBeDefined();
   });
 
+  it('refreshes transcript previews from appended lines', async () => {
+    const sessionId = 'append-session';
+    const projectDir = path.join(projectsDir, 'append-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const transcriptPath = path.join(projectDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: 'user',
+        sessionId,
+        timestamp: '2026-05-06T12:00:00.000Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'Initial request.' }],
+        },
+      }),
+    );
+    writeMetadata('session-append', {
+      sessionId,
+      cwd: 'D:\\dev\\repo\\append',
+      status: 'busy',
+      updatedAt: Date.now(),
+    });
+
+    const { getLiveSessionBySessionId } = await importLiveModule();
+    const initial = getLiveSessionBySessionId(sessionId);
+    expect(initial?.messageCount).toBe(1);
+    expect(initial?.lastPreview).toBe('Initial request.');
+
+    fs.appendFileSync(
+      transcriptPath,
+      `\n${JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-05-06T12:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tool-append', name: 'Read', input: { file_path: 'src/app.ts' } },
+            { type: 'text', text: 'Reading the file.' },
+          ],
+        },
+      })}`,
+    );
+
+    const updated = getLiveSessionBySessionId(sessionId);
+    expect(updated?.messageCount).toBe(2);
+    expect(updated?.toolCallCount).toBe(1);
+    expect(updated?.activeToolName).toBe('Read');
+    expect(updated?.lastPreview).toBe('Read tool call Reading the file.');
+    expect(updated?.transcriptRevision).not.toBe(initial?.transcriptRevision);
+  });
+
   it('supports id lookups, transcript revisions, unknown statuses, and cached transcript path refresh', async () => {
     const sessionId = 'lookup-session';
     const projectDir = path.join(projectsDir, 'lookup-project');

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import type { AgentDataProvider } from './provider';
+import { getLiveSessions } from '@/lib/claude-data/live-sessions';
 import {
   getCachedSessionSummaries,
   getSessionSummaryCacheStatus,
@@ -40,6 +41,10 @@ interface RuntimeState {
 const REFRESH_CHECK_THROTTLE_MS = 15_000;
 const runtimeByKey = new Map<string, RuntimeState>();
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
 function supportedProviders(providers: AgentDataProvider[]): AgentDataProvider[] {
   return providers.filter(provider => (
     Boolean(provider.parserVersion)
@@ -60,6 +65,16 @@ function getRuntimeState(providers: AgentDataProvider[]): RuntimeState {
   const state = runtimeByKey.get(key) || {};
   runtimeByKey.set(key, state);
   return state;
+}
+
+function hasBusyLiveClaudeSession(providers: AgentDataProvider[]): boolean {
+  if (!providers.some(provider => provider.kind === 'claude')) return false;
+
+  try {
+    return getLiveSessions().some(session => session.status === 'busy');
+  } catch {
+    return false;
+  }
 }
 
 function readIndexedSnapshot(providers: AgentDataProvider[]): IndexedSessionSnapshot {
@@ -153,11 +168,15 @@ export function ensureSessionIndexRefresh(providers: AgentDataProvider[]): void 
   const now = Date.now();
   if (state.refreshPromise) return;
   if (state.lastRefreshCheckMs && now - state.lastRefreshCheckMs < REFRESH_CHECK_THROTTLE_MS) return;
+  if (hasBusyLiveClaudeSession(refreshProviders)) return;
 
   state.lastRefreshCheckMs = now;
   state.refreshStartedAt = new Date(now).toISOString();
   state.refreshError = undefined;
-  state.refreshPromise = getCachedSessionSummaries(refreshProviders)
+  state.refreshPromise = (async () => {
+    await yieldToEventLoop();
+    return getCachedSessionSummaries(refreshProviders);
+  })()
     .then((summaries) => {
       state.refreshCompletedAt = new Date().toISOString();
       return summaries;
@@ -209,17 +228,25 @@ export async function getSessionIndexStatus(providers: AgentDataProvider[]): Pro
 export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): SessionIndexStatus {
   const refreshProviders = supportedProviders(providers);
   const providerKinds = refreshProviders.map(provider => provider.kind);
+  const parserVersionByProvider = new Map(refreshProviders.map(provider => [provider.kind, provider.parserVersion || 'none']));
   const state = getRuntimeState(refreshProviders);
   const cache = readSessionSummaryCache();
   const cachePath = getSessionSummaryCachePath();
-  const summaryCount = cache.summaries.filter(summary => providerKinds.includes(summary.provider)).length;
+  const summaries = cache.summaries.filter(summary => providerKinds.includes(summary.provider));
+  const summaryCount = summaries.length;
+  const staleCount = summaries.filter(summary => summary.parserVersion !== parserVersionByProvider.get(summary.provider)).length;
+  const validCount = Math.max(summaryCount - staleCount, 0);
   const status: SessionIndexState = state.refreshPromise
     ? 'refreshing'
     : state.refreshError
       ? 'error'
-      : summaryCount === 0
+      : providerKinds.length === 0
+        ? 'fresh'
+        : summaryCount === 0
         ? 'empty'
-        : 'fresh';
+        : staleCount > 0
+          ? 'stale'
+          : 'fresh';
 
   return {
     cachePath,
@@ -228,8 +255,8 @@ export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): Sess
     summaryCount,
     activeProviders: providerKinds,
     sourceCount: summaryCount,
-    validCount: summaryCount,
-    staleCount: 0,
+    validCount,
+    staleCount,
     missingCount: 0,
     status,
     unindexedCount: 0,

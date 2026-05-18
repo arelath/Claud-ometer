@@ -89,7 +89,16 @@ export function useProjectSessions(projectId: string, fallbackData?: SessionInfo
 
 export function useSessionDetail(sessionId: string) {
   return useSWR<SessionDetail>(`/api/sessions/${sessionId}`, fetcher, {
-    refreshInterval: (latestData) => latestData?.isLive ? 1000 : 0,
+    refreshInterval: (latestData) => latestData?.isLive ? 2500 : 0,
+    dedupingInterval: 2000,
+    keepPreviousData: true,
+    compare: (previous, next) => (
+      previous?.id === next?.id
+      && previous?.messageCount === next?.messageCount
+      && previous?.liveStatus === next?.liveStatus
+      && previous?.liveMetadataRevision === next?.liveMetadataRevision
+      && previous?.liveTranscriptRevision === next?.liveTranscriptRevision
+    ),
   });
 }
 

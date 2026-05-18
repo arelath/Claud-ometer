@@ -638,6 +638,7 @@ function buildBaseSessionInfo(
     projectName: summary.projectName,
     title: summary.title,
     sourceFilePath: filePath,
+    sourceFilePaths: [filePath],
     timestamp: summary.createdAt,
     duration: summary.duration,
     messageCount: summary.messageCount,

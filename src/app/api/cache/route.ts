@@ -6,7 +6,13 @@ import { resetAnalyticsMemo } from '@/lib/agent-data/analytics';
 import {
   clearSessionSummaryCache,
 } from '@/lib/agent-data/session-summary-store';
-import { getQuickSessionIndexStatus, getSessionIndexStatus, rebuildSessionIndex, resetSessionIndexer } from '@/lib/agent-data/indexer';
+import {
+  ensureSessionIndexRefresh,
+  getQuickSessionIndexStatus,
+  getSessionIndexStatus,
+  rebuildSessionIndex,
+  resetSessionIndexer,
+} from '@/lib/agent-data/indexer';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +26,12 @@ export const GET = withErrorHandler(async (request?: Request) => {
   const searchParams = request ? new URL(request.url).searchParams : new URLSearchParams();
   const providers = getActiveProviders();
   if (searchParams.get('quick') === '1') {
-    return NextResponse.json(getQuickSessionIndexStatus(providers));
+    let status = getQuickSessionIndexStatus(providers);
+    if (status.status === 'empty' || status.status === 'stale') {
+      ensureSessionIndexRefresh(providers);
+      status = getQuickSessionIndexStatus(providers);
+    }
+    return NextResponse.json(status);
   }
   return NextResponse.json(await getSessionIndexStatus(providers));
 }, 'Error reading cache status', 'Failed to read cache status');

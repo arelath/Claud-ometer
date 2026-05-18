@@ -32,6 +32,7 @@ import {
   type SessionSummarySource,
   type SessionSourceSignature,
 } from '@/lib/agent-data/session-summary';
+import { buildChangeEvents, buildUsageEvents } from '@/lib/agent-data/event-metrics';
 import { getAssistantTurnCacheWriteTokens, recordAssistantTurn, type AssistantTurnAggregate } from './assistant-turns';
 import { isRecord } from './record-utils';
 import {
@@ -422,7 +423,11 @@ async function parseSessionFileUncached(filePath: string, projectId: string, pro
     });
   }
 
-  return parser.getResult();
+  return {
+    ...parser.getResult(),
+    sourceFilePath: filePath,
+    sourceFilePaths: aggregateFilePaths.length > 0 ? aggregateFilePaths : [filePath],
+  };
 }
 
 async function parseSessionFile(filePath: string, projectId: string, projectName: string): Promise<ParsedSessionInfo> {
@@ -438,6 +443,8 @@ async function parseSessionFile(filePath: string, projectId: string, projectName
 
 export async function getSessionDetailFromFile(filePath: string, projectId: string, projectName: string): Promise<SessionDetail> {
   const sessionInfo = await parseSessionFile(filePath, projectId, projectName);
+  const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
+  const sourceFilePaths = aggregateFilePaths.length > 0 ? aggregateFilePaths : [filePath];
   const sessionId = sessionInfo.id;
   const messages: SessionMessageDisplay[] = [];
   const contextTotals = zeroPromptTokenTotals();
@@ -621,7 +628,7 @@ export async function getSessionDetailFromFile(filePath: string, projectId: stri
     }
   });
 
-  return { ...sessionInfo, messages };
+  return { ...sessionInfo, sourceFilePath: filePath, sourceFilePaths, messages };
 }
 
 export async function getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
@@ -815,6 +822,23 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
   const projectRouteId = qualifyProjectId('claude', nativeProjectId);
   const searchTextPreview = await collectClaudeSearchTextPreview(source.sourceFilePath, info);
   const changeTotals = getSessionChangeTotals(detail.messages);
+  const modelUsage = getCachedModelUsage(info);
+  const summaryMetrics = {
+    createdAt: info.timestamp,
+    updatedAt: getSummaryUpdatedAt(info, source),
+    model: info.model,
+    messageCount: info.messageCount,
+    userMessageCount: info.userMessageCount,
+    assistantMessageCount: info.assistantMessageCount,
+    toolCallCount: info.toolCallCount,
+    tokenTotals: {
+      input: info.totalInputTokens,
+      output: info.totalOutputTokens,
+      cacheRead: info.totalCacheReadTokens,
+      cacheWrite: info.totalCacheWriteTokens,
+    },
+    modelUsage,
+  };
 
   return {
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
@@ -828,7 +852,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
     sourceFilePath: source.sourceFilePath,
     sourceSignature: source.sourceSignature,
     createdAt: info.timestamp,
-    updatedAt: getSummaryUpdatedAt(info, source),
+    updatedAt: summaryMetrics.updatedAt,
     title: info.title,
     cwd: info.cwd,
     gitBranch: info.gitBranch,
@@ -845,8 +869,10 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       cacheRead: info.totalCacheReadTokens,
       cacheWrite: info.totalCacheWriteTokens,
     },
-    modelUsage: getCachedModelUsage(info),
+    modelUsage,
     changeTotals,
+    usageEvents: buildUsageEvents(detail.messages, summaryMetrics),
+    changeEvents: buildChangeEvents(detail.messages),
     toolsUsed: info.toolsUsed,
     compaction: info.compaction,
     searchTextPreview,

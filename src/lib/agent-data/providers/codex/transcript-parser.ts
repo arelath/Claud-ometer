@@ -828,6 +828,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
     projectName: cwd ? path.basename(cwd) : projectNativeId,
     title,
     sourceFilePath: filePath,
+    sourceFilePaths: [filePath],
     timestamp,
     duration,
     messageCount: userMessageCount + assistantMessageCount,

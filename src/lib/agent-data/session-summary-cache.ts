@@ -35,7 +35,7 @@ export function getSessionSummaryCacheDir(): string {
 }
 
 export function getSessionSummaryCachePath(): string {
-  return path.join(getSessionSummaryCacheDir(), 'agent-session-summary-v3.json');
+  return path.join(getSessionSummaryCacheDir(), 'agent-session-summary-v4.json');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

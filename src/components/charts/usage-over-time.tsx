@@ -5,11 +5,13 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { DailyActivity } from '@/lib/claude-data/types';
+import type { AnalyticsTimeBucket, BucketGranularity, DailyActivity } from '@/lib/claude-data/types';
 import { format, parseISO } from 'date-fns';
 
 interface UsageOverTimeProps {
   data: DailyActivity[];
+  buckets?: AnalyticsTimeBucket[];
+  granularity?: BucketGranularity;
 }
 
 type MetricKey = 'messageCount' | 'sessionCount' | 'toolCallCount';
@@ -20,13 +22,20 @@ const metrics: { key: MetricKey; label: string; color: string }[] = [
   { key: 'toolCallCount', label: 'Tool Calls', color: '#5CB87A' },
 ];
 
-export function UsageOverTime({ data }: UsageOverTimeProps) {
+export function UsageOverTime({ data, buckets, granularity = 'day' }: UsageOverTimeProps) {
   const [activeMetric, setActiveMetric] = useState<MetricKey>('messageCount');
 
-  const chartData = data.map(d => ({
-    ...d,
-    dateLabel: format(parseISO(d.date), 'MMM d'),
-  }));
+  const chartData = buckets?.length
+    ? buckets.map(bucket => ({
+        messageCount: bucket.messageCount,
+        sessionCount: bucket.activeSessionCount,
+        toolCallCount: bucket.toolCallCount,
+        dateLabel: formatBucketLabel(bucket, granularity),
+      }))
+    : data.map(d => ({
+        ...d,
+        dateLabel: format(parseISO(d.date), 'MMM d'),
+      }));
 
   const activeConfig = metrics.find(m => m.key === activeMetric)!;
 
@@ -95,4 +104,10 @@ export function UsageOverTime({ data }: UsageOverTimeProps) {
       </CardContent>
     </Card>
   );
+}
+
+function formatBucketLabel(bucket: AnalyticsTimeBucket, granularity: BucketGranularity): string {
+  const date = parseISO(bucket.startLocal);
+  if (granularity === 'day') return format(date, 'MMM d');
+  return format(date, 'MMM d ha');
 }
