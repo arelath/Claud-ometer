@@ -12,8 +12,8 @@ describe('Copilot reader', () => {
 
   async function loadReader() {
     vi.resetModules();
-    process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = path.join(root, 'import');
+    process.env.AGENT_SCOPE_COPILOT_DIR = copilotDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = path.join(root, 'import');
     return import('@/lib/agent-data/providers/copilot/reader');
   }
 
@@ -24,8 +24,8 @@ describe('Copilot reader', () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_COPILOT_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_COPILOT_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
     vi.resetModules();
   });
 
@@ -41,7 +41,7 @@ describe('Copilot reader', () => {
       agentKind: 'copilot',
       nativeId: sessionId,
       projectId: `copilot:${workspaceHash}`,
-      projectName: 'Claud-ometer',
+      projectName: 'AgentScope',
       version: '0.46.2',
       model: 'gpt-5.4',
       totalInputTokens: 750,

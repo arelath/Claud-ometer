@@ -66,7 +66,7 @@ function costs(api: number) {
 const session: SessionInfo = {
   id: 'session-1',
   projectId: 'project-1',
-  projectName: 'Claudometer',
+  projectName: 'AgentScope',
   timestamp: '2026-05-08T12:00:00.000Z',
   duration: 60_000,
   messageCount: 2,
@@ -82,7 +82,7 @@ const session: SessionInfo = {
   model: 'claude-opus-4',
   models: ['Opus'],
   gitBranch: 'main',
-  cwd: 'D:/dev/Claudometer',
+  cwd: 'D:/dev/AgentScope',
   version: '1.0.0',
   toolsUsed: {},
   compaction: { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
@@ -90,8 +90,8 @@ const session: SessionInfo = {
 
 const project: ProjectInfo = {
   id: 'project-1',
-  name: 'Claudometer',
-  path: 'D:/dev/Claudometer',
+  name: 'AgentScope',
+  path: 'D:/dev/AgentScope',
   sessionCount: 1,
   totalMessages: 2,
   totalTokens: 150,
@@ -131,7 +131,7 @@ describe('Next app page wrappers', () => {
     readerState.getCachedCostAnalytics.mockReturnValue({ stats, projects: [project] });
   });
 
-  it('renders dashboard and projects as shells while preloading costs', async () => {
+  it('renders dashboard, costs, and projects as shells without eager-loading large server data', async () => {
     const DashboardPage = (await import('@/app/page')).default;
     const CostsPage = (await import('@/app/costs/page')).default;
     const ProjectsPage = (await import('@/app/projects/page')).default;
@@ -142,8 +142,8 @@ describe('Next app page wrappers', () => {
 
     render(<CostsPage />);
     expect(readerState.getProjects).not.toHaveBeenCalled();
-    expect(readerState.getCachedCostAnalytics).toHaveBeenCalled();
-    expect(screen.getByText('Costs client 150 1')).toBeInTheDocument();
+    expect(readerState.getCachedCostAnalytics).not.toHaveBeenCalled();
+    expect(screen.getByText('Costs client client-fetch client-fetch')).toBeInTheDocument();
 
     render(await ProjectsPage());
     expect(screen.getByText('Projects client client-fetch')).toBeInTheDocument();
@@ -152,10 +152,10 @@ describe('Next app page wrappers', () => {
   it('decodes project ids without eager-loading project sessions', async () => {
     const ProjectDetailPage = (await import('@/app/projects/[id]/page')).default;
 
-    render(await ProjectDetailPage({ params: Promise.resolve({ id: 'D%3A%5Cdev%5CClaudometer' }) }));
+    render(await ProjectDetailPage({ params: Promise.resolve({ id: 'D%3A%5Cdev%5CAgentScope' }) }));
 
     expect(readerState.getProjectSessions).not.toHaveBeenCalled();
-    expect(screen.getByText('Project detail client D:\\dev\\Claudometer client-fetch')).toBeInTheDocument();
+    expect(screen.getByText('Project detail client D:\\dev\\AgentScope client-fetch')).toBeInTheDocument();
   });
 
   it('renders the sessions shell without eager-loading large server data', async () => {

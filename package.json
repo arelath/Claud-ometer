@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-dashboard",
+  "name": "agentscope",
   "version": "0.1.0",
   "private": true,
   "main": "electron/main.cjs",
@@ -73,8 +73,8 @@
     "wait-on": "^9.0.5"
   },
   "build": {
-    "appId": "com.claudometer.app",
-    "productName": "Claud-ometer",
+    "appId": "com.agentscope.app",
+    "productName": "AgentScope",
     "npmRebuild": false,
     "directories": {
       "output": "dist-electron"

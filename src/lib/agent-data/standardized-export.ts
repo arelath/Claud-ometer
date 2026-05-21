@@ -6,7 +6,7 @@ import type { AgentKind } from './types';
 import type { ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
 
 export const STANDARDIZED_ARCHIVE_ROOT = toZipPath(AGENT_ARCHIVE_ROOT, 'standardized');
-export const STANDARDIZED_EXPORT_SCHEMA = 'claud-ometer.standardized.v1';
+export const STANDARDIZED_EXPORT_SCHEMA = 'agentscope.standardized.v1';
 export const STANDARDIZED_EXPORT_VERSION = 1;
 
 interface ArchiveWriter {

@@ -9,7 +9,7 @@ import { MinimapSegment, MinimapViewport } from '@/components/session/minimap';
 import { normalizeDiffPathKey, type DiffDisplayMode, type MainSessionView } from '@/components/session/diff-viewer';
 import type { ArtifactViewerState } from '@/components/session/session-render-context';
 
-const FILTER_STORAGE_KEY = 'claud-ometer-session-filter-preset';
+const FILTER_STORAGE_KEY = 'agentscope-session-filter-preset';
 
 function loadPreset(): FilterPreset {
   if (typeof window === 'undefined') return 'narrative';

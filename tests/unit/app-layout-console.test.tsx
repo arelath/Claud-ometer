@@ -38,8 +38,8 @@ describe('root layout and console page', () => {
     );
 
     expect(metadata).toMatchObject({
-      title: 'Agent Usage Dashboard',
-      description: 'Analytics dashboard for local code agent usage',
+      title: 'AgentScope',
+      description: 'Local-first analytics dashboard for code agent sessions',
     });
     expect(screen.getByTestId('providers')).toBeInTheDocument();
     expect(screen.getByTestId('app-shell')).toHaveTextContent('Layout child');

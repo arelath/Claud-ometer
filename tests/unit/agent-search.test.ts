@@ -10,15 +10,15 @@ describe('agent search', () => {
   beforeEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
     seedImportedData(importDir);
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
-    process.env.CLAUD_OMETER_AGENTS = 'claude,codex';
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_AGENTS = 'claude,codex';
     vi.resetModules();
   });
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_AGENTS;
     vi.resetModules();
   });
 

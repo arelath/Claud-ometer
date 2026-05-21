@@ -8,8 +8,8 @@ describe('Codex reader', () => {
 
   async function loadReader() {
     vi.resetModules();
-    process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = path.join(root, 'import');
+    process.env.AGENT_SCOPE_CODEX_DIR = codexDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = path.join(root, 'import');
     return import('@/lib/agent-data/providers/codex/reader');
   }
 
@@ -20,8 +20,8 @@ describe('Codex reader', () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CODEX_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_CODEX_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
   });
 
   it('returns sessions sorted by timestamp with provider identity', async () => {
@@ -68,7 +68,7 @@ describe('Codex reader', () => {
     expect(projects).toHaveLength(1);
     expect(projects[0]).toMatchObject({
       agentKind: 'codex',
-      name: 'Claud-ometer',
+      name: 'AgentScope',
       sessionCount: 1,
       totalMessages: 0,
       totalTokens: 0,

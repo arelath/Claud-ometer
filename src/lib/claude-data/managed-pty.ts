@@ -47,7 +47,7 @@ const MIN_COLS = 20;
 const MAX_COLS = 400;
 const MIN_ROWS = 5;
 const MAX_ROWS = 160;
-const globalStoreKey = Symbol.for('claudometer.managedClaudePtys');
+const globalStoreKey = Symbol.for('agentscope.managedClaudePtys');
 
 function getStore(): ManagedClaudeStore {
   const globalValue = globalThis as typeof globalThis & { [globalStoreKey]?: ManagedClaudeStore };

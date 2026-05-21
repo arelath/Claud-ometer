@@ -40,18 +40,39 @@ export interface LocalTimeParts {
   hour: number;
 }
 
-export function getLocalTimeParts(timestamp: string, timeZone: string): LocalTimeParts | null {
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return null;
+const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
-  const parts = new Intl.DateTimeFormat('en-US', {
+function getFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = formatterCache.get(timeZone);
+  if (cached) return cached;
+
+  const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     hourCycle: 'h23',
-  }).formatToParts(date);
+  });
+  formatterCache.set(timeZone, formatter);
+  return formatter;
+}
+
+export function getLocalTimeParts(timestamp: string, timeZone: string): LocalTimeParts | null {
+  if (timeZone === 'UTC' && timestamp.length >= 19 && timestamp[10] === 'T') {
+    const hour = Number.parseInt(timestamp.slice(11, 13), 10);
+    if (Number.isFinite(hour)) {
+      return {
+        date: timestamp.slice(0, 10),
+        hour,
+      };
+    }
+  }
+
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+
+  const parts = getFormatter(timeZone).formatToParts(date);
 
   const values = new Map(parts.map(part => [part.type, part.value]));
   const year = values.get('year');
@@ -66,6 +87,18 @@ export function getLocalTimeParts(timestamp: string, timeZone: string): LocalTim
   };
 }
 
+export function bucketKeyFromLocalTimeParts(
+  parts: LocalTimeParts,
+  granularity: BucketGranularity,
+): string {
+  if (granularity === 'day') return parts.date;
+
+  const hour = granularity === '4h'
+    ? Math.floor(parts.hour / 4) * 4
+    : parts.hour;
+  return `${parts.date}T${String(hour).padStart(2, '0')}:00`;
+}
+
 export function getBucketKey(
   timestamp: string,
   timeZone: string,
@@ -73,12 +106,7 @@ export function getBucketKey(
 ): string | null {
   const parts = getLocalTimeParts(timestamp, timeZone);
   if (!parts) return null;
-  if (granularity === 'day') return parts.date;
-
-  const hour = granularity === '4h'
-    ? Math.floor(parts.hour / 4) * 4
-    : parts.hour;
-  return `${parts.date}T${String(hour).padStart(2, '0')}:00`;
+  return bucketKeyFromLocalTimeParts(parts, granularity);
 }
 
 export function getEventLocalDate(timestamp: string, timeZone: string): string | null {

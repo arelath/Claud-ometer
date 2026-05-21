@@ -18,7 +18,7 @@ const DEFAULT_WINDOWS_RESUME_TRANSPORT: ResumeTransport = 'msys2-launch';
 const DEFAULT_POSIX_RESUME_TRANSPORT: ResumeTransport = 'pty';
 
 function getSettingsDir(): string {
-  return process.env.CLAUD_OMETER_SETTINGS_DIR?.trim() || path.join(getImportDir(), 'settings');
+  return process.env.AGENT_SCOPE_SETTINGS_DIR?.trim() || path.join(getImportDir(), 'settings');
 }
 
 function getSettingsPath(): string {
@@ -60,7 +60,7 @@ function readStoredSettings(): Partial<AppSettings> {
 }
 
 export function getAppSettings(): AppSettingsInfo {
-  const envResumeTransport = parseResumeTransport(process.env.CLAUD_OMETER_RESUME_TRANSPORT);
+  const envResumeTransport = parseResumeTransport(process.env.AGENT_SCOPE_RESUME_TRANSPORT);
   if (envResumeTransport) {
     return {
       resumeTransport: envResumeTransport,

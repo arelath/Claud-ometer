@@ -18,24 +18,24 @@ describe('agent-aware data source helpers', () => {
 
   beforeEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
-    process.env.CLAUD_OMETER_CLAUDE_DIR = claudeDir;
-    process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
-    process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
-    process.env.CLAUD_OMETER_CURSOR_DIR = cursorDir;
-    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
-    delete process.env.CLAUD_OMETER_AGENTS;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_CLAUDE_DIR = claudeDir;
+    process.env.AGENT_SCOPE_CODEX_DIR = codexDir;
+    process.env.AGENT_SCOPE_COPILOT_DIR = copilotDir;
+    process.env.AGENT_SCOPE_CURSOR_DIR = cursorDir;
+    process.env.AGENT_SCOPE_CURSOR_USER_DIR = cursorUserDir;
+    delete process.env.AGENT_SCOPE_AGENTS;
   });
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
-    delete process.env.CLAUD_OMETER_CLAUDE_DIR;
-    delete process.env.CLAUD_OMETER_CODEX_DIR;
-    delete process.env.CLAUD_OMETER_COPILOT_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_CLAUDE_DIR;
+    delete process.env.AGENT_SCOPE_CODEX_DIR;
+    delete process.env.AGENT_SCOPE_COPILOT_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_USER_DIR;
+    delete process.env.AGENT_SCOPE_AGENTS;
   });
 
   it('returns no detected agents when local homes are missing', async () => {
@@ -71,7 +71,7 @@ describe('agent-aware data source helpers', () => {
   });
 
   it('selects Cursor when parent agent transcripts are present', async () => {
-    const sessionDir = path.join(cursorDir, 'projects', 'd-dev-research-Claudometer', 'agent-transcripts', 'session-id');
+    const sessionDir = path.join(cursorDir, 'projects', 'd-dev-research-AgentScope', 'agent-transcripts', 'session-id');
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(path.join(sessionDir, 'session-id.jsonl'), '{"role":"user","message":{"content":[{"type":"text","text":"Hello Cursor"}]}}\n');
     fs.mkdirSync(path.join(sessionDir, 'subagents'), { recursive: true });
@@ -104,7 +104,7 @@ describe('agent-aware data source helpers', () => {
   it('lets env-selected agents override persisted settings', async () => {
     fs.mkdirSync(importDir, { recursive: true });
     fs.writeFileSync(path.join(importDir, 'source-settings.json'), JSON.stringify({ agents: ['claude'] }));
-    process.env.CLAUD_OMETER_AGENTS = 'codex,claude';
+    process.env.AGENT_SCOPE_AGENTS = 'codex,claude';
     const dataSource = await loadModule();
 
     expect(dataSource.getSelectedAgents('live')).toEqual(['claude', 'codex']);
@@ -121,7 +121,7 @@ describe('agent-aware data source helpers', () => {
   });
 
   it('allows the environment to explicitly disable all agents', async () => {
-    process.env.CLAUD_OMETER_AGENTS = 'none';
+    process.env.AGENT_SCOPE_AGENTS = 'none';
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.mkdirSync(codexDir, { recursive: true });
     const dataSource = await loadModule();

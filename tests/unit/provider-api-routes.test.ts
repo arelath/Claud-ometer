@@ -15,13 +15,13 @@ describe('provider API routes', () => {
   async function setupCodexOnly() {
     fs.rmSync(root, { recursive: true, force: true });
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
-    process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
-    process.env.CLAUD_OMETER_COPILOT_DIR = path.join(root, 'copilot-missing');
-    process.env.CLAUD_OMETER_CURSOR_DIR = path.join(root, 'cursor-missing');
-    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
-    process.env.CLAUD_OMETER_CLAUDE_DIR = path.join(root, '.claude-missing');
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
-    process.env.CLAUD_OMETER_AGENTS = 'codex';
+    process.env.AGENT_SCOPE_CODEX_DIR = codexDir;
+    process.env.AGENT_SCOPE_COPILOT_DIR = path.join(root, 'copilot-missing');
+    process.env.AGENT_SCOPE_CURSOR_DIR = path.join(root, 'cursor-missing');
+    process.env.AGENT_SCOPE_CURSOR_USER_DIR = cursorUserDir;
+    process.env.AGENT_SCOPE_CLAUDE_DIR = path.join(root, '.claude-missing');
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_AGENTS = 'codex';
     vi.resetModules();
   }
 
@@ -31,13 +31,13 @@ describe('provider API routes', () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CODEX_DIR;
-    delete process.env.CLAUD_OMETER_COPILOT_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
-    delete process.env.CLAUD_OMETER_CLAUDE_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_CODEX_DIR;
+    delete process.env.AGENT_SCOPE_COPILOT_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_USER_DIR;
+    delete process.env.AGENT_SCOPE_CLAUDE_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_AGENTS;
     vi.resetModules();
   });
 
@@ -55,7 +55,7 @@ describe('provider API routes', () => {
   });
 
   it('updates selected agents with data-source PUT', async () => {
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_AGENTS;
     vi.resetModules();
     const { PUT } = await import('@/app/api/data-source/route');
 
@@ -70,7 +70,7 @@ describe('provider API routes', () => {
   });
 
   it('allows no selected agents and returns empty active-provider route payloads', async () => {
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_AGENTS;
     vi.resetModules();
     const [{ PUT }, { GET: getStats }, { GET: getProjects }, { GET: getSessions }] = await Promise.all([
       import('@/app/api/data-source/route'),
@@ -119,7 +119,7 @@ describe('provider API routes', () => {
     const matchingStats = await (await getStats(new Request('http://localhost/api/stats?agent=codex&start=2026-05-08&end=2026-05-08'))).json();
     const matchingSessions = await (await getSessions(new Request('http://localhost/api/sessions?agent=codex&start=2026-05-08&end=2026-05-08&includeTotal=1'))).json();
 
-    expect(projects[0]).toMatchObject({ agentKind: 'codex', name: 'Claud-ometer' });
+    expect(projects[0]).toMatchObject({ agentKind: 'codex', name: 'AgentScope' });
     expect(sessions[0]).toMatchObject({ agentKind: 'codex', id: `codex:${codexFixtureSessionId}` });
     expect(pagedSessions).toMatchObject({ total: 1, limit: 1, offset: 0 });
     expect(pagedSessions.sessions[0]).toMatchObject({ agentKind: 'codex', id: `codex:${codexFixtureSessionId}` });
@@ -135,13 +135,13 @@ describe('provider API routes', () => {
   it('returns Copilot projects, sessions, details, and stats through provider routes', async () => {
     fs.rmSync(root, { recursive: true, force: true });
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'copilot'), copilotDir, { recursive: true });
-    process.env.CLAUD_OMETER_CODEX_DIR = path.join(root, '.codex-missing');
-    process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
-    process.env.CLAUD_OMETER_CURSOR_DIR = path.join(root, 'cursor-missing');
-    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
-    process.env.CLAUD_OMETER_CLAUDE_DIR = path.join(root, '.claude-missing');
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
-    process.env.CLAUD_OMETER_AGENTS = 'copilot';
+    process.env.AGENT_SCOPE_CODEX_DIR = path.join(root, '.codex-missing');
+    process.env.AGENT_SCOPE_COPILOT_DIR = copilotDir;
+    process.env.AGENT_SCOPE_CURSOR_DIR = path.join(root, 'cursor-missing');
+    process.env.AGENT_SCOPE_CURSOR_USER_DIR = cursorUserDir;
+    process.env.AGENT_SCOPE_CLAUDE_DIR = path.join(root, '.claude-missing');
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_AGENTS = 'copilot';
     vi.resetModules();
 
     const [{ POST: rebuildCache }, { GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
@@ -163,7 +163,7 @@ describe('provider API routes', () => {
     const stats = await (await getStats(new Request('http://localhost/api/stats?agent=copilot'))).json();
     const session = sessions.find((item: { id: string }) => item.id === routeId);
 
-    expect(projects[0]).toMatchObject({ agentKind: 'copilot', id: `copilot:${copilotFixtureWorkspaceHash}`, name: 'Claud-ometer' });
+    expect(projects[0]).toMatchObject({ agentKind: 'copilot', id: `copilot:${copilotFixtureWorkspaceHash}`, name: 'AgentScope' });
     expect(session).toMatchObject({ agentKind: 'copilot', id: routeId, toolCallCount: 2 });
     expect(detail).toMatchObject({ agentKind: 'copilot', id: routeId, messages: expect.any(Array) });
     expect(stats).toMatchObject({ totalSessions: 3, totalMessages: 10, projectCount: 1 });
@@ -216,13 +216,13 @@ describe('provider API routes', () => {
   it('aggregates mixed providers, searches both, and preserves legacy Claude details', async () => {
     fs.rmSync(root, { recursive: true, force: true });
     seedImportedData(importDir);
-    process.env.CLAUD_OMETER_CLAUDE_DIR = path.join(root, '.claude-missing');
-    process.env.CLAUD_OMETER_CODEX_DIR = path.join(root, '.codex-missing');
-    process.env.CLAUD_OMETER_COPILOT_DIR = path.join(root, 'copilot-missing');
-    process.env.CLAUD_OMETER_CURSOR_DIR = path.join(root, 'cursor-missing');
-    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
-    process.env.CLAUD_OMETER_AGENTS = 'claude,codex';
+    process.env.AGENT_SCOPE_CLAUDE_DIR = path.join(root, '.claude-missing');
+    process.env.AGENT_SCOPE_CODEX_DIR = path.join(root, '.codex-missing');
+    process.env.AGENT_SCOPE_COPILOT_DIR = path.join(root, 'copilot-missing');
+    process.env.AGENT_SCOPE_CURSOR_DIR = path.join(root, 'cursor-missing');
+    process.env.AGENT_SCOPE_CURSOR_USER_DIR = cursorUserDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_AGENTS = 'claude,codex';
     vi.resetModules();
 
     const [{ POST: rebuildCache }, { GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([

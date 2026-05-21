@@ -81,8 +81,8 @@ function liveSession(overrides: Partial<LiveSessionInfo> = {}): LiveSessionInfo 
     id: 'live-1',
     sessionId: 'live-session-1',
     metadataFilePath: 'live-session.json',
-    cwd: 'D:/dev/Claudometer',
-    projectName: 'Claudometer',
+    cwd: 'D:/dev/AgentScope',
+    projectName: 'AgentScope',
     version: '2.1.130',
     startedAt: '2026-05-08T11:00:00.000Z',
     lastActivityAt: '2026-05-08T12:00:00.000Z',
@@ -143,7 +143,7 @@ describe('data, settings, and layout surfaces', () => {
     expect(screen.getByText('1.5 KB')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Live Data'));
-    await screen.findByText('Switched to live agent data.');
+    await screen.findByText('Switched to live agent data. Updating views in the background.');
 
     fireEvent.click(screen.getByText('Clear Imported Data'));
     await screen.findByText('Imported data cleared. Switched back to live data.');
@@ -180,7 +180,9 @@ describe('data, settings, and layout surfaces', () => {
     expect(screen.getByLabelText('Toggle Codex data')).not.toBeChecked();
 
     fireEvent.click(screen.getByLabelText('Toggle Codex data'));
-    await screen.findByText('Selected Claude + Codex + Cursor data.');
+    expect(screen.getByLabelText('Toggle Codex data')).toBeChecked();
+    expect(screen.getByText('Reading Claude + Codex + Cursor data.')).toBeInTheDocument();
+    await screen.findByText('Selected Claude + Codex + Cursor data. Updating views in the background.');
 
     expect(fetchMock).toHaveBeenCalledWith('/api/data-source', expect.objectContaining({
       method: 'PUT',
@@ -209,20 +211,26 @@ describe('data, settings, and layout surfaces', () => {
     }) as unknown as typeof document.createElement);
     URL.createObjectURL = vi.fn(() => 'blob:export');
     URL.revokeObjectURL = vi.fn();
-    vi.mocked(fetch).mockResolvedValue(new Response(new Blob(['zip']), {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async () => new Response(new Blob(['zip']), {
       status: 200,
       headers: { 'Content-Disposition': 'attachment; filename="claude-export.zip"' },
     }));
 
     render(<DataPage />);
 
-    fireEvent.click(screen.getByText('Export as ZIP'));
-    await screen.findByText('Export downloaded successfully!');
+    fireEvent.click(screen.getByText('Full export ZIP'));
+    await screen.findByText('Full export downloaded successfully!');
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/export');
     expect(click).toHaveBeenCalled();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:export');
 
-    vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 500 }));
-    fireEvent.click(screen.getByText('Export as ZIP'));
+    fireEvent.click(screen.getByText('Standardized only ZIP'));
+    await screen.findByText('Standardized export downloaded successfully!');
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/export?format=standardized');
+
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 500 }));
+    fireEvent.click(screen.getByText('Full export ZIP'));
     await screen.findByText('Failed to export data.');
   });
 
@@ -284,10 +292,10 @@ describe('data, settings, and layout surfaces', () => {
 
     renderWithTooltip(<Sidebar />);
 
-    expect(screen.getByText('Claud-ometer')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'AgentScope' })).toBeInTheDocument();
     expect(screen.getByText('Live Sessions')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('Claudometer')).toBeInTheDocument();
+    expect(screen.getAllByText('AgentScope')).toHaveLength(2);
     expect(screen.getByText('Working compact')).toBeInTheDocument();
     expect(screen.getByText('Cache 5m paused')).toBeInTheDocument();
     expect(screen.getByText('Cache expired')).toBeInTheDocument();
@@ -333,7 +341,7 @@ describe('data, settings, and layout surfaces', () => {
       </TooltipProvider>,
     );
 
-    expect(screen.queryByText('Claud-ometer')).not.toBeInTheDocument();
+    expect(screen.queryByText('AgentScope')).not.toBeInTheDocument();
     expect(screen.getByText('Console content').closest('main')).toHaveClass('bg-black');
   });
 

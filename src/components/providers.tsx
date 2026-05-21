@@ -12,7 +12,7 @@ export function Providers({ children }: { children: ReactNode }) {
       attribute="class"
       defaultTheme="light"
       enableSystem={false}
-      storageKey="claud-ometer-theme"
+      storageKey="agentscope-theme"
       disableTransitionOnChange
     >
       <CostModeProvider>

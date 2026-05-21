@@ -7,12 +7,16 @@ import {
   rebuildCachedSessionSummaries,
 } from './session-summary-store';
 import {
-  readSessionSummaryCache,
-  getSessionSummaryCachePath,
   sourceSummaryCacheKey,
   summaryCacheKey,
   type SessionSummaryCacheStatus,
 } from './session-summary-cache';
+import {
+  getSessionSummaryIndexPath,
+  getSessionSummaryIndexReadSignature,
+  readSessionSummaryIndexCache,
+  readSessionSummaryIndexCacheForProviders,
+} from './session-summary-sqlite-store';
 import { sortSummariesByTimestamp, type CachedSessionSummary } from './session-summary';
 
 export type SessionIndexState = 'fresh' | 'stale' | 'refreshing' | 'empty' | 'error';
@@ -40,6 +44,7 @@ interface RuntimeState {
 
 const REFRESH_CHECK_THROTTLE_MS = 15_000;
 const runtimeByKey = new Map<string, RuntimeState>();
+const snapshotMemo = new Map<string, IndexedSessionSnapshot>();
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
@@ -79,27 +84,27 @@ function hasBusyLiveClaudeSession(providers: AgentDataProvider[]): boolean {
 
 function readIndexedSnapshot(providers: AgentDataProvider[]): IndexedSessionSnapshot {
   const refreshProviders = supportedProviders(providers);
-  const cache = readSessionSummaryCache();
-  const providerKinds = new Set(supportedProviders(providers).map(provider => provider.kind));
+  const providerRuntimeKey = runtimeKey(refreshProviders);
+  const providerKinds = supportedProviders(providers).map(provider => provider.kind);
+  const cache = readSessionSummaryIndexCacheForProviders(providerKinds);
+  const cacheFileSignature = getSessionSummaryIndexReadSignature();
+  const snapshotKey = `${providerRuntimeKey}:${cacheFileSignature}`;
+  const cached = snapshotMemo.get(snapshotKey);
+  if (cached) return cached;
+
   const summaries = cache.summaries
-    .filter(summary => providerKinds.has(summary.provider))
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const signature = [
     cache.cacheVersion,
     cache.generatedAt,
-    runtimeKey(refreshProviders),
+    providerRuntimeKey,
+    cacheFileSignature,
     summaries.length,
-    summaries
-      .map(summary => [
-        summary.provider,
-        summary.parserVersion,
-        summary.sourceFilePath,
-        summary.sourceSignature.mtimeMs,
-        summary.sourceSignature.size,
-      ].join('\0'))
-      .join('\n'),
   ].join(':');
-  return { summaries, signature };
+  const snapshot = { summaries, signature };
+  if (snapshotMemo.size > 12) snapshotMemo.clear();
+  snapshotMemo.set(snapshotKey, snapshot);
+  return snapshot;
 }
 
 function readIndexedSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
@@ -230,8 +235,8 @@ export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): Sess
   const providerKinds = refreshProviders.map(provider => provider.kind);
   const parserVersionByProvider = new Map(refreshProviders.map(provider => [provider.kind, provider.parserVersion || 'none']));
   const state = getRuntimeState(refreshProviders);
-  const cache = readSessionSummaryCache();
-  const cachePath = getSessionSummaryCachePath();
+  const cache = readSessionSummaryIndexCache();
+  const cachePath = getSessionSummaryIndexPath();
   const summaries = cache.summaries.filter(summary => providerKinds.includes(summary.provider));
   const summaryCount = summaries.length;
   const staleCount = summaries.filter(summary => summary.parserVersion !== parserVersionByProvider.get(summary.provider)).length;
@@ -268,6 +273,7 @@ export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): Sess
 
 export function resetSessionIndexer(): void {
   runtimeByKey.clear();
+  snapshotMemo.clear();
 }
 
 export function resetSessionIndexerForTests(): void {

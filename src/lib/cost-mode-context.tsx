@@ -15,7 +15,7 @@ interface CostModeContextValue {
 
 const CostModeContext = createContext<CostModeContextValue | null>(null);
 
-const STORAGE_KEY = 'claud-ometer-cost-mode';
+const STORAGE_KEY = 'agentscope-cost-mode';
 
 function getInitialMode(): CostMode {
   if (typeof window === 'undefined') return DEFAULT_COST_MODE;

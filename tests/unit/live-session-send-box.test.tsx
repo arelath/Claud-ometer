@@ -122,7 +122,7 @@ describe('LiveSessionSendBox', () => {
     fireEvent.click(button);
     expect(openMock).toHaveBeenCalledWith(
       '/sessions/00000000-0000-4000-8000-000000000123/console',
-      'claudometer-console-00000000-0000-4000-8000-000000000123',
+      'agentscope-console-00000000-0000-4000-8000-000000000123',
       'popup,width=1120,height=780',
     );
     expect(focusMock).toHaveBeenCalled();

@@ -44,13 +44,13 @@ function normalizePath(pathValue: string): string {
 }
 
 export function getLiveSessionsDir(): string {
-  const override = process.env.CLAUD_OMETER_LIVE_SESSIONS_DIR?.trim();
+  const override = process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR?.trim();
   if (override) return override;
   return path.join(os.homedir(), '.claude', 'sessions');
 }
 
 function getLiveProjectsDir(): string {
-  const override = process.env.CLAUD_OMETER_LIVE_PROJECTS_DIR?.trim();
+  const override = process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR?.trim();
   if (override) return override;
   return path.join(getLiveClaudeDir(), 'projects');
 }

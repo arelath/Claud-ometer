@@ -17,12 +17,12 @@ function costs(api: number) {
 }
 
 const codexProject: ProjectInfo = {
-  id: 'codex:D-dev-Claud-ometer',
+  id: 'codex:D-dev-AgentScope',
   agentKind: 'codex',
-  nativeId: 'D-dev-Claud-ometer',
-  routeId: 'codex:D-dev-Claud-ometer',
-  name: 'Claud-ometer',
-  path: 'D:/dev/research/Claud-ometer',
+  nativeId: 'D-dev-AgentScope',
+  routeId: 'codex:D-dev-AgentScope',
+  name: 'AgentScope',
+  path: 'D:/dev/research/AgentScope',
   sessionCount: 1,
   totalMessages: 3,
   totalTokens: 198,
@@ -33,12 +33,12 @@ const codexProject: ProjectInfo = {
 };
 
 const claudeProject: ProjectInfo = {
-  id: 'claude:D-dev-Claud-ometer',
+  id: 'claude:D-dev-AgentScope',
   agentKind: 'claude',
-  nativeId: 'D-dev-Claud-ometer',
-  routeId: 'claude:D-dev-Claud-ometer',
-  name: 'Claud-ometer',
-  path: 'D:/dev/research/Claud-ometer',
+  nativeId: 'D-dev-AgentScope',
+  routeId: 'claude:D-dev-AgentScope',
+  name: 'AgentScope',
+  path: 'D:/dev/research/AgentScope',
   sessionCount: 1,
   totalMessages: 5,
   totalTokens: 800,
@@ -54,7 +54,7 @@ const codexSession: SessionInfo = {
   nativeId: 'session-1',
   routeId: 'codex:session-1',
   projectId: codexProject.id,
-  projectName: 'Claud-ometer',
+  projectName: 'AgentScope',
   timestamp: '2026-05-08T12:00:00.000Z',
   duration: 1000,
   messageCount: 3,
@@ -70,7 +70,7 @@ const codexSession: SessionInfo = {
   model: 'gpt-5.5',
   models: ['gpt-5.5'],
   gitBranch: 'main',
-  cwd: 'D:/dev/research/Claud-ometer',
+  cwd: 'D:/dev/research/AgentScope',
   version: '0.9.0',
   toolsUsed: { shell_command: 1, apply_patch: 1 },
   compaction: { compactions: 1, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: ['2026-05-08T12:01:00.000Z'] },
@@ -84,17 +84,17 @@ describe('projects provider UI', () => {
   it('keeps same-basename Claude and Codex projects distinct', () => {
     renderWithCost(<ProjectsClient initialProjects={[codexProject, claudeProject]} />);
 
-    expect(screen.getAllByText('Claud-ometer')).toHaveLength(2);
+    expect(screen.getAllByText('AgentScope')).toHaveLength(2);
     expect(screen.getByLabelText('Codex agent')).toBeInTheDocument();
     expect(screen.getByLabelText('Claude agent')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /gpt-5.5/i })).toHaveAttribute('href', '/projects/codex%3AD-dev-Claud-ometer');
-    expect(screen.getByRole('link', { name: /Opus/i })).toHaveAttribute('href', '/projects/claude%3AD-dev-Claud-ometer');
+    expect(screen.getByRole('link', { name: /gpt-5.5/i })).toHaveAttribute('href', '/projects/codex%3AD-dev-AgentScope');
+    expect(screen.getByRole('link', { name: /Opus/i })).toHaveAttribute('href', '/projects/claude%3AD-dev-AgentScope');
   });
 
   it('preserves provider-qualified session links from project detail', () => {
     renderWithCost(<ProjectDetailClient projectId={codexProject.id} initialSessions={[codexSession]} />);
 
-    expect(screen.getByRole('heading', { name: 'Claud-ometer' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'AgentScope' })).toBeInTheDocument();
     expect(screen.getAllByLabelText('Codex agent').length).toBeGreaterThan(0);
     expect(screen.getByRole('link', { name: /gpt-5.5/i })).toHaveAttribute('href', '/sessions/codex:session-1');
   });

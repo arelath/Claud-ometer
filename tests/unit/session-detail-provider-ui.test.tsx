@@ -142,7 +142,7 @@ function codexSession(): SessionDetail {
     model: 'gpt-5.5',
     models: ['gpt-5.5'],
     gitBranch: 'main',
-    cwd: 'D:/dev/research/Claud-ometer',
+    cwd: 'D:/dev/research/AgentScope',
     version: '0.9.0',
     toolsUsed: { shell_command: 1, apply_patch: 1 },
     compaction: { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },

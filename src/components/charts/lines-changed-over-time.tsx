@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   Bar, BarChart, CartesianGrid, Legend, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
@@ -26,28 +27,33 @@ interface ChartRow {
 }
 
 export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: LinesChangedOverTimeProps) {
-  const chartData: ChartRow[] = buckets?.length
-    ? buckets.map(bucket => ({
-        date: formatBucketLabel(bucket, granularity),
-        addedLines: bucket.changeTotals.addedLines,
-        removedLines: -bucket.changeTotals.removedLines,
-        netLineDelta: bucket.changeTotals.netLineDelta,
-        changedLines: bucket.changeTotals.changedLines,
-        fileCount: bucket.changeTotals.fileCount,
-        editCount: bucket.changeTotals.editCount,
-        sessionCount: bucket.activeSessionCount,
-      }))
-    : data.map(day => ({
-        date: format(parseISO(day.date), 'MMM d'),
-        addedLines: day.addedLines,
-        removedLines: -day.removedLines,
-        netLineDelta: day.netLineDelta,
-        changedLines: day.changedLines,
-        fileCount: day.fileCount,
-        editCount: day.editCount,
-        sessionCount: day.sessionCount,
-      }));
-  const hasTrackedChanges = chartData.some(day => day.changedLines > 0);
+  const chartData: ChartRow[] = useMemo(() => (
+    buckets?.length
+      ? buckets.map(bucket => ({
+          date: formatBucketLabel(bucket, granularity),
+          addedLines: bucket.changeTotals.addedLines,
+          removedLines: -bucket.changeTotals.removedLines,
+          netLineDelta: bucket.changeTotals.netLineDelta,
+          changedLines: bucket.changeTotals.changedLines,
+          fileCount: bucket.changeTotals.fileCount,
+          editCount: bucket.changeTotals.editCount,
+          sessionCount: bucket.activeSessionCount,
+        }))
+      : data.map(day => ({
+          date: format(parseISO(day.date), 'MMM d'),
+          addedLines: day.addedLines,
+          removedLines: -day.removedLines,
+          netLineDelta: day.netLineDelta,
+          changedLines: day.changedLines,
+          fileCount: day.fileCount,
+          editCount: day.editCount,
+          sessionCount: day.sessionCount,
+        }))
+  ), [data, buckets, granularity]);
+  const hasTrackedChanges = useMemo(
+    () => chartData.some(day => day.changedLines > 0),
+    [chartData],
+  );
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -88,8 +94,8 @@ export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: Lin
                 />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <ReferenceLine y={0} stroke="var(--border)" />
-                <Bar dataKey="addedLines" name="Added" fill="#3fa66b" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="removedLines" name="Removed" fill="#d85a5a" radius={[0, 0, 4, 4]} />
+                <Bar dataKey="addedLines" name="Added" fill="#3fa66b" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                <Bar dataKey="removedLines" name="Removed" fill="#d85a5a" radius={[0, 0, 4, 4]} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           ) : (

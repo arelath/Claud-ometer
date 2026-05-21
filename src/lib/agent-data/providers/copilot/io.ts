@@ -34,14 +34,14 @@ export function getCopilotLegacySessionStateDir(rootDir = getCopilotDir()): stri
   const nested = path.join(rootDir, 'session-state');
   if (getActiveDataSource() === 'imported') return nested;
 
-  const explicit = process.env.CLAUD_OMETER_COPILOT_LEGACY_DIR?.trim();
+  const explicit = process.env.AGENT_SCOPE_COPILOT_LEGACY_DIR?.trim();
   if (explicit) {
     return path.basename(explicit).toLowerCase() === 'session-state'
       ? explicit
       : path.join(explicit, 'session-state');
   }
 
-  if (process.env.CLAUD_OMETER_COPILOT_DIR?.trim() || process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim()) {
+  if (process.env.AGENT_SCOPE_COPILOT_DIR?.trim() || process.env.AGENT_SCOPE_COPILOT_VSCODE_USER_DIR?.trim()) {
     return nested;
   }
   if (fs.existsSync(nested)) return nested;

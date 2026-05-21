@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agent Usage Dashboard",
-  description: "Analytics dashboard for local code agent usage",
+  title: "AgentScope",
+  description: "Local-first analytics dashboard for code agent sessions",
 };
 
 export default function RootLayout({

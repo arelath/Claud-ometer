@@ -81,7 +81,7 @@ describe('session indexer', () => {
     fs.rmSync(root, { recursive: true, force: true });
     fs.mkdirSync(root, { recursive: true });
     fs.writeFileSync(filePath, 'one');
-    process.env.CLAUD_OMETER_CACHE_DIR = root;
+    process.env.AGENT_SCOPE_CACHE_DIR = root;
     resetSessionIndexerForTests();
     resetSessionSummaryStoreForTests();
   });
@@ -89,7 +89,7 @@ describe('session indexer', () => {
   afterEach(() => {
     clearSessionSummaryCache();
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CACHE_DIR;
+    delete process.env.AGENT_SCOPE_CACHE_DIR;
   });
 
   it('returns stale cache immediately and refreshes only when requested', async () => {

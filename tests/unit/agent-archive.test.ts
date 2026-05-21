@@ -22,22 +22,22 @@ describe('agent archives', () => {
 
   beforeEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
-    process.env.CLAUD_OMETER_COPILOT_DIR = copilotDir;
-    process.env.CLAUD_OMETER_CURSOR_DIR = cursorDir;
-    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
-    process.env.CLAUD_OMETER_AGENTS = 'codex';
+    process.env.AGENT_SCOPE_CODEX_DIR = codexDir;
+    process.env.AGENT_SCOPE_COPILOT_DIR = copilotDir;
+    process.env.AGENT_SCOPE_CURSOR_DIR = cursorDir;
+    process.env.AGENT_SCOPE_CURSOR_USER_DIR = cursorUserDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_AGENTS = 'codex';
   });
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CODEX_DIR;
-    delete process.env.CLAUD_OMETER_COPILOT_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_CODEX_DIR;
+    delete process.env.AGENT_SCOPE_COPILOT_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_USER_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_AGENTS;
     vi.resetModules();
   });
 
@@ -118,7 +118,7 @@ describe('agent archives', () => {
     const standardizedMeta = JSON.parse(await zip.file('agent-data/standardized/export-meta.json')!.async('string'));
     expect(standardizedMeta).toMatchObject({
       standardizedExportVersion: 1,
-      schema: 'claud-ometer.standardized.v1',
+      schema: 'agentscope.standardized.v1',
       agents: ['codex'],
       files: {
         projects: 'agent-data/standardized/projects.json',
@@ -150,7 +150,7 @@ describe('agent archives', () => {
     });
     expect(standardizedMeta).toMatchObject({
       standardizedExportVersion: 1,
-      schema: 'claud-ometer.standardized.v1',
+      schema: 'agentscope.standardized.v1',
       agents: ['codex'],
       projectCount: 1,
       sessionCount: 1,
@@ -190,6 +190,47 @@ describe('agent archives', () => {
     });
   });
 
+  it('exports standardized-only archives without raw provider files', async () => {
+    fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
+
+    vi.resetModules();
+    const { GET } = await import('@/app/api/export/route');
+    const response = await GET(new Request('http://localhost/api/export?format=standardized'));
+    const zip = await JSZip.loadAsync(await response.arrayBuffer());
+    const names = Object.keys(zip.files);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Disposition')).toContain('agent-data-standardized-');
+    expect(names).toContain('agent-data/standardized/export-meta.json');
+    expect(names).toContain('agent-data/standardized/projects.json');
+    expect(names).toContain('agent-data/standardized/sessions.json');
+    expect(names).toContain('agent-data/standardized/session-details-index.json');
+    expect(names).not.toContain('agent-data/export-meta.json');
+    expect(names.some(name => name.startsWith('agent-data/codex/'))).toBe(false);
+
+    const standardizedMeta = JSON.parse(await zip.file('agent-data/standardized/export-meta.json')!.async('string'));
+    expect(standardizedMeta).toMatchObject({
+      standardizedExportVersion: 1,
+      schema: 'agentscope.standardized.v1',
+      agents: ['codex'],
+      projectCount: 1,
+      sessionCount: 1,
+      sessionDetailCount: 1,
+    });
+  });
+
+  it('rejects unknown export formats', async () => {
+    fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
+
+    vi.resetModules();
+    const { GET } = await import('@/app/api/export/route');
+    const response = await GET(new Request('http://localhost/api/export?format=raw'));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({ error: 'Invalid export format' });
+  });
+
   it('exports Copilot transcripts while excluding indexes and debug logs', async () => {
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'copilot'), copilotDir, { recursive: true });
     const workspaceDir = path.join(copilotDir, 'workspaceStorage', '48bc27b295ea103e3d172520b17fc2e5', 'GitHub.copilot-chat');
@@ -200,7 +241,7 @@ describe('agent archives', () => {
     fs.mkdirSync(legacyDir, { recursive: true });
     fs.writeFileSync(path.join(legacyDir, 'workspace.yaml'), 'cwd: D:/repo/legacy-app\n');
     fs.writeFileSync(path.join(legacyDir, 'events.jsonl'), '{}\n');
-    process.env.CLAUD_OMETER_AGENTS = 'copilot';
+    process.env.AGENT_SCOPE_AGENTS = 'copilot';
 
     vi.resetModules();
     const { GET } = await import('@/app/api/export/route');
@@ -235,7 +276,7 @@ describe('agent archives', () => {
     fs.mkdirSync(path.join(cursorUserDir, 'workspaceStorage', 'workspace-hash'), { recursive: true });
     fs.writeFileSync(path.join(cursorUserDir, 'workspaceStorage', 'workspace-hash', 'workspace.json'), '{}');
     fs.writeFileSync(path.join(cursorUserDir, 'workspaceStorage', 'workspace-hash', 'state.vscdb'), 'workspace-db');
-    process.env.CLAUD_OMETER_AGENTS = 'cursor';
+    process.env.AGENT_SCOPE_AGENTS = 'cursor';
 
     vi.resetModules();
     const { GET } = await import('@/app/api/export/route');
@@ -244,12 +285,12 @@ describe('agent archives', () => {
     const names = Object.keys(zip.files);
 
     expect(response.status).toBe(200);
-    expect(names).toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl');
-    expect(names).toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/subagents/dddddddd-dddd-4ddd-8ddd-dddddddddddd.jsonl');
+    expect(names).toContain('agent-data/cursor/projects/d-dev-research-AgentScope/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl');
+    expect(names).toContain('agent-data/cursor/projects/d-dev-research-AgentScope/agent-transcripts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/subagents/dddddddd-dddd-4ddd-8ddd-dddddddddddd.jsonl');
     expect(names).toContain('agent-data/cursor/globalStorage/state.vscdb');
     expect(names).toContain('agent-data/cursor/workspaceStorage/workspace-hash/workspace.json');
     expect(names).toContain('agent-data/cursor/workspaceStorage/workspace-hash/state.vscdb');
-    expect(names).not.toContain('agent-data/cursor/projects/d-dev-research-Claudometer/agent-tools/tool-sidecar.txt');
+    expect(names).not.toContain('agent-data/cursor/projects/d-dev-research-AgentScope/agent-tools/tool-sidecar.txt');
 
     const meta = JSON.parse(await zip.file('agent-data/export-meta.json')!.async('string'));
     expect(meta).toMatchObject({

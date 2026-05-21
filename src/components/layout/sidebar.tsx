@@ -222,7 +222,7 @@ export function Sidebar() {
           <Terminal className="h-4 w-4 text-primary-foreground" />
         </div>
         <div>
-          <h1 className="text-sm font-semibold tracking-tight">Claud-ometer</h1>
+          <h1 className="text-sm font-semibold tracking-tight">AgentScope</h1>
           <p className="text-[10px] text-muted-foreground">Agent Analytics</p>
         </div>
       </div>

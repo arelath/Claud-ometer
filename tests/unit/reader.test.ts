@@ -122,7 +122,7 @@ describe('reader imported-data fixtures', () => {
 
   it('does not count raw image payload bytes when reconciling prompt totals to usage', async () => {
     const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-prompt-breakdown-import');
-    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const previousImportDir = process.env.AGENT_SCOPE_IMPORT_DIR;
     const sessionId = '00000000-0000-4000-8000-000000000001';
     const projectId = 'prompt-breakdown-project';
     const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
@@ -220,7 +220,7 @@ describe('reader imported-data fixtures', () => {
     );
     fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     vi.resetModules();
 
     try {
@@ -235,7 +235,7 @@ describe('reader imported-data fixtures', () => {
       expect(latestBreakdown?.conversationTokens).toBeGreaterThan(0);
       expect(latestBreakdown?.otherTokens).toBeLessThan(1_000);
     } finally {
-      process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
       fs.rmSync(importDir, { recursive: true, force: true });
       vi.resetModules();
     }
@@ -243,7 +243,7 @@ describe('reader imported-data fixtures', () => {
 
   it('preserves cache writes from hidden thinking snapshots on completed assistant turns', async () => {
     const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-hidden-thinking-cache-write-import');
-    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const previousImportDir = process.env.AGENT_SCOPE_IMPORT_DIR;
     const sessionId = '00000000-0000-4000-8000-000000000003';
     const projectId = 'hidden-thinking-cache-write-project';
     const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
@@ -324,7 +324,7 @@ describe('reader imported-data fixtures', () => {
     );
     fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     vi.resetModules();
 
     try {
@@ -352,7 +352,7 @@ describe('reader imported-data fixtures', () => {
 
       expect(dashboard.totalTokens).toBe(290);
     } finally {
-      process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
       fs.rmSync(importDir, { recursive: true, force: true });
       vi.resetModules();
     }
@@ -360,7 +360,7 @@ describe('reader imported-data fixtures', () => {
 
   it('deduplicates repeated assistant usage and includes subagent models in aggregates', async () => {
     const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-session-aggregate-import');
-    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const previousImportDir = process.env.AGENT_SCOPE_IMPORT_DIR;
     const sessionId = '00000000-0000-4000-8000-000000000002';
     const projectId = 'session-aggregate-project';
     const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
@@ -375,7 +375,7 @@ describe('reader imported-data fixtures', () => {
         type: 'user',
         sessionId,
         timestamp: '2026-05-03T11:00:00.000Z',
-        cwd: 'D:/dev/research/Claud-ometer',
+        cwd: 'D:/dev/research/AgentScope',
         gitBranch: 'main',
         version: '2.1.126',
         message: {
@@ -492,7 +492,7 @@ describe('reader imported-data fixtures', () => {
     );
     fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     vi.resetModules();
 
     try {
@@ -526,7 +526,7 @@ describe('reader imported-data fixtures', () => {
       expect(dashboard.totalTokens).toBe(253);
       expect(Object.keys(dashboard.modelUsage)).toEqual(expect.arrayContaining(['claude-opus-4-7', 'claude-haiku-4-5-20251001', '<synthetic>']));
     } finally {
-      process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
       fs.rmSync(importDir, { recursive: true, force: true });
       vi.resetModules();
     }
@@ -534,7 +534,7 @@ describe('reader imported-data fixtures', () => {
 
   it('builds peak-hour usage from session timestamps in local time', async () => {
     const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-local-hours-import');
-    const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+    const previousImportDir = process.env.AGENT_SCOPE_IMPORT_DIR;
     const previousTimezone = process.env.TZ;
     const sessionId = '00000000-0000-4000-8000-000000000003';
     const projectId = 'local-hours-project';
@@ -594,7 +594,7 @@ describe('reader imported-data fixtures', () => {
     );
     fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
 
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     process.env.TZ = 'America/Los_Angeles';
     vi.resetModules();
 
@@ -604,8 +604,8 @@ describe('reader imported-data fixtures', () => {
 
       expect(dashboard.hourCounts).toEqual({ '5': 1 });
     } finally {
-      if (previousImportDir == null) delete process.env.CLAUD_OMETER_IMPORT_DIR;
-      else process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+      if (previousImportDir == null) delete process.env.AGENT_SCOPE_IMPORT_DIR;
+      else process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
       if (previousTimezone == null) delete process.env.TZ;
       else process.env.TZ = previousTimezone;
       fs.rmSync(importDir, { recursive: true, force: true });

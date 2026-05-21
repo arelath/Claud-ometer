@@ -7,7 +7,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const APP_ID = 'com.claudometer.app';
+const APP_ID = 'com.agentscope.app';
 const DEV_SERVER_URL = process.env.ELECTRON_START_URL;
 
 let mainWindow;
@@ -98,9 +98,9 @@ async function startNextServer() {
       NODE_ENV: 'production',
       HOSTNAME: '127.0.0.1',
       PORT: String(port),
-      CLAUD_OMETER_IMPORT_DIR: importDir,
-      CLAUD_OMETER_SETTINGS_DIR: settingsDir,
-      CLAUD_OMETER_ELECTRON_RESOURCES_DIR: process.resourcesPath,
+      AGENT_SCOPE_IMPORT_DIR: importDir,
+      AGENT_SCOPE_SETTINGS_DIR: settingsDir,
+      AGENT_SCOPE_ELECTRON_RESOURCES_DIR: process.resourcesPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -113,7 +113,7 @@ async function startNextServer() {
     nextServerProcess = undefined;
 
     if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) {
-      dialog.showErrorBox('Claud-ometer server stopped', 'The local Next.js server stopped unexpectedly. Please restart the app.');
+      dialog.showErrorBox('AgentScope server stopped', 'The local Next.js server stopped unexpectedly. Please restart the app.');
       mainWindow.close();
     }
   });
@@ -134,7 +134,7 @@ function createMainWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 720,
-    title: 'Claud-ometer',
+    title: 'AgentScope',
     backgroundColor: '#f1eadf',
     webPreferences: {
       contextIsolation: true,
@@ -212,7 +212,7 @@ app.whenReady().then(async () => {
     createMainWindow();
   } catch (error) {
     dialog.showErrorBox(
-      'Unable to start Claud-ometer',
+      'Unable to start AgentScope',
       error instanceof Error ? error.message : String(error),
     );
     app.quit();

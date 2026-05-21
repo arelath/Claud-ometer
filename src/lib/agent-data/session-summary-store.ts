@@ -1,16 +1,15 @@
 import { createHash } from 'crypto';
 import type { AgentDataProvider } from './provider';
 import {
-  getSessionSummaryCacheStatus as buildCacheStatus,
-  isSummaryValidForSource,
-  mergeUpdatedSummaries,
-  readSessionSummaryCache,
   sourceSummaryCacheKey,
-  summaryCacheKey,
-  writeSessionSummaryCache,
-  clearSessionSummaryCache as clearPersistentSessionSummaryCache,
   type SessionSummaryCacheStatus,
 } from './session-summary-cache';
+import {
+  clearSessionSummaryIndexCache as clearPersistentSessionSummaryCache,
+  commitSessionSummaryIndex,
+  getSessionSummaryIndexStatus as buildCacheStatus,
+  getValidSessionSummariesForSources,
+} from './session-summary-sqlite-store';
 import {
   SESSION_SUMMARY_CACHE_VERSION,
   type CachedSessionSummary,
@@ -88,24 +87,21 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function buildSummaries(providers: AgentDataProvider[], sources: SessionSummarySource[]): Promise<CachedSessionSummary[]> {
-  const cache = readSessionSummaryCache();
-  const cachedByKey = new Map(cache.summaries.map(summary => [summaryCacheKey(summary), summary]));
+  const cachedByKey = getValidSessionSummariesForSources(sources);
   const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
 
   const updatedSummaries = (await mapWithConcurrency(sources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
     const cached = cachedByKey.get(sourceSummaryCacheKey(source));
-    if (cached && isSummaryValidForSource(cached, source)) {
-      return cached;
-    }
+    if (cached) return cached;
 
     const provider = providerByKind.get(source.provider);
     return provider?.buildSessionSummary ? provider.buildSessionSummary(source) : null;
   })).filter((summary): summary is CachedSessionSummary => Boolean(summary));
 
-  writeSessionSummaryCache({
-    cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
-    generatedAt: new Date().toISOString(),
-    summaries: mergeUpdatedSummaries(cache.summaries, updatedSummaries, sources),
+  commitSessionSummaryIndex({
+    touchedProviders: providers.map(provider => provider.kind),
+    discoveredSources: sources,
+    updatedSummaries,
   });
 
   return updatedSummaries.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -150,10 +146,10 @@ export async function rebuildCachedSessionSummaries(providers: AgentDataProvider
     const provider = supportedProviders.find(item => item.kind === source.provider);
     return provider!.buildSessionSummary!(source);
   });
-  writeSessionSummaryCache({
-    cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
-    generatedAt: new Date().toISOString(),
-    summaries: mergeUpdatedSummaries(readSessionSummaryCache().summaries, summaries, sources),
+  commitSessionSummaryIndex({
+    touchedProviders: supportedProviders.map(provider => provider.kind),
+    discoveredSources: sources,
+    updatedSummaries: summaries,
   });
   const key = manifestKey(supportedProviders, sources);
   const memoKey = supportedProviders.map(provider => provider.kind).sort().join(',');

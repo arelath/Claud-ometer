@@ -7,7 +7,7 @@ describe('data source helpers', () => {
 
   beforeEach(() => {
     fs.rmSync(importDir, { recursive: true, force: true });
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     vi.resetModules();
   });
 

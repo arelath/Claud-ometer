@@ -5,7 +5,7 @@
   "updated_at": "2026-05-08T10:16:51.000Z",
   "source": "codex-cli",
   "model_provider": "openai",
-  "cwd": "D:\\dev\\research\\Claud-ometer",
+  "cwd": "D:\\dev\\research\\AgentScope",
   "title": "Codex fixture support plan",
   "tokens_used": 198,
   "git_branch": "main",

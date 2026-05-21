@@ -90,7 +90,7 @@ async function getCachedLiveSessionDetail(liveSession: LiveSessionInfo): Promise
 
   if (cached?.detail) {
     const parseAgeMs = now - cached.parsedAtMs;
-    if (cached.revision === revision || parseAgeMs < LIVE_DETAIL_REPARSE_THROTTLE_MS) {
+    if (cached.revision === revision || liveSession.status === 'busy' || parseAgeMs < LIVE_DETAIL_REPARSE_THROTTLE_MS) {
       return cached.detail;
     }
   }

@@ -69,7 +69,7 @@ export function seedLiveAgentHomes(rootDir: string): void {
     path.join(liveSessionsDir, 'live-session-1.json'),
     JSON.stringify({
       sessionId: fixtureSessionIds[0],
-      cwd: 'D:/dev/research/Claud-ometer',
+      cwd: 'D:/dev/research/AgentScope',
       status: 'idle',
       version: '2.1.126',
       kind: 'interactive',
@@ -107,7 +107,7 @@ function buildSyntheticSession(sessionId: string, index: number): unknown[] {
       type: 'user',
       sessionId,
       timestamp: timestamp(1),
-      cwd: 'D:/dev/research/Claud-ometer',
+      cwd: 'D:/dev/research/AgentScope',
       gitBranch: 'main',
       version: '2.1.126',
       message: {
@@ -325,7 +325,7 @@ function buildFilteredToolCollapseSession(sessionId: string, index: number): unk
       type: 'user',
       sessionId,
       timestamp: timestamp(0),
-      cwd: 'D:/dev/research/Claud-ometer',
+      cwd: 'D:/dev/research/AgentScope',
       gitBranch: 'main',
       version: '2.1.126',
       message: {

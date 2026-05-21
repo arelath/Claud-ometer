@@ -7,7 +7,7 @@ const net = require('node:net');
 const path = require('node:path');
 
 const rootDir = process.cwd();
-const exePath = process.argv[2] || path.join(rootDir, 'dist-electron', 'win-unpacked', 'Claud-ometer.exe');
+const exePath = process.argv[2] || path.join(rootDir, 'dist-electron', 'win-unpacked', 'AgentScope.exe');
 const serverPath = process.argv[3] || path.join(rootDir, 'dist-electron', 'win-unpacked', 'resources', 'next', 'server.js');
 const importDir = path.join(rootDir, '.test-artifacts', 'electron-smoke-import');
 
@@ -82,7 +82,7 @@ async function main() {
       NODE_ENV: 'production',
       HOSTNAME: '127.0.0.1',
       PORT: String(port),
-      CLAUD_OMETER_IMPORT_DIR: importDir,
+      AGENT_SCOPE_IMPORT_DIR: importDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,

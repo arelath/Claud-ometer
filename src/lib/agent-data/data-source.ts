@@ -31,7 +31,7 @@ interface SourceSettings {
 }
 
 function resolveImportDir(): string {
-  return process.env.CLAUD_OMETER_IMPORT_DIR?.trim() || path.join(process.cwd(), '.dashboard-data');
+  return process.env.AGENT_SCOPE_IMPORT_DIR?.trim() || path.join(process.cwd(), '.dashboard-data');
 }
 
 function getImportMetaPath(): string {
@@ -121,18 +121,18 @@ export function clearImportedData(): void {
 }
 
 export function getLiveClaudeDir(): string {
-  return process.env.CLAUD_OMETER_CLAUDE_DIR?.trim() || path.join(os.homedir(), '.claude');
+  return process.env.AGENT_SCOPE_CLAUDE_DIR?.trim() || path.join(os.homedir(), '.claude');
 }
 
 export function getLiveCodexDir(): string {
-  return process.env.CLAUD_OMETER_CODEX_DIR?.trim() || path.join(os.homedir(), '.codex');
+  return process.env.AGENT_SCOPE_CODEX_DIR?.trim() || path.join(os.homedir(), '.codex');
 }
 
 export function getLiveCopilotDir(): string {
-  const explicitRoot = process.env.CLAUD_OMETER_COPILOT_DIR?.trim();
+  const explicitRoot = process.env.AGENT_SCOPE_COPILOT_DIR?.trim();
   if (explicitRoot) return explicitRoot;
 
-  const explicitUserDir = process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim();
+  const explicitUserDir = process.env.AGENT_SCOPE_COPILOT_VSCODE_USER_DIR?.trim();
   if (explicitUserDir) return explicitUserDir;
 
   const candidates = process.platform === 'win32'
@@ -156,11 +156,11 @@ export function getLiveCopilotDir(): string {
 }
 
 export function getLiveCursorDir(): string {
-  return process.env.CLAUD_OMETER_CURSOR_DIR?.trim() || path.join(os.homedir(), '.cursor');
+  return process.env.AGENT_SCOPE_CURSOR_DIR?.trim() || path.join(os.homedir(), '.cursor');
 }
 
 export function getLiveCursorUserDir(): string {
-  const explicitRoot = process.env.CLAUD_OMETER_CURSOR_USER_DIR?.trim();
+  const explicitRoot = process.env.AGENT_SCOPE_CURSOR_USER_DIR?.trim();
   if (explicitRoot) return explicitRoot;
 
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -184,14 +184,14 @@ function getCopilotLegacySessionStateDir(copilotDir: string, mode: DataSourceMod
   const nested = path.join(copilotDir, 'session-state');
   if (mode === 'imported') return nested;
 
-  const explicit = process.env.CLAUD_OMETER_COPILOT_LEGACY_DIR?.trim();
+  const explicit = process.env.AGENT_SCOPE_COPILOT_LEGACY_DIR?.trim();
   if (explicit) {
     return path.basename(explicit).toLowerCase() === 'session-state'
       ? explicit
       : path.join(explicit, 'session-state');
   }
 
-  if (process.env.CLAUD_OMETER_COPILOT_DIR?.trim() || process.env.CLAUD_OMETER_COPILOT_VSCODE_USER_DIR?.trim()) {
+  if (process.env.AGENT_SCOPE_COPILOT_DIR?.trim() || process.env.AGENT_SCOPE_COPILOT_VSCODE_USER_DIR?.trim()) {
     return nested;
   }
   if (fs.existsSync(nested)) return nested;
@@ -327,7 +327,7 @@ export function getDetectedAgents(mode: DataSourceMode = getActiveDataSource()):
 }
 
 export function getSelectedAgents(mode: DataSourceMode = getActiveDataSource()): AgentKind[] {
-  const envAgents = parseAgentList(process.env.CLAUD_OMETER_AGENTS);
+  const envAgents = parseAgentList(process.env.AGENT_SCOPE_AGENTS);
   if (envAgents !== undefined) return envAgents;
 
   const savedSettings = readSourceSettings();

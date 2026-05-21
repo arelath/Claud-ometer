@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -25,17 +25,19 @@ const metrics: { key: MetricKey; label: string; color: string }[] = [
 export function UsageOverTime({ data, buckets, granularity = 'day' }: UsageOverTimeProps) {
   const [activeMetric, setActiveMetric] = useState<MetricKey>('messageCount');
 
-  const chartData = buckets?.length
-    ? buckets.map(bucket => ({
-        messageCount: bucket.messageCount,
-        sessionCount: bucket.activeSessionCount,
-        toolCallCount: bucket.toolCallCount,
-        dateLabel: formatBucketLabel(bucket, granularity),
-      }))
-    : data.map(d => ({
-        ...d,
-        dateLabel: format(parseISO(d.date), 'MMM d'),
-      }));
+  const chartData = useMemo(() => (
+    buckets?.length
+      ? buckets.map(bucket => ({
+          messageCount: bucket.messageCount,
+          sessionCount: bucket.activeSessionCount,
+          toolCallCount: bucket.toolCallCount,
+          dateLabel: formatBucketLabel(bucket, granularity),
+        }))
+      : data.map(d => ({
+          ...d,
+          dateLabel: format(parseISO(d.date), 'MMM d'),
+        }))
+  ), [data, buckets, granularity]);
 
   const activeConfig = metrics.find(m => m.key === activeMetric)!;
 
@@ -97,6 +99,7 @@ export function UsageOverTime({ data, buckets, granularity = 'day' }: UsageOverT
                 stroke={activeConfig.color}
                 strokeWidth={2}
                 fill={`url(#gradient-${activeMetric})`}
+                isAnimationActive={false}
               />
             </AreaChart>
           </ResponsiveContainer>

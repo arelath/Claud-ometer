@@ -8,19 +8,19 @@ describe('reader synthetic display parsing', () => {
   const sessionId = '11111111-1111-4111-8111-111111111111';
   const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
   const sessionPath = path.join(projectDir, `${sessionId}.jsonl`);
-  const previousImportDir = process.env.CLAUD_OMETER_IMPORT_DIR;
+  const previousImportDir = process.env.AGENT_SCOPE_IMPORT_DIR;
 
   beforeEach(() => {
     fs.rmSync(importDir, { recursive: true, force: true });
     fs.mkdirSync(projectDir, { recursive: true });
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     vi.resetModules();
   });
 
   afterEach(() => {
     fs.rmSync(importDir, { recursive: true, force: true });
-    if (previousImportDir == null) delete process.env.CLAUD_OMETER_IMPORT_DIR;
-    else process.env.CLAUD_OMETER_IMPORT_DIR = previousImportDir;
+    if (previousImportDir == null) delete process.env.AGENT_SCOPE_IMPORT_DIR;
+    else process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
     vi.resetModules();
   });
 

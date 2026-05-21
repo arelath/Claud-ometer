@@ -10,9 +10,9 @@ vi.mock('@/lib/claude-data/live-sessions', () => ({
 
 vi.mock('@/lib/claude-data/reader', () => ({
   getProjects: vi.fn(async () => [{
-    id: 'D-dev-Claudometer',
-    name: 'Claudometer',
-    path: 'D:/dev/Claudometer',
+    id: 'D-dev-AgentScope',
+    name: 'AgentScope',
+    path: 'D:/dev/AgentScope',
     sessionCount: 1,
     totalMessages: 2,
     totalTokens: 3,
@@ -23,8 +23,8 @@ vi.mock('@/lib/claude-data/reader', () => ({
   }]),
   getSessions: vi.fn(async () => [{
     id: 'session-1',
-    projectId: 'D-dev-Claudometer',
-    projectName: 'Claudometer',
+    projectId: 'D-dev-AgentScope',
+    projectName: 'AgentScope',
     timestamp: '2026-05-08T10:00:00.000Z',
     duration: 1000,
     messageCount: 2,
@@ -40,7 +40,7 @@ vi.mock('@/lib/claude-data/reader', () => ({
     model: 'claude-sonnet',
     models: ['Sonnet'],
     gitBranch: 'main',
-    cwd: 'D:/dev/Claudometer',
+    cwd: 'D:/dev/AgentScope',
     version: '1.0.0',
     toolsUsed: {},
     compaction: { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
@@ -108,15 +108,15 @@ describe('agent provider registry', () => {
 
     await expect(provider.getProjects()).resolves.toMatchObject([{
       agentKind: 'claude',
-      nativeId: 'D-dev-Claudometer',
-      routeId: 'claude:D-dev-Claudometer',
+      nativeId: 'D-dev-AgentScope',
+      routeId: 'claude:D-dev-AgentScope',
     }]);
     await expect(provider.getSessions()).resolves.toMatchObject([{
       agentKind: 'claude',
       nativeId: 'session-1',
       routeId: 'claude:session-1',
-      nativeProjectId: 'D-dev-Claudometer',
-      projectRouteId: 'claude:D-dev-Claudometer',
+      nativeProjectId: 'D-dev-AgentScope',
+      projectRouteId: 'claude:D-dev-AgentScope',
     }]);
   });
 });

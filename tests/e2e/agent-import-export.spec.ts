@@ -38,7 +38,7 @@ test('mixed agent export can be imported and browsed from the app', async ({ pag
   const detailIndex = JSON.parse(await zip.file('agent-data/standardized/session-details-index.json')!.async('string'));
   expect(standardizedMeta).toMatchObject({
     standardizedExportVersion: 1,
-    schema: 'claud-ometer.standardized.v1',
+    schema: 'agentscope.standardized.v1',
     agents: ['claude', 'codex'],
   });
   expect(standardizedSessions.sessions).toEqual(expect.arrayContaining([
@@ -50,6 +50,19 @@ test('mixed agent export can be imported and browsed from the app', async ({ pag
   const codexDetailPath = codexDetailEntry.path as string;
   expect(codexDetailPath).toMatch(/^agent-data\/standardized\/session-details\/codex\//);
   expect(zip.file(codexDetailPath)).not.toBeNull();
+
+  const standardizedOnlyResponse = await page.request.get('/api/export?format=standardized');
+  expect(standardizedOnlyResponse.ok()).toBe(true);
+  expect(standardizedOnlyResponse.headers()['content-disposition']).toContain('agent-data-standardized-');
+  const standardizedOnlyZip = await JSZip.loadAsync(await standardizedOnlyResponse.body());
+  const standardizedOnlyNames = Object.keys(standardizedOnlyZip.files);
+  expect(standardizedOnlyNames).toContain('agent-data/standardized/export-meta.json');
+  expect(standardizedOnlyNames).toContain('agent-data/standardized/projects.json');
+  expect(standardizedOnlyNames).toContain('agent-data/standardized/sessions.json');
+  expect(standardizedOnlyNames).toContain('agent-data/standardized/session-details-index.json');
+  expect(standardizedOnlyNames).not.toContain('agent-data/export-meta.json');
+  expect(standardizedOnlyNames.some(name => name.startsWith('agent-data/claude/'))).toBe(false);
+  expect(standardizedOnlyNames.some(name => name.startsWith('agent-data/codex/'))).toBe(false);
 
   const importResponse = await page.request.post('/api/import', {
     multipart: {

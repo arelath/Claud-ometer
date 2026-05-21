@@ -17,7 +17,7 @@ test('overview and data pages load imported fixture data', async ({ page }) => {
 test('stored theme is applied before the app hydrates', async ({ page }) => {
   await page.addInitScript(() => {
     if (!sessionStorage.getItem('allow-theme-test-reload')) {
-      localStorage.setItem('claud-ometer-theme', 'light');
+      localStorage.setItem('agentscope-theme', 'light');
     }
   });
 
@@ -28,7 +28,7 @@ test('stored theme is applied before the app hydrates', async ({ page }) => {
 
   await page.evaluate(() => {
     sessionStorage.setItem('allow-theme-test-reload', '1');
-    localStorage.setItem('claud-ometer-theme', 'dark');
+    localStorage.setItem('agentscope-theme', 'dark');
     window.location.reload();
   });
 

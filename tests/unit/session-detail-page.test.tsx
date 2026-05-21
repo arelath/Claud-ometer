@@ -183,9 +183,9 @@ function session(overrides: Partial<SessionDetail> = {}): SessionDetail {
   return {
     id: 'session-1',
     projectId: 'project-1',
-    projectName: 'Claudometer',
-    sourceFilePath: 'D:/dev/Claudometer/session-1.jsonl',
-    sourceFilePaths: ['D:/dev/Claudometer/session-1.jsonl'],
+    projectName: 'AgentScope',
+    sourceFilePath: 'D:/dev/AgentScope/session-1.jsonl',
+    sourceFilePaths: ['D:/dev/AgentScope/session-1.jsonl'],
     timestamp: '2026-05-08T12:00:00.000Z',
     duration: 90_000,
     messageCount: 5,
@@ -201,7 +201,7 @@ function session(overrides: Partial<SessionDetail> = {}): SessionDetail {
     model: 'claude-opus-4',
     models: ['Opus', 'Sonnet'],
     gitBranch: 'main',
-    cwd: 'D:/dev/Claudometer',
+    cwd: 'D:/dev/AgentScope',
     version: '2.1.130',
     toolsUsed: { Read: 3, Edit: 1 },
     compaction: {
@@ -261,7 +261,7 @@ describe('session detail page', () => {
 
     renderPage();
 
-    await screen.findByRole('heading', { name: 'Claudometer' });
+    await screen.findByRole('heading', { name: 'AgentScope' });
     expect(screen.getByText('Resume session-1')).toBeInTheDocument();
     expect(screen.getByText('compacted')).toBeInTheDocument();
     expect(screen.getByTestId('view-tabs')).toHaveTextContent('conversation 3');

@@ -35,7 +35,7 @@ describe('CostModeProvider', () => {
   });
 
   it('loads, updates, and persists the selected mode', async () => {
-    localStorage.setItem('claud-ometer-cost-mode', 'conservative');
+    localStorage.setItem('agentscope-cost-mode', 'conservative');
 
     render(
       <CostModeProvider>
@@ -50,7 +50,7 @@ describe('CostModeProvider', () => {
 
     expect(screen.getByTestId('mode')).toHaveTextContent('api');
     expect(screen.getByTestId('picked')).toHaveTextContent('9');
-    expect(localStorage.getItem('claud-ometer-cost-mode')).toBe('api');
+    expect(localStorage.getItem('agentscope-cost-mode')).toBe('api');
   });
 
   it('rejects use outside the provider', () => {

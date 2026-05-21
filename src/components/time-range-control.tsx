@@ -29,7 +29,7 @@ import {
   type TimeRangeSelection,
 } from '@/lib/time-range';
 
-const TIME_RANGE_STORAGE_KEY = 'claudometer.analyticsTimeRange';
+const TIME_RANGE_STORAGE_KEY = 'agentscope.analyticsTimeRange';
 
 export function useAnalyticsTimeRange(): {
   value: TimeRangeSelection;

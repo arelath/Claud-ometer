@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   SESSION_SUMMARY_CACHE_VERSION,
+  summariesToCostAnalytics,
   summariesToDashboardStats,
   summariesToProjects,
   summariesToSessions,
@@ -128,6 +129,20 @@ describe('session summary aggregation', () => {
     }]);
     expect(Object.keys(stats.modelUsage)).toEqual(expect.arrayContaining(['gpt-5.5', 'gpt-5.4']));
     expect(stats.recentSessions.map(session => session.id)).toEqual(['session-2', 'session-1']);
+
+    const costAnalytics = summariesToCostAnalytics(summaries);
+    expect(costAnalytics.projects).toMatchObject(projects);
+    expect(costAnalytics.stats).toMatchObject({
+      totalSessions: stats.totalSessions,
+      totalMessages: stats.totalMessages,
+      totalTokens: stats.totalTokens,
+      estimatedCosts: stats.estimatedCosts,
+      changeTotals: stats.changeTotals,
+      projectCount: stats.projectCount,
+    });
+    expect(costAnalytics.stats.dailyModelTokens).toEqual(stats.dailyModelTokens);
+    expect(costAnalytics.stats.dailyChangeActivity).toEqual(stats.dailyChangeActivity);
+    expect(costAnalytics.stats.recentSessions).toEqual([]);
   });
 
   it('aggregates usage by event local day instead of session start day', () => {

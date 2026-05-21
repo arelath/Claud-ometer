@@ -108,7 +108,7 @@ export function LiveSessionSendBox({
   const openConsoleWindow = () => {
     const opened = window.open(
       `/sessions/${encodeURIComponent(sessionId)}/console`,
-      `claudometer-console-${sessionId}`,
+      `agentscope-console-${sessionId}`,
       'popup,width=1120,height=780',
     );
 

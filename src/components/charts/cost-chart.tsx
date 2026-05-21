@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
@@ -24,60 +25,62 @@ interface ModelCostGroup {
 export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps) {
   const { costMode } = useCostMode();
 
-  const modelGroups = new Map<string, ModelCostGroup>();
-  const ensureModelGroup = (model: string): ModelCostGroup => {
-    const key = getModelCostGroupKey(model);
-    const existing = modelGroups.get(key);
-    if (existing) return existing;
+  const { chartData, groups } = useMemo(() => {
+    const modelGroups = new Map<string, ModelCostGroup>();
+    const ensureModelGroup = (model: string): ModelCostGroup => {
+      const key = getModelCostGroupKey(model);
+      const existing = modelGroups.get(key);
+      if (existing) return existing;
 
-    const group = {
-      key,
-      name: getModelCostDisplayName(model),
-      color: getModelColor(key),
+      const group = {
+        key,
+        name: getModelCostDisplayName(model),
+        color: getModelColor(key),
+      };
+      modelGroups.set(key, group);
+      return group;
     };
-    modelGroups.set(key, group);
-    return group;
-  };
 
-  const sourceRows = buckets?.length
-    ? buckets.map(bucket => ({
-        label: formatBucketLabel(bucket, granularity),
-        tokensByModel: bucket.tokensByModel,
-        costsByModel: bucket.costsByModel,
-      }))
-    : data.map(day => ({
-        label: format(parseISO(day.date), 'MMM d'),
-        tokensByModel: day.tokensByModel,
-        costsByModel: day.costsByModel || {},
-      }));
+    const sourceRows = buckets?.length
+      ? buckets.map(bucket => ({
+          label: formatBucketLabel(bucket, granularity),
+          tokensByModel: bucket.tokensByModel,
+          costsByModel: bucket.costsByModel,
+        }))
+      : data.map(day => ({
+          label: format(parseISO(day.date), 'MMM d'),
+          tokensByModel: day.tokensByModel,
+          costsByModel: day.costsByModel || {},
+        }));
 
-  sourceRows.forEach(d => {
-    Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
-      if (tokens > 0) ensureModelGroup(model);
+    sourceRows.forEach(d => {
+      Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
+        if (tokens > 0) ensureModelGroup(model);
+      });
     });
-  });
 
-  const chartData = sourceRows.map(d => {
-    const entry: Record<string, string | number> = {
-      date: d.label,
-    };
-    const costsByGroup: Record<string, number> = {};
+    const parsedData = sourceRows.map(d => {
+      const entry: Record<string, string | number> = {
+        date: d.label,
+      };
+      const costsByGroup: Record<string, number> = {};
 
-    for (const [model, tokens] of Object.entries(d.tokensByModel)) {
-      if (tokens <= 0) continue;
-      const group = ensureModelGroup(model);
-      const costs = d.costsByModel?.[model];
-      costsByGroup[group.name] = (costsByGroup[group.name] || 0) + (costs?.[costMode] ?? 0);
-    }
+      for (const [model, tokens] of Object.entries(d.tokensByModel)) {
+        if (tokens <= 0) continue;
+        const group = ensureModelGroup(model);
+        const costs = d.costsByModel?.[model];
+        costsByGroup[group.name] = (costsByGroup[group.name] || 0) + (costs?.[costMode] ?? 0);
+      }
 
-    for (const group of modelGroups.values()) {
-      entry[group.name] = parseFloat((costsByGroup[group.name] || 0).toFixed(2));
-    }
+      for (const group of modelGroups.values()) {
+        entry[group.name] = parseFloat((costsByGroup[group.name] || 0).toFixed(2));
+      }
 
-    return entry;
-  });
+      return entry;
+    });
 
-  const groups = Array.from(modelGroups.values());
+    return { chartData: parsedData, groups: Array.from(modelGroups.values()) };
+  }, [data, buckets, granularity, costMode]);
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -123,6 +126,7 @@ export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps
                   fill={group.color}
                   fillOpacity={0.3}
                   strokeWidth={2}
+                  isAnimationActive={false}
                 />
               ))}
             </AreaChart>

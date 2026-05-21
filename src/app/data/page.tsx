@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import useSWR, { mutate } from 'swr';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -22,6 +22,9 @@ import { AGENT_KINDS, getAgentLabel } from '@/lib/agent-data/types';
 import { AgentBadge } from '@/components/agent-badge';
 
 const fetcher = (url: string) => fetch(url).then(r => r.json());
+
+type ExportFormat = 'full' | 'standardized';
+type SourceUpdate = { source?: DataSourceInfo['active']; agents?: AgentKind[] };
 
 interface DataSourceInfo {
   active: 'live' | 'imported';
@@ -46,33 +49,125 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+function sameAgents(left: AgentKind[], right: AgentKind[]): boolean {
+  return left.length === right.length && left.every((agent, index) => agent === right[index]);
+}
+
 export default function DataPage() {
   const { data: sourceInfo, mutate: mutateSource } = useSWR<DataSourceInfo>('/api/data-source', fetcher);
-  const [exporting, setExporting] = useState(false);
+  const [optimisticSourceInfo, setOptimisticSourceInfo] = useState<DataSourceInfo | null>(null);
+  const [sourceUpdatePending, setSourceUpdatePending] = useState(false);
+  const pendingSourceUpdates = useRef(0);
+  const latestSourceUpdate = useRef(0);
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const displayedSourceInfo = optimisticSourceInfo || sourceInfo;
 
-  const handleExport = useCallback(async () => {
-    setExporting(true);
+  useEffect(() => {
+    if (
+      sourceInfo
+      && optimisticSourceInfo
+      && !sourceUpdatePending
+      && sourceInfo.active === optimisticSourceInfo.active
+      && sameAgents(sourceInfo.agents, optimisticSourceInfo.agents)
+    ) {
+      setOptimisticSourceInfo(null);
+    }
+  }, [optimisticSourceInfo, sourceInfo, sourceUpdatePending]);
+
+  const applyOptimisticSourceUpdate = useCallback((update: SourceUpdate): DataSourceInfo | null => {
+    const base = optimisticSourceInfo || sourceInfo;
+    if (!base) return null;
+
+    const next: DataSourceInfo = {
+      ...base,
+      active: update.source || base.active,
+      agents: update.agents ?? base.agents,
+    };
+    setOptimisticSourceInfo(next);
+    void mutateSource(next, { revalidate: false });
+    return next;
+  }, [mutateSource, optimisticSourceInfo, sourceInfo]);
+
+  const commitSourceUpdate = useCallback(async (
+    update: SourceUpdate,
+    successText: string,
+  ) => {
+    const previous = optimisticSourceInfo || sourceInfo || null;
+    const next = applyOptimisticSourceUpdate(update);
+    if (!next) return;
+    const requestId = latestSourceUpdate.current + 1;
+    latestSourceUpdate.current = requestId;
+    pendingSourceUpdates.current += 1;
+
+    setSourceUpdatePending(true);
+    setMessage({ type: 'success', text: successText });
+
+    try {
+      const res = await fetch('/api/data-source', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: next.active,
+          ...(update.agents !== undefined ? { agents: next.agents } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error('Failed to update sources');
+      const confirmed = await res.json() as Partial<DataSourceInfo>;
+      const settled: DataSourceInfo = {
+        ...next,
+        ...confirmed,
+        active: confirmed.active || next.active,
+        agents: confirmed.agents || next.agents,
+        detectedAgents: confirmed.detectedAgents || next.detectedAgents,
+        hasImportedData: confirmed.hasImportedData ?? next.hasImportedData,
+        importMeta: confirmed.importMeta === undefined ? next.importMeta : confirmed.importMeta,
+      };
+      if (requestId === latestSourceUpdate.current) {
+        setOptimisticSourceInfo(settled);
+        void mutateSource(settled, { revalidate: false });
+        void mutate(() => true);
+      }
+    } catch {
+      if (requestId === latestSourceUpdate.current) {
+        setOptimisticSourceInfo(previous);
+        if (previous) void mutateSource(previous, { revalidate: false });
+        setMessage({ type: 'error', text: 'Failed to update data sources. Reverted to the previous selection.' });
+      }
+    } finally {
+      pendingSourceUpdates.current = Math.max(0, pendingSourceUpdates.current - 1);
+      if (pendingSourceUpdates.current === 0) setSourceUpdatePending(false);
+      if (requestId === latestSourceUpdate.current) void mutateSource();
+    }
+  }, [applyOptimisticSourceUpdate, mutateSource, optimisticSourceInfo, sourceInfo]);
+
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    setExporting(format);
     setMessage(null);
     try {
-      const res = await fetch('/api/export');
+      const res = await fetch(format === 'standardized' ? '/api/export?format=standardized' : '/api/export');
       if (!res.ok) throw new Error('Export failed');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]
-        || `agent-data-${new Date().toISOString().slice(0, 10)}.zip`;
+        || `agent-data${format === 'standardized' ? '-standardized' : ''}-${new Date().toISOString().slice(0, 10)}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      setMessage({ type: 'success', text: 'Export downloaded successfully!' });
+      setMessage({
+        type: 'success',
+        text: format === 'standardized'
+          ? 'Standardized export downloaded successfully!'
+          : 'Full export downloaded successfully!',
+      });
     } catch {
       setMessage({ type: 'error', text: 'Failed to export data.' });
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   }, []);
 
@@ -92,9 +187,9 @@ export default function DataPage() {
         type: 'success',
         text: `Imported ${data.meta.projectCount} projects, ${data.meta.sessionCount} sessions. Dashboard switched to imported data.`,
       });
-      mutateSource();
+      void mutateSource();
       // Revalidate all data
-      mutate(() => true);
+      void mutate(() => true);
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to import data.' });
     } finally {
@@ -105,29 +200,19 @@ export default function DataPage() {
   }, [mutateSource]);
 
   const handleSwitchSource = useCallback(async (source: 'live' | 'imported') => {
-    setMessage(null);
-    try {
-      const res = await fetch('/api/data-source', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
-      });
-      if (!res.ok) throw new Error('Failed to switch');
-      mutateSource();
-      mutate(() => true);
-      setMessage({ type: 'success', text: `Switched to ${source === 'live' ? 'live agent' : 'imported'} data.` });
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to switch data source.' });
-    }
-  }, [mutateSource]);
+    await commitSourceUpdate(
+      { source },
+      `Switched to ${source === 'live' ? 'live agent' : 'imported'} data. Updating views in the background.`,
+    );
+  }, [commitSourceUpdate]);
 
   const handleClearImport = useCallback(async () => {
     setMessage(null);
     try {
       const res = await fetch('/api/import', { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to clear');
-      mutateSource();
-      mutate(() => true);
+      void mutateSource();
+      void mutate(() => true);
       setMessage({ type: 'success', text: 'Imported data cleared. Switched back to live data.' });
     } catch {
       setMessage({ type: 'error', text: 'Failed to clear imported data.' });
@@ -135,30 +220,17 @@ export default function DataPage() {
   }, [mutateSource]);
 
   const handleSetAgents = useCallback(async (agents: AgentKind[]) => {
-    setMessage(null);
-    try {
-      const res = await fetch('/api/data-source', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: sourceInfo?.active || 'live', agents }),
-      });
-      if (!res.ok) throw new Error('Failed to switch agents');
-      mutateSource();
-      mutate(() => true);
-      setMessage({
-        type: 'success',
-        text: agents.length > 0
-          ? `Selected ${agents.map(getAgentLabel).join(' + ')} data.`
-          : 'No agent sources selected. Dashboard will show no sessions.',
-      });
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to switch selected agents.' });
-    }
-  }, [mutateSource, sourceInfo?.active]);
+    await commitSourceUpdate(
+      { agents },
+      agents.length > 0
+        ? `Selected ${agents.map(getAgentLabel).join(' + ')} data. Updating views in the background.`
+        : 'No agent sources selected. Dashboard will show no sessions.',
+    );
+  }, [commitSourceUpdate]);
 
   const selectableAgents = AGENT_KINDS;
-  const selectedAgents = sourceInfo?.agents || [];
-  const detectedAgents = sourceInfo?.detectedAgents || [];
+  const selectedAgents = displayedSourceInfo?.agents || [];
+  const detectedAgents = displayedSourceInfo?.detectedAgents || [];
   const selectedAgentCount = selectedAgents.length;
   const selectedAgentNames = selectedAgents.map(getAgentLabel).join(' + ');
   const allDetectedSelected = detectedAgents.length > 0
@@ -167,7 +239,7 @@ export default function DataPage() {
   const hasSelectedAgents = selectedAgents.length > 0;
 
   const toggleAgent = useCallback((agent: AgentKind) => {
-    const current = sourceInfo?.agents || [];
+    const current = displayedSourceInfo?.agents || [];
     const nextSet = new Set(current);
     if (nextSet.has(agent)) {
       nextSet.delete(agent);
@@ -175,7 +247,7 @@ export default function DataPage() {
       nextSet.add(agent);
     }
     handleSetAgents(AGENT_KINDS.filter(item => nextSet.has(item)));
-  }, [handleSetAgents, sourceInfo?.agents]);
+  }, [displayedSourceInfo?.agents, handleSetAgents]);
 
   return (
     <div className="space-y-6">
@@ -208,8 +280,8 @@ export default function DataPage() {
               <ArrowRightLeft className="h-4 w-4" />
               Active Data Source
             </CardTitle>
-            <Badge variant={sourceInfo?.active === 'live' ? 'default' : 'secondary'}>
-              {sourceInfo?.active === 'live' ? 'Live' : 'Imported'}
+            <Badge variant={displayedSourceInfo?.active === 'live' ? 'default' : 'secondary'}>
+              {displayedSourceInfo?.active === 'live' ? 'Live' : 'Imported'}
             </Badge>
           </div>
         </CardHeader>
@@ -218,39 +290,39 @@ export default function DataPage() {
             <button
               onClick={() => handleSwitchSource('live')}
               className={`flex items-center gap-3 rounded-lg border-2 p-4 transition-all ${
-                sourceInfo?.active === 'live'
+                displayedSourceInfo?.active === 'live'
                   ? 'border-primary bg-primary/5'
                   : 'border-border hover:border-primary/50'
               }`}
             >
-              <HardDrive className={`h-5 w-5 ${sourceInfo?.active === 'live' ? 'text-primary' : 'text-muted-foreground'}`} />
+              <HardDrive className={`h-5 w-5 ${displayedSourceInfo?.active === 'live' ? 'text-primary' : 'text-muted-foreground'}`} />
               <div className="text-left">
                 <p className="text-sm font-medium">Live Data</p>
                 <p className="text-xs text-muted-foreground">Read from selected local agent directories</p>
               </div>
-              {sourceInfo?.active === 'live' && (
+              {displayedSourceInfo?.active === 'live' && (
                 <CheckCircle2 className="h-4 w-4 text-primary ml-auto" />
               )}
             </button>
             <button
-              onClick={() => sourceInfo?.hasImportedData && handleSwitchSource('imported')}
-              disabled={!sourceInfo?.hasImportedData}
+              onClick={() => displayedSourceInfo?.hasImportedData && handleSwitchSource('imported')}
+              disabled={!displayedSourceInfo?.hasImportedData}
               className={`flex items-center gap-3 rounded-lg border-2 p-4 transition-all ${
-                sourceInfo?.active === 'imported'
+                displayedSourceInfo?.active === 'imported'
                   ? 'border-primary bg-primary/5'
-                  : sourceInfo?.hasImportedData
+                  : displayedSourceInfo?.hasImportedData
                     ? 'border-border hover:border-primary/50'
                     : 'border-border/50 opacity-50 cursor-not-allowed'
               }`}
             >
-              <Cloud className={`h-5 w-5 ${sourceInfo?.active === 'imported' ? 'text-primary' : 'text-muted-foreground'}`} />
+              <Cloud className={`h-5 w-5 ${displayedSourceInfo?.active === 'imported' ? 'text-primary' : 'text-muted-foreground'}`} />
               <div className="text-left">
                 <p className="text-sm font-medium">Imported Data</p>
                 <p className="text-xs text-muted-foreground">
-                  {sourceInfo?.hasImportedData ? 'View previously imported snapshot' : 'No imported data yet'}
+                  {displayedSourceInfo?.hasImportedData ? 'View previously imported snapshot' : 'No imported data yet'}
                 </p>
               </div>
-              {sourceInfo?.active === 'imported' && (
+              {displayedSourceInfo?.active === 'imported' && (
                 <CheckCircle2 className="h-4 w-4 text-primary ml-auto" />
               )}
             </button>
@@ -266,7 +338,11 @@ export default function DataPage() {
               <p className="mt-1 text-xs text-muted-foreground">Toggle each detected provider independently.</p>
             </div>
             <Badge variant={selectedAgentCount > 0 ? 'default' : 'secondary'}>
-              {selectedAgentCount > 0 ? `${selectedAgentCount} selected` : 'None selected'}
+              {sourceUpdatePending
+                ? 'Updating'
+                : selectedAgentCount > 0
+                  ? `${selectedAgentCount} selected`
+                  : 'None selected'}
             </Badge>
           </div>
         </CardHeader>
@@ -336,10 +412,15 @@ export default function DataPage() {
               Reading {selectedAgentNames} data.
             </div>
           )}
+          {sourceUpdatePending && (
+            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
+              Source changes are saved. Dashboard views are updating in the background.
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Export */}
         <Card className="border-border/50 shadow-sm">
           <CardHeader className="pb-3">
@@ -350,42 +431,72 @@ export default function DataPage() {
           </CardHeader>
           <CardContent className="pt-0 space-y-4">
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Download selected agent data as a ZIP archive. Includes safe session logs and metadata.
-              Load it on another machine or keep as a backup.
+              Download a complete backup with raw provider files, or a smaller standardized archive
+              that uses the same normalized schema for every selected provider.
             </p>
             {!hasSelectedAgents && (
               <p className="rounded-md bg-accent/50 px-3 py-2 text-xs text-muted-foreground">
                 Select at least one agent source before exporting.
               </p>
             )}
-            <div className="rounded-lg bg-accent/50 p-3 space-y-1.5">
-              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Includes</p>
-              <div className="grid grid-cols-2 gap-1 text-xs">
-                <span>Session JSONL files</span>
-                <span>Stats cache</span>
-                <span>Prompt history</span>
-                <span>Plans & Todos</span>
-                <span>Settings</span>
-                <span>Export metadata</span>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-lg bg-accent/50 p-3 space-y-1.5">
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Full Export Includes</p>
+                <div className="grid grid-cols-1 gap-1 text-xs">
+                  <span>Raw provider session files</span>
+                  <span>Stats cache</span>
+                  <span>Prompt history</span>
+                  <span>Plans & Todos</span>
+                  <span>Settings</span>
+                  <span>Standardized copy</span>
+                </div>
+              </div>
+              <div className="rounded-lg bg-accent/50 p-3 space-y-1.5">
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Standardized Only Includes</p>
+                <div className="grid grid-cols-1 gap-1 text-xs">
+                  <span>Projects JSON</span>
+                  <span>Sessions JSON</span>
+                  <span>Session details</span>
+                  <span>Schema metadata</span>
+                </div>
               </div>
             </div>
-            <button
-              onClick={handleExport}
-              disabled={exporting || !hasSelectedAgents}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-            >
-              {exporting ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Preparing export...
-                </>
-              ) : (
-                <>
-                  <FileArchive className="h-4 w-4" />
-                  Export as ZIP
-                </>
-              )}
-            </button>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                onClick={() => handleExport('full')}
+                disabled={Boolean(exporting) || !hasSelectedAgents}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                {exporting === 'full' ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Preparing full export...
+                  </>
+                ) : (
+                  <>
+                    <FileArchive className="h-4 w-4" />
+                    Full export ZIP
+                  </>
+                )}
+              </button>
+              <button
+                onClick={() => handleExport('standardized')}
+                disabled={Boolean(exporting) || !hasSelectedAgents}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-50"
+              >
+                {exporting === 'standardized' ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Preparing standardized export...
+                  </>
+                ) : (
+                  <>
+                    <FileArchive className="h-4 w-4" />
+                    Standardized only ZIP
+                  </>
+                )}
+              </button>
+            </div>
           </CardContent>
         </Card>
 

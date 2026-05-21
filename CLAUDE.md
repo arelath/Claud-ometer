@@ -1,6 +1,6 @@
-# Claud-ometer — Architecture & Development Guide
+# AgentScope — Architecture & Development Guide
 
-Local-first Claude Code and Codex analytics dashboard. Reads local agent data directly (`~/.claude/`, `~/.codex/`, or imported archives) — no database, no cloud, no auth.
+Local-first observability dashboard for code agent sessions across Claude Code, Codex, Copilot, Cursor, and imported archives. Reads local agent data directly — no database, no cloud, no auth.
 
 ## Tech Stack
 
@@ -42,11 +42,13 @@ src/
 ├── lib/
 │   ├── agent-data/
 │   │   ├── data-source.ts      # live/imported mode plus selected agents
-│   │   ├── registry.ts         # provider dispatch for Claude, Codex, combined views
+│   │   ├── registry.ts         # provider dispatch for Claude, Codex, Copilot, Cursor, combined views
 │   │   ├── route-id.ts         # provider-qualified session/project ids
 │   │   └── providers/
 │   │       ├── claude/         # adapter over existing Claude reader/export
-│   │       └── codex/          # Codex JSONL discovery, parser, stats, export
+│   │       ├── codex/          # Codex JSONL discovery, parser, stats, export
+│   │       ├── copilot/        # Copilot chat/session discovery, parser, export
+│   │       └── cursor/         # Cursor transcript/state discovery, parser, export
 │   ├── claude-data/
 │   │   ├── types.ts            # All interfaces (SessionInfo, SessionDetail, DashboardStats, etc.)
 │   │   ├── reader.ts           # JSONL parsing, stats aggregation, search
@@ -60,8 +62,8 @@ src/
 
 ## Data Flow
 
-1. Claude Code writes JSONL files to `~/.claude/projects/<projectId>/<sessionId>.jsonl`; Codex writes rollout files under `~/.codex/sessions/**/*.jsonl`.
-2. The provider registry selects Claude, Codex, or both from the current data source settings.
+1. Providers write local session data to their own stores: Claude under `~/.claude`, Codex under `~/.codex`, and editor agents under VS Code/Copilot or Cursor user data directories.
+2. The provider registry selects one or more agents from the current data source settings.
 3. Provider readers normalize projects, sessions, details, search results, stats, and archive data into shared dashboard types.
 4. API routes (`force-dynamic`) dispatch through the registry and return provider-qualified ids where needed.
 5. Pages use SWR hooks to fetch from API routes (auto-caching, revalidation on focus).
@@ -80,10 +82,10 @@ Provider fields are available on normalized project/session shapes: `agentKind`,
 
 ## Multi-Agent Notes
 
-- Data source mode (`live` or `imported`) is separate from selected agents (`claude`, `codex`, or both).
-- Environment overrides: `CLAUD_OMETER_CLAUDE_DIR`, `CLAUD_OMETER_CODEX_DIR`, `CLAUD_OMETER_IMPORT_DIR`, and `CLAUD_OMETER_AGENTS=claude,codex`.
-- Codex support is read-only in this phase. Do not wire Codex sessions into Claude live input, terminal, or resume routes.
-- Codex exports must exclude secrets and transient data: `auth.json`, `cap_sid`, `installation_id`, sandbox/temp folders, SQLite/log files, plugin caches, and skill caches.
+- Data source mode (`live` or `imported`) is separate from selected agents (`claude`, `codex`, `copilot`, `cursor`, or a comma-separated combination).
+- Environment overrides include `AGENT_SCOPE_CLAUDE_DIR`, `AGENT_SCOPE_CODEX_DIR`, `AGENT_SCOPE_COPILOT_DIR`, `AGENT_SCOPE_CURSOR_DIR`, `AGENT_SCOPE_IMPORT_DIR`, and `AGENT_SCOPE_AGENTS=claude,codex,copilot,cursor`.
+- Non-Claude providers are read-only in this phase. Do not wire Codex, Copilot, or Cursor sessions into Claude live input, terminal, or resume routes.
+- Exports must exclude secrets and transient data: auth/capability files, sandbox/temp folders, SQLite/log files, plugin caches, skill caches, embeddings, and editor sidecars.
 - Combined views merge sessions by timestamp and aggregate dashboard stats by summing totals and merging daily/model/hour buckets.
 
 ## Conventions

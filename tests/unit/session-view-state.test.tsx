@@ -259,7 +259,7 @@ describe('useSessionViewState', () => {
   });
 
   it('derives state from search params and writes navigation changes', () => {
-    localStorage.setItem('claud-ometer-session-filter-preset', 'tools');
+    localStorage.setItem('agentscope-session-filter-preset', 'tools');
     navState.searchParams = 'view=changes&diff=edits&filter=Read';
 
     render(<Harness />);
@@ -278,7 +278,7 @@ describe('useSessionViewState', () => {
     expect(navState.replace).toHaveBeenCalledWith('/sessions/session-1?view=changes&diff=edits&filter=Read', { scroll: false });
 
     fireEvent.click(screen.getByText('preset all'));
-    expect(localStorage.getItem('claud-ometer-session-filter-preset')).toBe('all');
+    expect(localStorage.getItem('agentscope-session-filter-preset')).toBe('all');
     expect(screen.getByTestId('state')).toHaveTextContent('all');
   });
 

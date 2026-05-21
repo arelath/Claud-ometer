@@ -1,6 +1,8 @@
 import type { AgentDataProvider } from './provider';
 import { getIndexedSessionSnapshot } from './indexer';
+import { getCostAnalyticsSql, getDashboardStatsSql, getProjectsSql } from './analytics-sql';
 import {
+  summariesToCostAnalytics,
   summariesToDashboardStats,
   summariesToProjects,
   type CachedSessionSummary,
@@ -50,6 +52,13 @@ export function getCachedDashboardStats(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): DashboardStats {
+  try {
+    const sqlStats = getDashboardStatsSql(providers, range);
+    if (sqlStats) return sqlStats;
+  } catch {
+    // Fall back to the payload cache if the SQLite analytics path is unavailable.
+  }
+
   const entry = getMemoEntry(providers, range);
   entry.stats ||= summariesToDashboardStats(entry.summaries, range);
   return entry.stats;
@@ -59,6 +68,13 @@ export function getCachedProjects(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): ProjectInfo[] {
+  try {
+    const sqlProjects = getProjectsSql(providers, range);
+    if (sqlProjects) return sqlProjects;
+  } catch {
+    // Fall back to the payload cache if the SQLite analytics path is unavailable.
+  }
+
   const entry = getMemoEntry(providers, range);
   entry.projects ||= sortProjectsByLastActive(summariesToProjects(entry.summaries, range));
   return entry.projects;
@@ -68,14 +84,16 @@ export function getCachedCostAnalytics(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): CostAnalyticsPayload {
+  try {
+    const sqlCosts = getCostAnalyticsSql(providers, range);
+    if (sqlCosts) return sqlCosts;
+  } catch {
+    // Fall back to the payload cache if the SQLite analytics path is unavailable.
+  }
+
   const entry = getMemoEntry(providers, range);
   if (!entry.costs) {
-    entry.costs = {
-      stats: entry.stats || summariesToDashboardStats(entry.summaries, range),
-      projects: entry.projects || sortProjectsByLastActive(summariesToProjects(entry.summaries, range)),
-    };
-    entry.stats = entry.costs.stats;
-    entry.projects = entry.costs.projects;
+    entry.costs = summariesToCostAnalytics(entry.summaries, range);
   }
   return entry.costs;
 }

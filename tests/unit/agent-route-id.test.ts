@@ -28,7 +28,7 @@ describe('agent route ids', () => {
   });
 
   it('qualifies project ids to avoid provider collisions', () => {
-    expect(qualifyProjectId('claude', 'D-dev-Claudometer')).toBe('claude:D-dev-Claudometer');
-    expect(qualifyProjectId('codex', 'D-dev-Claudometer')).toBe('codex:D-dev-Claudometer');
+    expect(qualifyProjectId('claude', 'D-dev-AgentScope')).toBe('claude:D-dev-AgentScope');
+    expect(qualifyProjectId('codex', 'D-dev-AgentScope')).toBe('codex:D-dev-AgentScope');
   });
 });

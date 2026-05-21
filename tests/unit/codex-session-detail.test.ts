@@ -10,8 +10,8 @@ describe('Codex session detail parser', () => {
 
   async function loadReader() {
     vi.resetModules();
-    process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = path.join(root, 'import');
+    process.env.AGENT_SCOPE_CODEX_DIR = codexDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = path.join(root, 'import');
     return import('@/lib/agent-data/providers/codex/reader');
   }
 
@@ -22,8 +22,8 @@ describe('Codex session detail parser', () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CODEX_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_CODEX_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
   });
 
   it('emits normalized transcript rows and metadata', async () => {
@@ -34,7 +34,7 @@ describe('Codex session detail parser', () => {
     expect(detail).toMatchObject({
       agentKind: 'codex',
       nativeId: '00000000-0000-0000-0000-000000000001',
-      cwd: 'D:\\dev\\research\\Claud-ometer',
+      cwd: 'D:\\dev\\research\\AgentScope',
       model: 'gpt-5.5',
       gitBranch: 'main',
       compaction: { compactions: 1 },

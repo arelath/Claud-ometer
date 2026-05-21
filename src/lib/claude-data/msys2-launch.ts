@@ -43,7 +43,7 @@ interface ManagedMsys2LaunchStore {
   sessions: Map<string, ManagedMsys2LaunchEntry>;
 }
 
-const globalStoreKey = Symbol.for('claudometer.managedMsys2LaunchSessions');
+const globalStoreKey = Symbol.for('agentscope.managedMsys2LaunchSessions');
 
 const LAUNCH_CLAUDE_SCRIPT = `
 set -euo pipefail
@@ -94,9 +94,9 @@ function candidateRoots(): string[] {
     if (value?.trim()) candidates.push(normalizeRoot(value));
   };
 
-  push(process.env.CLAUD_OMETER_MSYS2_ROOT);
-  push(process.env.CLAUD_OMETER_ELECTRON_RESOURCES_DIR
-    ? path.join(process.env.CLAUD_OMETER_ELECTRON_RESOURCES_DIR, 'msys2')
+  push(process.env.AGENT_SCOPE_MSYS2_ROOT);
+  push(process.env.AGENT_SCOPE_ELECTRON_RESOURCES_DIR
+    ? path.join(process.env.AGENT_SCOPE_ELECTRON_RESOURCES_DIR, 'msys2')
     : undefined);
   push(path.join(process.cwd(), 'vendor', 'msys2'));
   push(path.join(process.cwd(), 'vender', 'msys2'));
@@ -117,12 +117,12 @@ function getInstallFromRoot(root: string): Msys2Install | null {
 }
 
 export function resolveMsys2Install(): Msys2Install {
-  const explicitBashPath = process.env.CLAUD_OMETER_MSYS2_BASH?.trim();
+  const explicitBashPath = process.env.AGENT_SCOPE_MSYS2_BASH?.trim();
   if (explicitBashPath) {
     const bashPath = path.resolve(explicitBashPath.replace(/^"|"$/g, ''));
     const root = rootFromBashPath(bashPath);
-    const minttyPath = process.env.CLAUD_OMETER_MSYS2_MINTTY?.trim()
-      ? path.resolve(process.env.CLAUD_OMETER_MSYS2_MINTTY.trim().replace(/^"|"$/g, ''))
+    const minttyPath = process.env.AGENT_SCOPE_MSYS2_MINTTY?.trim()
+      ? path.resolve(process.env.AGENT_SCOPE_MSYS2_MINTTY.trim().replace(/^"|"$/g, ''))
       : getMsys2Bin(root, 'mintty.exe');
 
     if (!fs.existsSync(bashPath)) {
@@ -139,7 +139,7 @@ export function resolveMsys2Install(): Msys2Install {
     if (install) return install;
   }
 
-  throw new Error('MSYS2 with bash.exe and mintty.exe was not found. Install MSYS2 to C:\\msys64, set CLAUD_OMETER_MSYS2_ROOT, or bundle it under resources/msys2.');
+  throw new Error('MSYS2 with bash.exe and mintty.exe was not found. Install MSYS2 to C:\\msys64, set AGENT_SCOPE_MSYS2_ROOT, or bundle it under resources/msys2.');
 }
 
 export function getMsys2LaunchAvailability(): Msys2LaunchAvailability {
@@ -163,9 +163,9 @@ function getMsys2Env(install: Msys2Install): NodeJS.ProcessEnv {
   return {
     ...process.env,
     CHERE_INVOKING: '1',
-    MSYSTEM: process.env.CLAUD_OMETER_MSYS2_SYSTEM || 'UCRT64',
+    MSYSTEM: process.env.AGENT_SCOPE_MSYS2_SYSTEM || 'UCRT64',
     MSYS2_PATH_TYPE: process.env.MSYS2_PATH_TYPE || 'inherit',
-    CLAUD_OMETER_MSYS2_ROOT_RESOLVED: install.root,
+    AGENT_SCOPE_MSYS2_ROOT_RESOLVED: install.root,
   };
 }
 
@@ -178,7 +178,7 @@ function openClaudeWindow(install: Msys2Install, sessionId: string, cwd: string)
       install.bashPath,
       '-lc',
       LAUNCH_CLAUDE_SCRIPT,
-      'claudometer',
+      'agentscope',
       cwd,
       sessionId,
     ],

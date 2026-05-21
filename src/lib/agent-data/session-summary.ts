@@ -1,7 +1,7 @@
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
 import {
+  bucketKeyFromLocalTimeParts,
   bucketKeyToDate,
-  getBucketKey,
   getEventLocalDate,
   getLocalTimeParts,
   isDateInRange,
@@ -266,10 +266,9 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
     recordSessionStart(summary, context, buckets, sessionId);
 
     for (const event of getSummaryUsageEvents(summary)) {
-      if (!isEventInRange(event.timestamp, context)) continue;
-      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
       const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
-      if (!bucketKey || !localParts) continue;
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
 
       const bucket = ensureBucket(buckets, bucketKey, context.granularity);
       bucket.messageCount += event.messageCount;
@@ -299,9 +298,9 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
     }
 
     for (const event of getSummaryChangeEvents(summary)) {
-      if (!isEventInRange(event.timestamp, context)) continue;
-      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
-      if (!bucketKey) continue;
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
       const bucket = ensureBucket(buckets, bucketKey, context.granularity);
       bucket.changeTotals = addChangeTotals(bucket.changeTotals, event);
       bucket.activeSessionIds.add(sessionId);
@@ -352,6 +351,123 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
       : { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
     projectCount: activeProjectIds.size,
     recentSessions,
+  };
+}
+
+export function summariesToCostAnalytics(
+  summaries: CachedSessionSummary[],
+  range: TimeRangeParams = {},
+): { stats: DashboardStats; projects: ProjectInfo[] } {
+  const visibleSummaries = filterVisibleSessionSummaries(summaries);
+  const sortedSummaries = sortSummariesByTimestamp(visibleSummaries);
+  const context = getAggregationContext(range);
+  const buckets = new Map<string, MutableAnalyticsTimeBucket>();
+  const projects = new Map<string, ProjectInfo>();
+  const modelUsage: DashboardStats['modelUsage'] = {};
+  let estimatedCosts = zeroCosts();
+  let changeTotals = zeroChangeTotals();
+  let totalMessages = 0;
+  let totalTokens = 0;
+  const activeSessionIds = new Set<string>();
+  const activeProjectIds = new Set<string>();
+
+  for (const key of listBucketKeys(range, context.granularity)) {
+    ensureBucket(buckets, key, context.granularity);
+  }
+
+  for (const summary of sortedSummaries) {
+    const summaryKey = summary.routeId || summary.nativeId;
+    const sessionId = summaryKey;
+    const projectId = summary.projectRouteId;
+    let project: ProjectInfo | undefined;
+    let countedProjectSession = false;
+
+    recordSessionStart(summary, context, buckets, sessionId);
+
+    for (const event of getSummaryUsageEvents(summary)) {
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
+
+      const bucket = ensureBucket(buckets, bucketKey, context.granularity);
+      bucket.messageCount += event.messageCount;
+      bucket.userMessageCount += event.userMessageCount;
+      bucket.assistantMessageCount += event.assistantMessageCount;
+      bucket.toolCallCount += event.toolCallCount;
+      bucket.activeSessionIds.add(sessionId);
+
+      activeSessionIds.add(sessionId);
+      activeProjectIds.add(projectId);
+      totalMessages += event.messageCount;
+
+      project ||= ensureCostProject(projects, summary);
+      if (!countedProjectSession) {
+        project.sessionCount += 1;
+        countedProjectSession = true;
+      }
+
+      const tokens = usageEventTokenTotal(event);
+      project.totalMessages += event.messageCount;
+      project.totalTokens += tokens;
+      project.estimatedCosts = addCosts(project.estimatedCosts, event.estimatedCosts);
+      project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
+      if (!project.lastActive || event.timestamp > project.lastActive) project.lastActive = event.timestamp;
+
+      if (tokens <= 0) continue;
+
+      const model = event.model || 'unknown';
+      bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
+      bucket.costsByModel[model] = addCosts(bucket.costsByModel[model] || zeroCosts(), event.estimatedCosts);
+      estimatedCosts = addCosts(estimatedCosts, event.estimatedCosts);
+      totalTokens += tokens;
+      addEventModelUsage(modelUsage, model, event);
+    }
+
+    if (project) {
+      project.models = Array.from(new Set([...project.models, ...summary.models]));
+    }
+
+    for (const event of getSummaryChangeEvents(summary)) {
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
+
+      const bucket = ensureBucket(buckets, bucketKey, context.granularity);
+      bucket.changeTotals = addChangeTotals(bucket.changeTotals, event);
+      bucket.activeSessionIds.add(sessionId);
+      activeSessionIds.add(sessionId);
+      activeProjectIds.add(projectId);
+      changeTotals = addChangeTotals(changeTotals, event);
+    }
+  }
+
+  const usageBuckets = finalizeBuckets(buckets);
+  const dailyActivity = bucketsToDailyActivity(usageBuckets);
+  const dailyModelTokens = bucketsToDailyModelTokens(usageBuckets);
+  const dailyChangeActivity = bucketsToDailyChangeActivity(usageBuckets);
+
+  return {
+    stats: {
+      totalSessions: activeSessionIds.size,
+      totalMessages,
+      totalTokens,
+      estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
+      estimatedCosts,
+      dailyActivity,
+      dailyModelTokens,
+      changeTotals,
+      dailyChangeActivity,
+      timeZone: context.timeZone,
+      bucketGranularity: context.granularity,
+      usageBuckets,
+      modelUsage,
+      hourCounts: {},
+      firstSessionDate: dailyActivity.find(day => day.messageCount > 0 || day.sessionCount > 0)?.date || '',
+      longestSession: { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
+      projectCount: activeProjectIds.size,
+      recentSessions: [],
+    },
+    projects: Array.from(projects.values()).sort((left, right) => right.lastActive.localeCompare(left.lastActive)),
   };
 }
 
@@ -432,9 +548,9 @@ function recordSessionStart(
   buckets: Map<string, MutableAnalyticsTimeBucket>,
   sessionId: string,
 ): void {
-  if (!isEventInRange(summary.createdAt, context)) return;
-  const key = getBucketKey(summary.createdAt, context.timeZone, context.granularity);
-  if (!key) return;
+  const localParts = getLocalTimeParts(summary.createdAt, context.timeZone);
+  if (!localParts || !isDateInRange(localParts.date, context.range)) return;
+  const key = bucketKeyFromLocalTimeParts(localParts, context.granularity);
   ensureBucket(buckets, key, context.granularity).sessionStartIds.add(sessionId);
 }
 
@@ -532,6 +648,33 @@ function addEventModelUsage(
   existing.estimatedCosts = addCosts(existing.estimatedCosts, event.estimatedCosts);
   existing.estimatedCost = existing.estimatedCosts[DEFAULT_COST_MODE];
   modelUsage[model] = existing;
+}
+
+function ensureCostProject(
+  projects: Map<string, ProjectInfo>,
+  summary: CachedSessionSummary,
+): ProjectInfo {
+  const existing = projects.get(summary.projectRouteId);
+  if (existing) return existing;
+
+  const publicProjectId = summary.provider === 'claude' ? summary.nativeProjectId : summary.projectRouteId;
+  const project: ProjectInfo = {
+    id: publicProjectId,
+    agentKind: summary.provider,
+    nativeId: summary.nativeProjectId,
+    routeId: summary.projectRouteId,
+    name: summary.projectName,
+    path: summary.cwd || summary.projectName,
+    sessionCount: 0,
+    totalMessages: 0,
+    totalTokens: 0,
+    estimatedCost: 0,
+    estimatedCosts: zeroCosts(),
+    lastActive: '',
+    models: [],
+  };
+  projects.set(summary.projectRouteId, project);
+  return project;
 }
 
 export function normalizeSearchText(parts: Array<string | undefined>): string {

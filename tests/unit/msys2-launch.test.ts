@@ -34,7 +34,7 @@ function makeChild(pid: number) {
 describe('MSYS2 Claude launch', () => {
   const msysRoot = path.join(process.cwd(), '.test-artifacts', 'msys2');
   const sessionId = '5abbc741-420b-40fc-9c5d-0a3cc4731b6b';
-  const previousRoot = process.env.CLAUD_OMETER_MSYS2_ROOT;
+  const previousRoot = process.env.AGENT_SCOPE_MSYS2_ROOT;
   let nextPid = 1000;
 
   beforeEach(() => {
@@ -43,7 +43,7 @@ describe('MSYS2 Claude launch', () => {
     fs.mkdirSync(path.join(msysRoot, 'usr', 'bin'), { recursive: true });
     fs.writeFileSync(path.join(msysRoot, 'usr', 'bin', 'bash.exe'), '');
     fs.writeFileSync(path.join(msysRoot, 'usr', 'bin', 'mintty.exe'), '');
-    process.env.CLAUD_OMETER_MSYS2_ROOT = msysRoot;
+    process.env.AGENT_SCOPE_MSYS2_ROOT = msysRoot;
     spawnMock.mockReset();
     unrefMock.mockReset();
     killMock.mockReset();
@@ -54,8 +54,8 @@ describe('MSYS2 Claude launch', () => {
   afterEach(() => {
     resetManagedMsys2LaunchSessionsForTests();
     fs.rmSync(msysRoot, { recursive: true, force: true });
-    if (previousRoot == null) delete process.env.CLAUD_OMETER_MSYS2_ROOT;
-    else process.env.CLAUD_OMETER_MSYS2_ROOT = previousRoot;
+    if (previousRoot == null) delete process.env.AGENT_SCOPE_MSYS2_ROOT;
+    else process.env.AGENT_SCOPE_MSYS2_ROOT = previousRoot;
   });
 
   it('reports MSYS2 launch availability from the configured root', () => {
@@ -80,7 +80,7 @@ describe('MSYS2 Claude launch', () => {
         path.join(msysRoot, 'usr', 'bin', 'bash.exe'),
         '-lc',
         expect.stringContaining('exec "$claude_cmd" --resume "$resume_id"'),
-        'claudometer',
+        'agentscope',
         'D:\\dev\\project',
         sessionId,
       ]),

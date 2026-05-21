@@ -26,16 +26,36 @@ export interface SessionSummaryCacheStatus {
   missingCount: number;
 }
 
+interface CacheReadMemo {
+  fileSignature: string;
+  cache: SessionSummaryCacheFile;
+}
+
+const cacheReadMemo = new Map<string, CacheReadMemo>();
+
 function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
 export function getSessionSummaryCacheDir(): string {
-  return process.env.CLAUD_OMETER_CACHE_DIR?.trim() || path.join(getImportDir(), 'cache');
+  return process.env.AGENT_SCOPE_CACHE_DIR?.trim() || path.join(getImportDir(), 'cache');
 }
 
 export function getSessionSummaryCachePath(): string {
   return path.join(getSessionSummaryCacheDir(), 'agent-session-summary-v4.json');
+}
+
+function emptyCacheFile(): SessionSummaryCacheFile {
+  return { cacheVersion: SESSION_SUMMARY_CACHE_VERSION, generatedAt: '', summaries: [] };
+}
+
+export function getSessionSummaryCacheReadSignature(cachePath = getSessionSummaryCachePath()): string {
+  try {
+    const stat = fs.statSync(cachePath);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return 'missing';
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -54,31 +74,47 @@ function parseCacheFile(value: unknown): SessionSummaryCacheFile | null {
 }
 
 export function readSessionSummaryCache(cachePath = getSessionSummaryCachePath()): SessionSummaryCacheFile {
+  const fileSignature = getSessionSummaryCacheReadSignature(cachePath);
+  const memo = cacheReadMemo.get(cachePath);
+  if (memo?.fileSignature === fileSignature) return memo.cache;
+
   if (!fs.existsSync(cachePath)) {
-    return { cacheVersion: SESSION_SUMMARY_CACHE_VERSION, generatedAt: '', summaries: [] };
+    const cache = emptyCacheFile();
+    cacheReadMemo.set(cachePath, { fileSignature, cache });
+    return cache;
   }
 
   try {
     const parsed = parseCacheFile(JSON.parse(fs.readFileSync(cachePath, 'utf-8')));
-    return parsed || { cacheVersion: SESSION_SUMMARY_CACHE_VERSION, generatedAt: '', summaries: [] };
+    const cache = parsed || emptyCacheFile();
+    cacheReadMemo.set(cachePath, { fileSignature, cache });
+    return cache;
   } catch {
-    return { cacheVersion: SESSION_SUMMARY_CACHE_VERSION, generatedAt: '', summaries: [] };
+    const cache = emptyCacheFile();
+    cacheReadMemo.set(cachePath, { fileSignature, cache });
+    return cache;
   }
 }
 
 export function writeSessionSummaryCache(cache: SessionSummaryCacheFile, cachePath = getSessionSummaryCachePath()): void {
   ensureDir(path.dirname(cachePath));
   const tmpPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify({
+  const persistedCache = {
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
     generatedAt: cache.generatedAt || new Date().toISOString(),
     summaries: cache.summaries,
-  }, null, 2));
+  };
+  fs.writeFileSync(tmpPath, JSON.stringify(persistedCache, null, 2));
   fs.renameSync(tmpPath, cachePath);
+  cacheReadMemo.set(cachePath, {
+    fileSignature: getSessionSummaryCacheReadSignature(cachePath),
+    cache: persistedCache,
+  });
 }
 
 export function clearSessionSummaryCache(cachePath = getSessionSummaryCachePath()): void {
   if (fs.existsSync(cachePath)) fs.rmSync(cachePath, { force: true });
+  cacheReadMemo.delete(cachePath);
 }
 
 export function sourceCacheKey(provider: AgentKind, sourceFilePath: string): string {

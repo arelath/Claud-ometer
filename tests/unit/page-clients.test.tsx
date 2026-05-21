@@ -123,7 +123,7 @@ function costs(api: number, conservative = api / 2, subscription = api / 4) {
 const session: SessionInfo = {
   id: 'session-1',
   projectId: 'project-1',
-  projectName: 'Claudometer',
+  projectName: 'AgentScope',
   timestamp: '2026-05-08T12:00:00.000Z',
   duration: 90_000,
   messageCount: 5,
@@ -139,7 +139,7 @@ const session: SessionInfo = {
   model: 'claude-opus-4',
   models: ['Opus'],
   gitBranch: 'main',
-  cwd: 'D:/dev/Claudometer',
+  cwd: 'D:/dev/AgentScope',
   version: '1.0.0',
   toolsUsed: { Read: 2, Edit: 1 },
   compaction: { compactions: 1, microcompactions: 0, totalTokensSaved: 100, compactionTimestamps: ['2026-05-08T12:01:00.000Z'] },
@@ -147,8 +147,8 @@ const session: SessionInfo = {
 
 const project: ProjectInfo = {
   id: 'project-1',
-  name: 'Claudometer',
-  path: 'D:/dev/Claudometer',
+  name: 'AgentScope',
+  path: 'D:/dev/AgentScope',
   sessionCount: 1,
   totalMessages: 5,
   totalTokens: 1550,
@@ -233,7 +233,7 @@ describe('page client components', () => {
     expect(screen.getByText('Overview')).toBeInTheDocument();
     expect(screen.getByText('All history')).toBeInTheDocument();
     expect(screen.getByText('Total Sessions')).toBeInTheDocument();
-    expect(screen.getByText('Claudometer')).toBeInTheDocument();
+    expect(screen.getByText('AgentScope')).toBeInTheDocument();
     expect(screen.getByTestId('usage-chart')).toHaveTextContent('usage 1');
   });
 
@@ -260,14 +260,14 @@ describe('page client components', () => {
 
     expect(screen.getByText('Projects')).toBeInTheDocument();
     expect(screen.getByText('1 projects tracked')).toBeInTheDocument();
-    expect(screen.getByText('Claudometer')).toBeInTheDocument();
+    expect(screen.getByText('AgentScope')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
   });
 
   it('renders project detail summary and sessions', () => {
-    renderWithProviders(<ProjectDetailClient projectId="D-dev-Claudometer" initialSessions={[session]} />);
+    renderWithProviders(<ProjectDetailClient projectId="D-dev-AgentScope" initialSessions={[session]} />);
 
-    expect(screen.getByRole('heading', { name: 'Claudometer' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'AgentScope' })).toBeInTheDocument();
     expect(screen.getByText('Top Tools Used')).toBeInTheDocument();
     expect(screen.getByText('Read')).toBeInTheDocument();
     expect(screen.getByText('session-...')).toBeInTheDocument();
@@ -278,8 +278,8 @@ describe('page client components', () => {
       id: 'session-1',
       sessionId: 'session-1',
       metadataFilePath: 'live.json',
-      cwd: 'D:/dev/Claudometer',
-      projectName: 'Claudometer',
+      cwd: 'D:/dev/AgentScope',
+      projectName: 'AgentScope',
       startedAt: '2026-05-08T12:00:00.000Z',
       lastActivityAt: '2026-05-08T12:01:00.000Z',
       updatedAtMs: Date.now(),
@@ -294,7 +294,7 @@ describe('page client components', () => {
     renderWithProviders(<SessionsClient initialSessions={[session]} initialQuery="" />);
 
     expect(screen.getByText('Sessions')).toBeInTheDocument();
-    expect(screen.getByText('Claudometer')).toBeInTheDocument();
+    expect(screen.getByText('AgentScope')).toBeInTheDocument();
     expect(screen.getByText('Working')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Search across all session messages...'), { target: { value: 'needle' } });

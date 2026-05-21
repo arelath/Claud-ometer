@@ -4,11 +4,19 @@ type Row = Record<string, unknown>;
 
 export interface SqliteDatabase {
   query<T extends Row = Row>(sql: string, params?: unknown[]): T[];
+  get<T extends Row = Row>(sql: string, params?: unknown[]): T | undefined;
+  run(sql: string, params?: unknown[]): void;
+  exec(sql: string): void;
+  transaction<T>(callback: () => T): T;
   close(): void;
 }
 
 type DatabaseSyncCtor = new (filePath: string, options?: { readOnly?: boolean }) => {
-  prepare(sql: string): { all(...params: unknown[]): Row[] };
+  prepare(sql: string): {
+    all(...params: unknown[]): Row[];
+    get(...params: unknown[]): Row | undefined;
+    run(...params: unknown[]): unknown;
+  };
   exec?(sql: string): void;
   close(): void;
 };
@@ -73,24 +81,58 @@ export function getSqliteLoadError(): string {
   return loadError || 'SQLite driver not available';
 }
 
-export function openDatabase(filePath: string): SqliteDatabase {
+export function openDatabase(filePath: string, options: { readOnly?: boolean } = { readOnly: true }): SqliteDatabase {
   if (!loadDriver() || !DatabaseSync) {
     throw new Error(getSqliteLoadError());
   }
 
-  const db = new DatabaseSync(filePath, { readOnly: true });
+  const db = new DatabaseSync(filePath, { readOnly: options.readOnly !== false });
   try {
     db.exec?.('PRAGMA busy_timeout = 1000');
   } catch {
     // Best effort for older node:sqlite builds.
   }
 
+  function exec(sql: string): void {
+    if (db.exec) {
+      db.exec(sql);
+      return;
+    }
+    db.prepare(sql).run();
+  }
+
   return {
     query<T extends Row = Row>(sql: string, params: unknown[] = []): T[] {
       return db.prepare(sql).all(...params) as T[];
+    },
+    get<T extends Row = Row>(sql: string, params: unknown[] = []): T | undefined {
+      return db.prepare(sql).get(...params) as T | undefined;
+    },
+    run(sql: string, params: unknown[] = []) {
+      db.prepare(sql).run(...params);
+    },
+    exec,
+    transaction<T>(callback: () => T): T {
+      exec('BEGIN IMMEDIATE');
+      try {
+        const result = callback();
+        exec('COMMIT');
+        return result;
+      } catch (error) {
+        try {
+          exec('ROLLBACK');
+        } catch {
+          // Preserve the original transaction failure.
+        }
+        throw error;
+      }
     },
     close() {
       db.close();
     },
   };
+}
+
+export function openWritableDatabase(filePath: string): SqliteDatabase {
+  return openDatabase(filePath, { readOnly: false });
 }

@@ -10,7 +10,7 @@ describe('Cursor reader', () => {
   const cursorDir = path.join(root, 'cursor');
   const cursorUserDir = path.join(root, 'Cursor', 'User');
   const importDir = path.join(root, 'import');
-  const projectId = 'd-dev-research-Claudometer';
+  const projectId = 'd-dev-research-AgentScope';
   const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
   const chatId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
@@ -55,7 +55,7 @@ describe('Cursor reader', () => {
       .run(chatId, 'Cursor DB fixture', '', 'gpt-5.2', Date.parse('2026-05-01T12:00:01.000Z'));
     db.close();
 
-    fs.writeFileSync(path.join(workspaceDir, 'workspace.json'), JSON.stringify({ folder: 'file:///d:/dev/research/Claudometer' }));
+    fs.writeFileSync(path.join(workspaceDir, 'workspace.json'), JSON.stringify({ folder: 'file:///d:/dev/research/AgentScope' }));
     const workspaceDb = new DatabaseSync(workspaceDbPath);
     workspaceDb.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)');
     workspaceDb.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)')
@@ -65,9 +65,9 @@ describe('Cursor reader', () => {
 
   async function loadReader() {
     vi.resetModules();
-    process.env.CLAUD_OMETER_CURSOR_DIR = cursorDir;
-    process.env.CLAUD_OMETER_CURSOR_USER_DIR = cursorUserDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = importDir;
+    process.env.AGENT_SCOPE_CURSOR_DIR = cursorDir;
+    process.env.AGENT_SCOPE_CURSOR_USER_DIR = cursorUserDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     return import('@/lib/agent-data/providers/cursor/reader');
   }
 
@@ -78,9 +78,9 @@ describe('Cursor reader', () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CURSOR_DIR;
-    delete process.env.CLAUD_OMETER_CURSOR_USER_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_DIR;
+    delete process.env.AGENT_SCOPE_CURSOR_USER_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
     vi.resetModules();
   });
 
@@ -96,7 +96,7 @@ describe('Cursor reader', () => {
       agentKind: 'cursor',
       nativeId: sessionId,
       projectId: `cursor:${projectId}`,
-      projectName: 'Claudometer',
+      projectName: 'AgentScope',
       title: 'Add a compact Cursor fixture for the dashboard.',
       messageCount: 4,
       userMessageCount: 2,

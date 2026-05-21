@@ -6,16 +6,16 @@ describe('live session metadata helpers', () => {
   const rootDir = path.join(process.cwd(), '.test-artifacts', 'live-sessions');
   const sessionsDir = path.join(rootDir, 'sessions');
   const projectsDir = path.join(rootDir, 'projects');
-  const previousSessionsDir = process.env.CLAUD_OMETER_LIVE_SESSIONS_DIR;
-  const previousProjectsDir = process.env.CLAUD_OMETER_LIVE_PROJECTS_DIR;
+  const previousSessionsDir = process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR;
+  const previousProjectsDir = process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR;
   let liveModule: typeof import('@/lib/claude-data/live-sessions') | null = null;
 
   beforeEach(() => {
     fs.rmSync(rootDir, { recursive: true, force: true });
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.mkdirSync(projectsDir, { recursive: true });
-    process.env.CLAUD_OMETER_LIVE_SESSIONS_DIR = sessionsDir;
-    process.env.CLAUD_OMETER_LIVE_PROJECTS_DIR = projectsDir;
+    process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR = sessionsDir;
+    process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR = projectsDir;
     vi.resetModules();
     liveModule = null;
   });
@@ -24,10 +24,10 @@ describe('live session metadata helpers', () => {
     liveModule?.resetLiveSessionsForTests();
     vi.useRealTimers();
     fs.rmSync(rootDir, { recursive: true, force: true });
-    if (previousSessionsDir == null) delete process.env.CLAUD_OMETER_LIVE_SESSIONS_DIR;
-    else process.env.CLAUD_OMETER_LIVE_SESSIONS_DIR = previousSessionsDir;
-    if (previousProjectsDir == null) delete process.env.CLAUD_OMETER_LIVE_PROJECTS_DIR;
-    else process.env.CLAUD_OMETER_LIVE_PROJECTS_DIR = previousProjectsDir;
+    if (previousSessionsDir == null) delete process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR;
+    else process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR = previousSessionsDir;
+    if (previousProjectsDir == null) delete process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR;
+    else process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR = previousProjectsDir;
     vi.resetModules();
   });
 

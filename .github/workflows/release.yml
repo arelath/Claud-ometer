@@ -85,7 +85,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Claud-ometer-${{ steps.release.outputs.version }}-windows
+          name: AgentScope-${{ steps.release.outputs.version }}-windows
           path: |
             dist-electron/*.exe
             dist-electron/*.blockmap
@@ -101,9 +101,9 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           $files = @(
-            "dist-electron/Claud-ometer-Setup-$env:RELEASE_VERSION-x64.exe",
-            "dist-electron/Claud-ometer-Portable-$env:RELEASE_VERSION-x64.exe",
-            "dist-electron/Claud-ometer-Setup-$env:RELEASE_VERSION-x64.exe.blockmap",
+            "dist-electron/AgentScope-Setup-$env:RELEASE_VERSION-x64.exe",
+            "dist-electron/AgentScope-Portable-$env:RELEASE_VERSION-x64.exe",
+            "dist-electron/AgentScope-Setup-$env:RELEASE_VERSION-x64.exe.blockmap",
             "dist-electron/latest.yml"
           )
 
@@ -114,11 +114,11 @@ jobs:
           }
 
           $notes = @"
-          Windows desktop release for Claud-ometer $env:RELEASE_TAG.
+          Windows desktop release for AgentScope $env:RELEASE_TAG.
 
           Artifacts:
-          - NSIS installer: Claud-ometer-Setup-$env:RELEASE_VERSION-x64.exe
-          - Portable executable: Claud-ometer-Portable-$env:RELEASE_VERSION-x64.exe
+          - NSIS installer: AgentScope-Setup-$env:RELEASE_VERSION-x64.exe
+          - Portable executable: AgentScope-Portable-$env:RELEASE_VERSION-x64.exe
 
           Note: builds are currently unsigned and may trigger Windows SmartScreen warnings.
           "@
@@ -127,5 +127,5 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $env:RELEASE_TAG @files --clobber
           } else {
-            gh release create $env:RELEASE_TAG @files --target $env:GITHUB_SHA --title "Claud-ometer $env:RELEASE_TAG" --notes $notes
+            gh release create $env:RELEASE_TAG @files --target $env:GITHUB_SHA --title "AgentScope $env:RELEASE_TAG" --notes $notes
           }

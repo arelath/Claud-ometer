@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearSessionSummaryCache,
   getSessionSummaryCachePath,
@@ -61,12 +61,12 @@ describe('session summary cache storage', () => {
 
   beforeEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    process.env.CLAUD_OMETER_CACHE_DIR = root;
+    process.env.AGENT_SCOPE_CACHE_DIR = root;
   });
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CACHE_DIR;
+    delete process.env.AGENT_SCOPE_CACHE_DIR;
   });
 
   it('writes and reads cache files atomically', () => {
@@ -89,6 +89,23 @@ describe('session summary cache storage', () => {
     fs.writeFileSync(getSessionSummaryCachePath(), '{not json');
 
     expect(readSessionSummaryCache().summaries).toEqual([]);
+  });
+
+  it('reuses the parsed cache while the file is unchanged', () => {
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(getSessionSummaryCachePath(), JSON.stringify({
+      cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+      generatedAt: '2026-05-08T10:00:00.000Z',
+      summaries: [makeSummary()],
+    }));
+
+    const readSpy = vi.spyOn(fs, 'readFileSync');
+
+    expect(readSessionSummaryCache().summaries).toHaveLength(1);
+    expect(readSessionSummaryCache().summaries).toHaveLength(1);
+    expect(readSpy).toHaveBeenCalledTimes(1);
+
+    readSpy.mockRestore();
   });
 
   it('validates summaries by provider, parser version, file size, and mtime', () => {

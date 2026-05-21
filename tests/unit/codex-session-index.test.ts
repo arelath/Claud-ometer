@@ -8,20 +8,20 @@ describe('Codex session discovery', () => {
 
   async function loadModule() {
     vi.resetModules();
-    process.env.CLAUD_OMETER_CODEX_DIR = codexDir;
-    process.env.CLAUD_OMETER_IMPORT_DIR = path.join(root, 'import');
+    process.env.AGENT_SCOPE_CODEX_DIR = codexDir;
+    process.env.AGENT_SCOPE_IMPORT_DIR = path.join(root, 'import');
     return import('@/lib/agent-data/providers/codex/session-index');
   }
 
   beforeEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_AGENTS;
+    delete process.env.AGENT_SCOPE_AGENTS;
   });
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.CLAUD_OMETER_CODEX_DIR;
-    delete process.env.CLAUD_OMETER_IMPORT_DIR;
+    delete process.env.AGENT_SCOPE_CODEX_DIR;
+    delete process.env.AGENT_SCOPE_IMPORT_DIR;
   });
 
   it('returns an empty list when the Codex directory is missing', async () => {
@@ -40,7 +40,7 @@ describe('Codex session discovery', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({
       nativeId: '00000000-0000-0000-0000-000000000001',
-      cwd: 'D:\\dev\\research\\Claud-ometer',
+      cwd: 'D:\\dev\\research\\AgentScope',
       title: 'Codex fixture support plan',
       createdAt: '2026-05-08T10:16:36.000Z',
       updatedAt: '2026-05-08T10:16:51.000Z',

@@ -14,6 +14,8 @@ import { addStandardizedDataToArchive } from '@/lib/agent-data/standardized-expo
 
 export const dynamic = 'force-dynamic';
 
+type ExportFormat = 'full' | 'standardized';
+
 function hasExportableAgentData(agent: ReturnType<typeof getSelectedAgents>[number]): boolean {
   const agentDir = getAgentDataDir(agent);
   if (agent === 'cursor') return countCursorData(agentDir).sessionCount > 0;
@@ -22,7 +24,15 @@ function hasExportableAgentData(agent: ReturnType<typeof getSelectedAgents>[numb
   return true;
 }
 
-export const GET = withErrorHandler(async () => {
+function parseExportFormat(request?: Request): ExportFormat {
+  if (!request) return 'full';
+  const format = new URL(request.url).searchParams.get('format') || 'full';
+  if (format === 'full' || format === 'standardized') return format;
+  apiError('Invalid export format', 400);
+}
+
+export const GET = withErrorHandler(async (request?: Request) => {
+  const format = parseExportFormat(request);
   const agents = getSelectedAgents();
   const availableAgents = agents.filter(hasExportableAgentData);
 
@@ -30,41 +40,42 @@ export const GET = withErrorHandler(async () => {
     apiError('No selected agent data found', 404);
   }
 
-    const passthrough = new PassThrough();
-    const archive = archiver('zip', { zlib: { level: 6 } });
+  const passthrough = new PassThrough();
+  const archive = archiver('zip', { zlib: { level: 6 } });
 
-    archive.on('error', (err) => {
-      throw err;
-    });
+  archive.on('error', (err) => {
+    throw err;
+  });
 
-    archive.pipe(passthrough);
+  archive.pipe(passthrough);
 
-    const agentCounts: AgentArchiveMeta['agentCounts'] = {};
-    if (availableAgents.includes('claude')) {
-      const claudeDir = getAgentDataDir('claude');
-      addClaudeDataToArchive(archive, claudeDir, toZipPath(AGENT_ARCHIVE_ROOT, 'claude'));
-      agentCounts.claude = countClaudeData(claudeDir);
-    }
-    if (availableAgents.includes('codex')) {
-      const codexDir = getAgentDataDir('codex');
-      addCodexDataToArchive(archive, codexDir, toZipPath(AGENT_ARCHIVE_ROOT, 'codex'));
-      agentCounts.codex = countCodexData(codexDir);
-    }
-    if (availableAgents.includes('copilot')) {
-      const copilotDir = getAgentDataDir('copilot');
-      addCopilotDataToArchive(archive, copilotDir, toZipPath(AGENT_ARCHIVE_ROOT, 'copilot'));
-      agentCounts.copilot = countCopilotData(copilotDir);
-    }
-    if (availableAgents.includes('cursor')) {
-      const cursorDir = getAgentDataDir('cursor');
-      addCursorDataToArchive(archive, cursorDir, toZipPath(AGENT_ARCHIVE_ROOT, 'cursor'));
-      agentCounts.cursor = countCursorData(cursorDir);
-    }
+  const exportedAt = new Date().toISOString();
+  const agentCounts: AgentArchiveMeta['agentCounts'] = {};
 
-    const exportedAt = new Date().toISOString();
-    await addStandardizedDataToArchive(archive, availableAgents, exportedAt);
+  if (format === 'full' && availableAgents.includes('claude')) {
+    const claudeDir = getAgentDataDir('claude');
+    addClaudeDataToArchive(archive, claudeDir, toZipPath(AGENT_ARCHIVE_ROOT, 'claude'));
+    agentCounts.claude = countClaudeData(claudeDir);
+  }
+  if (format === 'full' && availableAgents.includes('codex')) {
+    const codexDir = getAgentDataDir('codex');
+    addCodexDataToArchive(archive, codexDir, toZipPath(AGENT_ARCHIVE_ROOT, 'codex'));
+    agentCounts.codex = countCodexData(codexDir);
+  }
+  if (format === 'full' && availableAgents.includes('copilot')) {
+    const copilotDir = getAgentDataDir('copilot');
+    addCopilotDataToArchive(archive, copilotDir, toZipPath(AGENT_ARCHIVE_ROOT, 'copilot'));
+    agentCounts.copilot = countCopilotData(copilotDir);
+  }
+  if (format === 'full' && availableAgents.includes('cursor')) {
+    const cursorDir = getAgentDataDir('cursor');
+    addCursorDataToArchive(archive, cursorDir, toZipPath(AGENT_ARCHIVE_ROOT, 'cursor'));
+    agentCounts.cursor = countCursorData(cursorDir);
+  }
 
-    // Add raw export metadata
+  await addStandardizedDataToArchive(archive, availableAgents, exportedAt);
+
+  if (format === 'full') {
     const meta: AgentArchiveMeta = {
       exportVersion: 2,
       exportedAt,
@@ -74,18 +85,21 @@ export const GET = withErrorHandler(async () => {
       agentCounts,
     };
     archive.append(JSON.stringify(meta, null, 2), { name: toZipPath(AGENT_ARCHIVE_ROOT, 'export-meta.json') });
+  }
 
-    archive.finalize();
+  archive.finalize();
 
-    // Collect all chunks
-    const chunks: Buffer[] = [];
-    for await (const chunk of passthrough) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const buffer = Buffer.concat(chunks);
+  // Collect all chunks
+  const chunks: Buffer[] = [];
+  for await (const chunk of passthrough) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const buffer = Buffer.concat(chunks);
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `agent-data-${timestamp}.zip`;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filename = format === 'standardized'
+    ? `agent-data-standardized-${timestamp}.zip`
+    : `agent-data-${timestamp}.zip`;
 
   return new NextResponse(buffer, {
     headers: {
