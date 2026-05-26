@@ -4,6 +4,7 @@ import { zeroCosts } from '@/lib/claude-data/cost-utils';
 import type {
   SessionDetail,
   SessionInfo,
+  SessionMessageImageDisplay,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
   SessionPromptTokenBreakdown,
@@ -103,6 +104,43 @@ function getContentText(content: unknown): string {
   return parts.join('\n').trim();
 }
 
+function getDataImageMediaType(url: string): string | null {
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,/i.exec(url.trim());
+  return match?.[1].toLowerCase() || null;
+}
+
+function getImageUrl(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  const record = asRecord(value);
+  const url = record?.url;
+  return typeof url === 'string' ? url : null;
+}
+
+function getContentImages(content: unknown): SessionMessageImageDisplay[] {
+  if (!Array.isArray(content)) return [];
+
+  const images: SessionMessageImageDisplay[] = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (!record || getOptionalString(record, 'type') !== 'input_image') continue;
+
+    const url = getImageUrl(record.image_url ?? record.image);
+    if (!url) continue;
+
+    const mediaType = getOptionalString(record, 'media_type')
+      || getOptionalString(record, 'mime_type')
+      || getDataImageMediaType(url);
+    if (!mediaType?.startsWith('image/')) continue;
+
+    images.push({
+      url,
+      mediaType,
+      label: `Image ${images.length + 1}`,
+    });
+  }
+  return images;
+}
+
 function getImagePlaceholder(payload: Record<string, unknown>): string {
   const images = Array.isArray(payload.images) ? payload.images : [];
   const localImages = Array.isArray(payload.local_images) ? payload.local_images : [];
@@ -118,6 +156,13 @@ function getUserMessageText(payload: Record<string, unknown>): string {
     getImagePlaceholder(payload),
   ].filter(Boolean);
   return Array.from(new Set(parts)).join('\n').trim();
+}
+
+function getUserMessageImages(payload: Record<string, unknown>): SessionMessageImageDisplay[] {
+  return [
+    ...getContentImages(payload.content ?? payload.message),
+    ...getContentImages(payload.text_elements),
+  ];
 }
 
 function getReasoningText(payload: Record<string, unknown>): string {
@@ -606,9 +651,10 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
         if (text) searchableParts.push(text);
 
         if (role === 'user') {
+          const images = getContentImages(payload.content);
           userMessageCount++;
           addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
-          messages.push({ role: 'user', content: text, timestamp });
+          messages.push({ role: 'user', content: text, timestamp, images });
         } else if (role === 'assistant') {
           if (!shouldSkipDuplicateAssistant(seenAssistantText, text)) {
             assistantMessageCount++;
@@ -686,11 +732,12 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
       const kind = getCodexPayloadKind(record);
       if (kind === 'user_message') {
         const text = getUserMessageText(payload);
-        if (text) {
+        const images = getUserMessageImages(payload);
+        if (text || images.length > 0) {
           userMessageCount++;
           addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
           searchableParts.push(text);
-          messages.push({ role: 'user', content: text, timestamp });
+          messages.push({ role: 'user', content: text, timestamp, images });
         }
         continue;
       }

@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Check, FileText } from 'lucide-react';
-import type { SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
+import type { SessionMessageDisplay, SessionMessageImageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
 import { formatDisplayPath } from '@/lib/path-utils';
 import { getDetailKeyTail, normalizeDisplayNewlines, detailMatchesKey } from '@/lib/string-utils';
 import { guessCodeLanguage } from '@/lib/code-highlighting';
@@ -24,6 +24,49 @@ import { SessionPill } from '../session-pill';
 import { useSessionRenderContext, type ArtifactViewerState } from '../session-render-context';
 
 export type PillTone = 'neutral' | 'good' | 'warn' | 'danger';
+
+function safeImages(images: SessionMessageImageDisplay[]): SessionMessageImageDisplay[] {
+  return images.filter(image => (
+    image.url.startsWith('data:image/')
+    || image.url.startsWith('blob:')
+    || image.url.startsWith('http://')
+    || image.url.startsWith('https://')
+  ));
+}
+
+function ImagePreviewGrid({ images }: { images: SessionMessageImageDisplay[] }) {
+  const shownImages = safeImages(images);
+  if (shownImages.length === 0) return null;
+
+  return (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,240px))] gap-2">
+      {shownImages.map((image, index) => (
+        <a
+          key={`${image.mediaType}-${index}`}
+          href={image.url}
+          target="_blank"
+          rel="noreferrer"
+          className="group block overflow-hidden rounded-md border border-border/60 bg-muted/20"
+          title={`${image.mediaType} image`}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={image.url}
+            alt={image.label || `Image ${index + 1}`}
+            width={240}
+            height={135}
+            loading="lazy"
+            decoding="async"
+            className="aspect-video h-auto w-full object-contain transition-transform group-hover:scale-[1.01]"
+          />
+          <div className="border-t border-border/50 px-2 py-1 text-[10px] text-muted-foreground">
+            {image.label || `Image ${index + 1}`}
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
 
 export function DetailPanel({ details, content, shownKeys = [], summaryLabel = 'details' }: {
   details: SessionToolCallDisplay['details'];
@@ -213,7 +256,8 @@ export function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
 export function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   const { projectRoot } = useSessionRenderContext();
   const blocks = msg.blocks || [];
-  if (blocks.length === 0 && !msg.content) return null;
+  const images = safeImages([...(msg.images || []), ...blocks.flatMap(block => block.images || [])]);
+  if (blocks.length === 0 && !msg.content && images.length === 0) return null;
 
   const blockContent = normalizeDisplayNewlines(
     blocks
@@ -242,7 +286,7 @@ export function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   const contentLines = effectiveContent ? effectiveContent.split('\n') : [];
   const isShortOutput = contentLines.length > 0 && contentLines.length <= 4 && effectiveContent.length <= 300;
 
-  if (isShortOutput) {
+  if (isShortOutput && images.length === 0) {
     return (
       <div className={`${accent} px-3 py-1.5`}>
         <HighlightedCode
@@ -281,6 +325,14 @@ export function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   const showStatusRow = Boolean(previewArtifact && normalizedMessageContent && !normalizedMessageContent.includes('\n') && normalizedMessageContent !== blockContent);
 
   if (!previewArtifact) {
+    if (images.length > 0) {
+      return (
+        <div className={`${accent} px-3 py-2`}>
+          <ImagePreviewGrid images={images} />
+        </div>
+      );
+    }
+
     return (
       <div className={`flex items-center gap-1.5 px-3 py-1 text-[11px] ${accent}`}>
         {outputTone === 'error'
@@ -299,6 +351,11 @@ export function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
             ? <AlertCircle className={`h-2.5 w-2.5 shrink-0 ${textColor}`} />
             : <Check className={`h-2.5 w-2.5 shrink-0 ${textColor}`} />}
           <span className={`truncate ${textColor}`}>{normalizedMessageContent}</span>
+        </div>
+      )}
+      {images.length > 0 && (
+        <div className="mx-3 mb-1.5 mt-1">
+          <ImagePreviewGrid images={images} />
         </div>
       )}
       <ArtifactPreview artifact={previewArtifact} label={hasExplicitFailure ? 'Error output' : 'Output preview'} className="mx-3 mb-1.5 mt-1" />

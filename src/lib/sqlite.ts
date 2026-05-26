@@ -1,5 +1,3 @@
-import { createRequire } from 'node:module';
-
 type Row = Record<string, unknown>;
 
 export interface SqliteDatabase {
@@ -25,8 +23,13 @@ let DatabaseSync: DatabaseSyncCtor | null = null;
 let loadAttempted = false;
 let loadError: string | null = null;
 
-const requireForSqlite = createRequire(import.meta.url);
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
+
+function runtimeRequire(moduleName: string): unknown {
+  // Keep this as an indirect require. Turbopack rewrites createRequire('node:sqlite')
+  // to an unsupported external stub in dev, which makes the app fall back to JSON.
+  return (eval('require') as NodeRequire)(moduleName);
+}
 
 export function blobToText(value: Uint8Array | string | null | undefined): string {
   if (value == null) return '';
@@ -61,7 +64,7 @@ function loadDriver(): boolean {
   } as typeof process.emit;
 
   try {
-    const sqlite = requireForSqlite('node:sqlite') as { DatabaseSync: DatabaseSyncCtor };
+    const sqlite = runtimeRequire('node:sqlite') as { DatabaseSync: DatabaseSyncCtor };
     DatabaseSync = sqlite.DatabaseSync;
     return true;
   } catch (error) {

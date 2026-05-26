@@ -158,6 +158,7 @@ export interface TokenUsage {
 export interface ProjectInfo {
   id: string;
   agentKind?: AgentKind;
+  agentKinds?: AgentKind[];
   nativeId?: string;
   routeId?: string;
   name: string;
@@ -311,6 +312,13 @@ export interface SessionMessageBlockDisplay {
   summary: string;
   details: SessionToolCallDetail[];
   content?: string;
+  images?: SessionMessageImageDisplay[];
+}
+
+export interface SessionMessageImageDisplay {
+  url: string;
+  mediaType: string;
+  label?: string;
 }
 
 export interface SessionMessageDisplay {
@@ -325,6 +333,7 @@ export interface SessionMessageDisplay {
   stopReason?: string | null;
   toolCalls?: SessionToolCallDisplay[];
   blocks?: SessionMessageBlockDisplay[];
+  images?: SessionMessageImageDisplay[];
   isMeta?: boolean;
 }
 

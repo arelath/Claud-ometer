@@ -7,6 +7,7 @@ import {
   type SessionSummarySource,
 } from './session-summary';
 import type { AgentKind } from './types';
+import { isSessionSourceRecentlyModified } from './source-stability';
 
 export interface SessionSummaryCacheFile {
   cacheVersion: number;
@@ -129,13 +130,18 @@ export function sourceSummaryCacheKey(source: Pick<SessionSummarySource, 'provid
   return sourceCacheKey(source.provider, source.sourceFilePath);
 }
 
-export function isSummaryValidForSource(summary: CachedSessionSummary, source: SessionSummarySource): boolean {
+export function isSummaryValidForSource(
+  summary: CachedSessionSummary,
+  source: SessionSummarySource,
+  options: { allowPartial?: boolean } = {},
+): boolean {
   return summary.cacheVersion === SESSION_SUMMARY_CACHE_VERSION
     && summary.provider === source.provider
     && summary.parserVersion === source.parserVersion
     && summary.sourceFilePath === source.sourceFilePath
     && summary.sourceSignature.size === source.sourceSignature.size
-    && summary.sourceSignature.mtimeMs === source.sourceSignature.mtimeMs;
+    && summary.sourceSignature.mtimeMs === source.sourceSignature.mtimeMs
+    && (options.allowPartial || !summary.isPartial);
 }
 
 export function mergeUpdatedSummaries(
@@ -178,7 +184,7 @@ export function getSessionSummaryCacheStatus(
   for (const source of sources) {
     const summary = summariesByKey.get(sourceSummaryCacheKey(source));
     if (!summary) continue;
-    if (isSummaryValidForSource(summary, source)) {
+    if (isSummaryValidForSource(summary, source, { allowPartial: isSessionSourceRecentlyModified(source) })) {
       validCount++;
     } else {
       staleCount++;

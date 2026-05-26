@@ -54,7 +54,9 @@ export function ProjectsClient({ initialProjects }: { initialProjects?: ProjectI
                       <div>
                         <div className="flex items-center gap-1.5">
                           <h3 className="text-sm font-semibold">{project.name}</h3>
-                          {project.agentKind && <AgentBadge agentKind={project.agentKind} className="text-[9px] px-1 py-0" />}
+                          {(project.agentKinds?.length ? project.agentKinds : project.agentKind ? [project.agentKind] : []).map(agentKind => (
+                            <AgentBadge key={agentKind} agentKind={agentKind} className="text-[9px] px-1 py-0" />
+                          ))}
                         </div>
                         <p className="text-[10px] text-muted-foreground truncate max-w-[180px]">
                           {project.path}

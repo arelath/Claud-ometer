@@ -1,5 +1,6 @@
 import type {
   SessionArtifactDisplay,
+  SessionMessageImageDisplay,
   SessionMessageBlockDisplay,
   SessionToolCallDetail,
   SessionToolCallDisplay,
@@ -48,6 +49,43 @@ function getPayload(envelope: CodexEnvelope): Record<string, unknown> {
 function getOptionalString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function getDataImageMediaType(url: string): string | null {
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,/i.exec(url.trim());
+  return match?.[1].toLowerCase() || null;
+}
+
+function getImageUrl(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  const record = asRecord(value);
+  const url = record?.url;
+  return typeof url === 'string' ? url : null;
+}
+
+function getOutputImages(output: unknown): SessionMessageImageDisplay[] {
+  if (!Array.isArray(output)) return [];
+
+  const images: SessionMessageImageDisplay[] = [];
+  for (const item of output) {
+    const record = asRecord(item);
+    if (!record || getOptionalString(record, 'type') !== 'input_image') continue;
+
+    const url = getImageUrl(record.image_url ?? record.image);
+    if (!url) continue;
+
+    const mediaType = getOptionalString(record, 'media_type')
+      || getOptionalString(record, 'mime_type')
+      || getDataImageMediaType(url);
+    if (!mediaType?.startsWith('image/')) continue;
+
+    images.push({
+      url,
+      mediaType,
+      label: `Image ${images.length + 1}`,
+    });
+  }
+  return images;
 }
 
 function getCallId(record: Record<string, unknown>): string {
@@ -338,11 +376,14 @@ export function buildCodexToolCalls(payload: Record<string, unknown>, results: M
 export function buildCodexToolResultBlock(result: CodexToolResult): SessionMessageBlockDisplay {
   const stdout = getOptionalString(result.payload, 'stdout') || '';
   const stderr = getOptionalString(result.payload, 'stderr') || '';
+  const outputImages = getOutputImages(result.payload.output);
   const output = result.payload.output == null
     ? ''
     : typeof result.payload.output === 'string'
       ? result.payload.output
-      : JSON.stringify(result.payload.output, null, 2);
+      : outputImages.length > 0
+        ? ''
+        : JSON.stringify(result.payload.output, null, 2);
   const exitCode = result.payload.exit_code ?? result.payload.exitCode;
   const content = [stdout, stderr, output].filter(Boolean).join('\n').trim();
   const failed = result.payload.success === false || (typeof exitCode === 'number' && exitCode !== 0);
@@ -350,15 +391,18 @@ export function buildCodexToolResultBlock(result: CodexToolResult): SessionMessa
   return {
     type: 'tool-result',
     title: result.kind,
-    summary: exitCode != null ? `exit code ${exitCode}` : (failed ? 'failed' : 'completed'),
+    summary: outputImages.length > 0
+      ? `${outputImages.length} image${outputImages.length === 1 ? '' : 's'}`
+      : exitCode != null ? `exit code ${exitCode}` : (failed ? 'failed' : 'completed'),
     content,
+    images: outputImages,
     details: compactDetails([
       detail('tool_use_id', result.callId, 'tool use id'),
       detail('status', failed ? 'failed' : 'success', 'status'),
       detail('exit_code', exitCode, 'exit code'),
       detail('stdout', stdout, 'stdout'),
       detail('stderr', stderr, 'stderr'),
-      detail('output', output, 'output'),
+      outputImages.length > 0 ? detail('output', `${outputImages.length} image output`, 'output') : detail('output', output, 'output'),
       detail('duration_ms', result.payload.duration_ms ?? result.payload.durationMs, 'duration ms'),
     ]),
   };

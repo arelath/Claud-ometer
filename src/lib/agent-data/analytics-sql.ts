@@ -32,6 +32,11 @@ import {
   summaryToSessionInfo,
   type CachedSessionSummary,
 } from './session-summary';
+import {
+  getProjectRowPath,
+  isSummaryInProjectPath,
+  makeProjectPathRouteId,
+} from './project-path';
 import type { AgentDataProvider } from './provider';
 import type { AgentKind } from './types';
 
@@ -80,6 +85,8 @@ interface ChangeAggregateRow extends Record<string, unknown>, ChangeTotals {
 interface ActiveSessionRow extends Record<string, unknown> {
   source_key: string;
   project_route_id: string;
+  project_name: string;
+  cwd: string;
   utc_hour_ms: number;
   has_usage: number;
 }
@@ -119,6 +126,7 @@ export interface SessionSqlPage {
 export interface SessionSqlQuery {
   query?: string;
   projectId?: string;
+  projectPath?: string;
   nativeProjectId?: string;
   projectAgentKind?: AgentKind;
   range?: TimeRangeParams;
@@ -567,6 +575,8 @@ export function getDashboardStatsSql(
       `SELECT
          u.source_key AS source_key,
          s.project_route_id AS project_route_id,
+         s.project_name AS project_name,
+         s.cwd AS cwd,
          CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
          1 AS has_usage
        FROM usage_events u
@@ -577,6 +587,8 @@ export function getDashboardStatsSql(
        SELECT
          c.source_key AS source_key,
          s.project_route_id AS project_route_id,
+         s.project_name AS project_name,
+         s.cwd AS cwd,
          CAST(c.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
          0 AS has_usage
        FROM change_events c
@@ -592,7 +604,7 @@ export function getDashboardStatsSql(
       const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
       bucket.activeSessionIds.add(row.source_key);
       activeSessionIds.add(row.source_key);
-      activeProjectIds.add(row.project_route_id);
+      activeProjectIds.add(getProjectRowPath(row) || row.project_route_id);
       if (numberValue(row.has_usage) > 0) activeUsageSourceKeys.add(row.source_key);
     }
 
@@ -639,13 +651,26 @@ export function getDashboardStatsSql(
   });
 }
 
+function addProjectAgentKind(project: ProjectInfo, agentKind: AgentKind): void {
+  if (!project.agentKinds?.includes(agentKind)) {
+    project.agentKinds = [...(project.agentKinds || []), agentKind].sort();
+  }
+  project.agentKind = project.agentKinds.length === 1 ? project.agentKinds[0] : undefined;
+}
+
 function ensureProject(projects: Map<string, ProjectInfo>, row: ProjectUsageRow): ProjectInfo {
-  const existing = projects.get(row.project_route_id);
-  if (existing) return existing;
+  const projectPath = getProjectRowPath(row);
+  const projectKey = projectPath || row.project_route_id;
+  const existing = projects.get(projectKey);
+  if (existing) {
+    addProjectAgentKind(existing, row.provider);
+    return existing;
+  }
 
   const project: ProjectInfo = {
-    id: row.provider === 'claude' ? row.native_project_id : row.project_route_id,
+    id: projectPath ? makeProjectPathRouteId(projectPath) : row.project_route_id,
     agentKind: row.provider,
+    agentKinds: [row.provider],
     nativeId: row.native_project_id,
     routeId: row.project_route_id,
     name: row.project_name,
@@ -658,7 +683,7 @@ function ensureProject(projects: Map<string, ProjectInfo>, row: ProjectUsageRow)
     lastActive: '',
     models: [],
   };
-  projects.set(row.project_route_id, project);
+  projects.set(projectKey, project);
   return project;
 }
 
@@ -717,14 +742,15 @@ export function getProjectsSql(
     for (const row of rows) {
       if (!localBucketForUtcHour(row.utc_hour_ms, context, localHourCache)) continue;
 
+      const projectKey = getProjectRowPath(row) || row.project_route_id;
       const project = ensureProject(projects, row);
-      const sessions = sessionsByProject.get(row.project_route_id) || new Set<string>();
+      const sessions = sessionsByProject.get(projectKey) || new Set<string>();
       sessions.add(row.source_key);
-      sessionsByProject.set(row.project_route_id, sessions);
+      sessionsByProject.set(projectKey, sessions);
 
-      const models = modelsByProject.get(row.project_route_id) || new Set<string>();
+      const models = modelsByProject.get(projectKey) || new Set<string>();
       if (row.model) models.add(row.model);
-      modelsByProject.set(row.project_route_id, models);
+      modelsByProject.set(projectKey, models);
 
       const tokens = usageTokenTotal(row);
       project.totalMessages += numberValue(row.message_count);
@@ -782,6 +808,10 @@ function sessionWhereSql(providers: AgentKind[], options: SessionSqlQuery, param
   if (options.query?.trim()) {
     where.push('instr(s.search_text, ?) > 0');
     params.push(options.query.trim().toLowerCase());
+  }
+
+  if (options.projectPath) {
+    return where.join(' AND ');
   }
 
   if (options.projectId) {
@@ -853,9 +883,13 @@ export function getProjectSessionsSql(
        ORDER BY s.created_at_ms DESC`,
       params,
     );
-    return summariesToSessions(rows
+    const summaries = rows
       .map(parseSummary)
-      .filter((summary): summary is CachedSessionSummary => Boolean(summary)));
+      .filter((summary): summary is CachedSessionSummary => Boolean(summary));
+    const filteredSummaries = options.projectPath
+      ? summaries.filter(summary => isSummaryInProjectPath(summary, options.projectPath || ''))
+      : summaries;
+    return summariesToSessions(filteredSummaries);
   });
 }
 

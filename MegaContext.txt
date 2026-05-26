@@ -48,7 +48,7 @@
 
 /// <reference types="next" />
 /// <reference types="next/image-types/global" />
-import "./.next/dev/types/routes.d.ts";
+import "./.next/types/routes.d.ts";
 
 // NOTE: This file should not be edited
 // see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
@@ -869,6 +869,7 @@ import { getProvidersForFilter, resolveSessionProvider } from '@/lib/agent-data/
 import { sortSessionsByTimestamp } from '@/lib/agent-data/aggregate';
 import { parseRouteId } from '@/lib/agent-data/route-id';
 import { getIndexedSessionSummaries } from '@/lib/agent-data/indexer';
+import { getProjectSessionsSql, getSessionsSql, type SessionSqlPage } from '@/lib/agent-data/analytics-sql';
 import { filterVisibleSessionSummaries, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 import { filterByTimeRange, parseApiTimeRangeParams, type TimeRangeParams } from '@/lib/time-range';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
@@ -913,6 +914,16 @@ function paginatedResponse(summaries: CachedSessionSummary[], limit: number, off
   });
 }
 
+function sqlPaginatedResponse(page: SessionSqlPage, includeTotal: boolean) {
+  if (!includeTotal) return NextResponse.json(page.sessions);
+  return NextResponse.json({
+    sessions: page.sessions,
+    total: page.total,
+    limit: page.limit,
+    offset: page.offset,
+  });
+}
+
 function getTimeFilteredSummaries(providers: AgentDataProvider[], range: TimeRangeParams): CachedSessionSummary[] {
   return filterByTimeRange(getIndexedSessionSummaries(providers), range, summary => summary.createdAt);
 }
@@ -931,6 +942,13 @@ export const GET = withErrorHandler(async (request: Request) => {
   if (error) apiError(error, 400);
 
   if (query) {
+    try {
+      const sqlPage = getSessionsSql(providers, { query, range, limit, offset });
+      if (sqlPage) return sqlPaginatedResponse(sqlPage, includeTotal);
+    } catch {
+      // Fall back to the payload cache if the SQLite sessions path is unavailable.
+    }
+
     const summaries = getTimeFilteredSummaries(providers, range);
     const lowerQuery = query.toLowerCase();
     const matchingSummaries = summaries.filter(summary => summarySearchText(summary).includes(lowerQuery));
@@ -942,13 +960,32 @@ export const GET = withErrorHandler(async (request: Request) => {
     const projectProviders = parsedProjectId.agentKind
       ? [resolveSessionProvider(projectId)].filter((provider): provider is AgentDataProvider => Boolean(provider))
       : providers;
-    const summaries = getTimeFilteredSummaries(projectProviders, range);
     const nativeProjectId = parsedProjectId.nativeId;
+    try {
+      const sqlSessions = getProjectSessionsSql(projectProviders, {
+        projectId,
+        nativeProjectId,
+        projectAgentKind: parsedProjectId.agentKind || undefined,
+        range,
+      });
+      if (sqlSessions) return NextResponse.json(sqlSessions);
+    } catch {
+      // Fall back to the payload cache if the SQLite sessions path is unavailable.
+    }
+
+    const summaries = getTimeFilteredSummaries(projectProviders, range);
     const sessions = sortSessionsByTimestamp(summariesToSessions(summaries.filter(summary => {
       if (parsedProjectId.agentKind && summary.provider !== parsedProjectId.agentKind) return false;
       return summary.nativeProjectId === nativeProjectId || summary.projectRouteId === projectId;
     })));
     return NextResponse.json(sessions);
+  }
+
+  try {
+    const sqlPage = getSessionsSql(providers, { range, limit, offset });
+    if (sqlPage) return sqlPaginatedResponse(sqlPage, includeTotal);
+  } catch {
+    // Fall back to the payload cache if the SQLite sessions path is unavailable.
   }
 
   const summaries = getTimeFilteredSummaries(providers, range);
@@ -3336,6 +3373,7 @@ export function ActivityHeatmap({ data, startDate: selectedStartDate, endDate: s
 
 'use client';
 
+import { useMemo } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
@@ -3360,60 +3398,62 @@ interface ModelCostGroup {
 export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps) {
   const { costMode } = useCostMode();
 
-  const modelGroups = new Map<string, ModelCostGroup>();
-  const ensureModelGroup = (model: string): ModelCostGroup => {
-    const key = getModelCostGroupKey(model);
-    const existing = modelGroups.get(key);
-    if (existing) return existing;
+  const { chartData, groups } = useMemo(() => {
+    const modelGroups = new Map<string, ModelCostGroup>();
+    const ensureModelGroup = (model: string): ModelCostGroup => {
+      const key = getModelCostGroupKey(model);
+      const existing = modelGroups.get(key);
+      if (existing) return existing;
 
-    const group = {
-      key,
-      name: getModelCostDisplayName(model),
-      color: getModelColor(key),
+      const group = {
+        key,
+        name: getModelCostDisplayName(model),
+        color: getModelColor(key),
+      };
+      modelGroups.set(key, group);
+      return group;
     };
-    modelGroups.set(key, group);
-    return group;
-  };
 
-  const sourceRows = buckets?.length
-    ? buckets.map(bucket => ({
-        label: formatBucketLabel(bucket, granularity),
-        tokensByModel: bucket.tokensByModel,
-        costsByModel: bucket.costsByModel,
-      }))
-    : data.map(day => ({
-        label: format(parseISO(day.date), 'MMM d'),
-        tokensByModel: day.tokensByModel,
-        costsByModel: day.costsByModel || {},
-      }));
+    const sourceRows = buckets?.length
+      ? buckets.map(bucket => ({
+          label: formatBucketLabel(bucket, granularity),
+          tokensByModel: bucket.tokensByModel,
+          costsByModel: bucket.costsByModel,
+        }))
+      : data.map(day => ({
+          label: format(parseISO(day.date), 'MMM d'),
+          tokensByModel: day.tokensByModel,
+          costsByModel: day.costsByModel || {},
+        }));
 
-  sourceRows.forEach(d => {
-    Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
-      if (tokens > 0) ensureModelGroup(model);
+    sourceRows.forEach(d => {
+      Object.entries(d.tokensByModel).forEach(([model, tokens]) => {
+        if (tokens > 0) ensureModelGroup(model);
+      });
     });
-  });
 
-  const chartData = sourceRows.map(d => {
-    const entry: Record<string, string | number> = {
-      date: d.label,
-    };
-    const costsByGroup: Record<string, number> = {};
+    const parsedData = sourceRows.map(d => {
+      const entry: Record<string, string | number> = {
+        date: d.label,
+      };
+      const costsByGroup: Record<string, number> = {};
 
-    for (const [model, tokens] of Object.entries(d.tokensByModel)) {
-      if (tokens <= 0) continue;
-      const group = ensureModelGroup(model);
-      const costs = d.costsByModel?.[model];
-      costsByGroup[group.name] = (costsByGroup[group.name] || 0) + (costs?.[costMode] ?? 0);
-    }
+      for (const [model, tokens] of Object.entries(d.tokensByModel)) {
+        if (tokens <= 0) continue;
+        const group = ensureModelGroup(model);
+        const costs = d.costsByModel?.[model];
+        costsByGroup[group.name] = (costsByGroup[group.name] || 0) + (costs?.[costMode] ?? 0);
+      }
 
-    for (const group of modelGroups.values()) {
-      entry[group.name] = parseFloat((costsByGroup[group.name] || 0).toFixed(2));
-    }
+      for (const group of modelGroups.values()) {
+        entry[group.name] = parseFloat((costsByGroup[group.name] || 0).toFixed(2));
+      }
 
-    return entry;
-  });
+      return entry;
+    });
 
-  const groups = Array.from(modelGroups.values());
+    return { chartData: parsedData, groups: Array.from(modelGroups.values()) };
+  }, [data, buckets, granularity, costMode]);
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -3459,6 +3499,7 @@ export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps
                   fill={group.color}
                   fillOpacity={0.3}
                   strokeWidth={2}
+                  isAnimationActive={false}
                 />
               ))}
             </AreaChart>
@@ -3481,6 +3522,7 @@ function formatBucketLabel(bucket: AnalyticsTimeBucket, granularity: BucketGranu
 
 'use client';
 
+import { useMemo } from 'react';
 import {
   Bar, BarChart, CartesianGrid, Legend, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
@@ -3507,28 +3549,33 @@ interface ChartRow {
 }
 
 export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: LinesChangedOverTimeProps) {
-  const chartData: ChartRow[] = buckets?.length
-    ? buckets.map(bucket => ({
-        date: formatBucketLabel(bucket, granularity),
-        addedLines: bucket.changeTotals.addedLines,
-        removedLines: -bucket.changeTotals.removedLines,
-        netLineDelta: bucket.changeTotals.netLineDelta,
-        changedLines: bucket.changeTotals.changedLines,
-        fileCount: bucket.changeTotals.fileCount,
-        editCount: bucket.changeTotals.editCount,
-        sessionCount: bucket.activeSessionCount,
-      }))
-    : data.map(day => ({
-        date: format(parseISO(day.date), 'MMM d'),
-        addedLines: day.addedLines,
-        removedLines: -day.removedLines,
-        netLineDelta: day.netLineDelta,
-        changedLines: day.changedLines,
-        fileCount: day.fileCount,
-        editCount: day.editCount,
-        sessionCount: day.sessionCount,
-      }));
-  const hasTrackedChanges = chartData.some(day => day.changedLines > 0);
+  const chartData: ChartRow[] = useMemo(() => (
+    buckets?.length
+      ? buckets.map(bucket => ({
+          date: formatBucketLabel(bucket, granularity),
+          addedLines: bucket.changeTotals.addedLines,
+          removedLines: -bucket.changeTotals.removedLines,
+          netLineDelta: bucket.changeTotals.netLineDelta,
+          changedLines: bucket.changeTotals.changedLines,
+          fileCount: bucket.changeTotals.fileCount,
+          editCount: bucket.changeTotals.editCount,
+          sessionCount: bucket.activeSessionCount,
+        }))
+      : data.map(day => ({
+          date: format(parseISO(day.date), 'MMM d'),
+          addedLines: day.addedLines,
+          removedLines: -day.removedLines,
+          netLineDelta: day.netLineDelta,
+          changedLines: day.changedLines,
+          fileCount: day.fileCount,
+          editCount: day.editCount,
+          sessionCount: day.sessionCount,
+        }))
+  ), [data, buckets, granularity]);
+  const hasTrackedChanges = useMemo(
+    () => chartData.some(day => day.changedLines > 0),
+    [chartData],
+  );
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -3569,8 +3616,8 @@ export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: Lin
                 />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <ReferenceLine y={0} stroke="var(--border)" />
-                <Bar dataKey="addedLines" name="Added" fill="#3fa66b" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="removedLines" name="Removed" fill="#d85a5a" radius={[0, 0, 4, 4]} />
+                <Bar dataKey="addedLines" name="Added" fill="#3fa66b" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                <Bar dataKey="removedLines" name="Removed" fill="#d85a5a" radius={[0, 0, 4, 4]} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -3815,7 +3862,7 @@ export function PeakHours({ data }: PeakHoursProps) {
 
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -3840,17 +3887,19 @@ const metrics: { key: MetricKey; label: string; color: string }[] = [
 export function UsageOverTime({ data, buckets, granularity = 'day' }: UsageOverTimeProps) {
   const [activeMetric, setActiveMetric] = useState<MetricKey>('messageCount');
 
-  const chartData = buckets?.length
-    ? buckets.map(bucket => ({
-        messageCount: bucket.messageCount,
-        sessionCount: bucket.activeSessionCount,
-        toolCallCount: bucket.toolCallCount,
-        dateLabel: formatBucketLabel(bucket, granularity),
-      }))
-    : data.map(d => ({
-        ...d,
-        dateLabel: format(parseISO(d.date), 'MMM d'),
-      }));
+  const chartData = useMemo(() => (
+    buckets?.length
+      ? buckets.map(bucket => ({
+          messageCount: bucket.messageCount,
+          sessionCount: bucket.activeSessionCount,
+          toolCallCount: bucket.toolCallCount,
+          dateLabel: formatBucketLabel(bucket, granularity),
+        }))
+      : data.map(d => ({
+          ...d,
+          dateLabel: format(parseISO(d.date), 'MMM d'),
+        }))
+  ), [data, buckets, granularity]);
 
   const activeConfig = metrics.find(m => m.key === activeMetric)!;
 
@@ -3912,6 +3961,7 @@ export function UsageOverTime({ data, buckets, granularity = 'day' }: UsageOverT
                 stroke={activeConfig.color}
                 strokeWidth={2}
                 fill={`url(#gradient-${activeMetric})`}
+                isAnimationActive={false}
               />
             </AreaChart>
           </ResponsiveContainer>
@@ -10910,10 +10960,896 @@ export function mergeDashboardStats(stats: DashboardStats[]): DashboardStats {
 
 
 
+// Filename: src\lib\agent-data\analytics-sql.ts
+
+import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
+import {
+  bucketKeyFromLocalTimeParts,
+  bucketKeyToDate,
+  getLocalTimeParts,
+  isDateInRange,
+  listBucketKeys,
+  normalizeBucketGranularity,
+  normalizeTimeZone,
+} from '@/lib/analytics-time';
+import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
+import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import type {
+  AnalyticsTimeBucket,
+  BucketGranularity,
+  ChangeTotals,
+  CostEstimates,
+  DashboardStats,
+  DailyActivity,
+  DailyChangeActivity,
+  DailyModelTokens,
+  ModelUsage,
+  ProjectInfo,
+  SessionInfo,
+} from '@/lib/claude-data/types';
+import type { SqliteDatabase } from '@/lib/sqlite';
+import type { TimeRangeParams } from '@/lib/time-range';
+import { querySessionSummaryIndex } from './session-summary-sqlite-store';
+import {
+  SESSION_SUMMARY_CACHE_VERSION,
+  summariesToSessions,
+  summaryToSessionInfo,
+  type CachedSessionSummary,
+} from './session-summary';
+import type { AgentDataProvider } from './provider';
+import type { AgentKind } from './types';
+
+interface AggregationContext {
+  range: TimeRangeParams;
+  timeZone: string;
+  granularity: BucketGranularity;
+}
+
+interface MutableAnalyticsTimeBucket extends AnalyticsTimeBucket {
+  activeSessionIds: Set<string>;
+  sessionStartIds: Set<string>;
+}
+
+interface CountRow extends Record<string, unknown> {
+  count: number;
+}
+
+interface SummaryPayloadRow extends Record<string, unknown> {
+  payload_json: string;
+  created_at_ms?: number;
+}
+
+interface UsageAggregateRow extends Record<string, unknown> {
+  utc_hour_ms: number;
+  model: string;
+  message_count: number;
+  user_message_count: number;
+  assistant_message_count: number;
+  tool_call_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_output_tokens: number;
+  cost_api: number;
+  cost_conservative: number;
+  cost_subscription: number;
+  activity_count: number;
+}
+
+interface ChangeAggregateRow extends Record<string, unknown>, ChangeTotals {
+  utc_hour_ms: number;
+}
+
+interface ActiveSessionRow extends Record<string, unknown> {
+  source_key: string;
+  project_route_id: string;
+  utc_hour_ms: number;
+  has_usage: number;
+}
+
+interface SessionStartRow extends Record<string, unknown> {
+  source_key: string;
+  created_at: string;
+}
+
+interface LongestSessionRow extends Record<string, unknown> {
+  provider: AgentKind;
+  route_id: string;
+  native_id: string;
+  created_at: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  message_count: number;
+}
+
+interface ProjectUsageRow extends UsageAggregateRow {
+  source_key: string;
+  provider: AgentKind;
+  native_project_id: string;
+  project_route_id: string;
+  project_name: string;
+  cwd: string;
+  last_timestamp_ms: number;
+}
+
+export interface SessionSqlPage {
+  sessions: SessionInfo[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SessionSqlQuery {
+  query?: string;
+  projectId?: string;
+  nativeProjectId?: string;
+  projectAgentKind?: AgentKind;
+  range?: TimeRangeParams;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CostAnalyticsSqlPayload {
+  stats: DashboardStats;
+  projects: ProjectInfo[];
+}
+
+const VISIBLE_SUMMARY_SQL = `(
+  s.message_count > 0
+  OR s.tool_call_count > 0
+  OR (s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens) > 0
+)`;
+const UTC_RANGE_PADDING_MS = 36 * 60 * 60 * 1000;
+
+function providerKinds(providers: AgentDataProvider[]): AgentKind[] {
+  return providers.map(provider => provider.kind);
+}
+
+function providerFilterSql(providers: AgentKind[], params: unknown[]): string {
+  if (providers.length === 0) return '0 = 1';
+  params.push(...providers);
+  return `s.provider IN (${providers.map(() => '?').join(',')})`;
+}
+
+function numberValue(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getAggregationContext(range: TimeRangeParams = {}): AggregationContext {
+  return {
+    range,
+    timeZone: normalizeTimeZone(range.timeZone),
+    granularity: normalizeBucketGranularity(range.granularity),
+  };
+}
+
+function utcBoundsForLocalRange(range: TimeRangeParams): { startMs?: number; endMs?: number } {
+  const startMs = range.start ? Date.parse(`${range.start}T00:00:00.000Z`) - UTC_RANGE_PADDING_MS : undefined;
+  const endMs = range.end ? Date.parse(`${range.end}T23:59:59.999Z`) + UTC_RANGE_PADDING_MS : undefined;
+  return {
+    startMs: Number.isFinite(startMs) ? startMs : undefined,
+    endMs: Number.isFinite(endMs) ? endMs : undefined,
+  };
+}
+
+function appendTimestampBounds(where: string[], params: unknown[], column: string, range: TimeRangeParams): void {
+  const bounds = utcBoundsForLocalRange(range);
+  if (bounds.startMs !== undefined) {
+    where.push(`${column} >= ?`);
+    params.push(bounds.startMs);
+  }
+  if (bounds.endMs !== undefined) {
+    where.push(`${column} <= ?`);
+    params.push(bounds.endMs);
+  }
+}
+
+function localBucketForUtcHour(
+  utcHourMs: unknown,
+  context: AggregationContext,
+  cache: Map<number, { key: string; hour: number } | null>,
+): { key: string; hour: number } | null {
+  const ms = numberValue(utcHourMs);
+  if (!ms) return null;
+  if (cache.has(ms)) return cache.get(ms) || null;
+
+  const parts = getLocalTimeParts(new Date(ms).toISOString(), context.timeZone);
+  const bucket = parts && isDateInRange(parts.date, context.range)
+    ? { key: bucketKeyFromLocalTimeParts(parts, context.granularity), hour: parts.hour }
+    : null;
+  cache.set(ms, bucket);
+  return bucket;
+}
+
+function localBucketForTimestamp(timestamp: string, context: AggregationContext): string | null {
+  const parts = getLocalTimeParts(timestamp, context.timeZone);
+  if (!parts || !isDateInRange(parts.date, context.range)) return null;
+  return bucketKeyFromLocalTimeParts(parts, context.granularity);
+}
+
+function usageTokenTotal(row: Pick<UsageAggregateRow, 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_write_tokens'>): number {
+  return numberValue(row.input_tokens) + numberValue(row.output_tokens) + numberValue(row.cache_read_tokens) + numberValue(row.cache_write_tokens);
+}
+
+function rowCosts(row: UsageAggregateRow): CostEstimates {
+  const stored = {
+    api: numberValue(row.cost_api),
+    conservative: numberValue(row.cost_conservative),
+    subscription: numberValue(row.cost_subscription),
+  };
+  if (stored.api || stored.conservative || stored.subscription || usageTokenTotal(row) === 0) return stored;
+  return calculateCostAllModes(
+    row.model || 'unknown',
+    numberValue(row.input_tokens),
+    numberValue(row.output_tokens),
+    numberValue(row.cache_write_tokens),
+    numberValue(row.cache_read_tokens),
+  );
+}
+
+function ensureBucket(
+  buckets: Map<string, MutableAnalyticsTimeBucket>,
+  key: string,
+  granularity: BucketGranularity,
+): MutableAnalyticsTimeBucket {
+  const existing = buckets.get(key);
+  if (existing) return existing;
+
+  const bucket: MutableAnalyticsTimeBucket = {
+    key,
+    startLocal: key,
+    granularity,
+    messageCount: 0,
+    userMessageCount: 0,
+    assistantMessageCount: 0,
+    toolCallCount: 0,
+    sessionStartCount: 0,
+    activeSessionCount: 0,
+    tokensByModel: {},
+    costsByModel: {},
+    changeTotals: zeroChangeTotals(),
+    activeSessionIds: new Set<string>(),
+    sessionStartIds: new Set<string>(),
+  };
+  buckets.set(key, bucket);
+  return bucket;
+}
+
+function finalizeBuckets(buckets: Map<string, MutableAnalyticsTimeBucket>): AnalyticsTimeBucket[] {
+  return Array.from(buckets.values())
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map(bucket => ({
+      key: bucket.key,
+      startLocal: bucket.startLocal,
+      granularity: bucket.granularity,
+      messageCount: bucket.messageCount,
+      userMessageCount: bucket.userMessageCount,
+      assistantMessageCount: bucket.assistantMessageCount,
+      toolCallCount: bucket.toolCallCount,
+      sessionStartCount: bucket.sessionStartIds.size,
+      activeSessionCount: bucket.activeSessionIds.size,
+      tokensByModel: bucket.tokensByModel,
+      costsByModel: bucket.costsByModel,
+      changeTotals: bucket.changeTotals,
+    }));
+}
+
+function bucketsToDailyActivity(buckets: AnalyticsTimeBucket[]): DailyActivity[] {
+  const days = new Map<string, DailyActivity>();
+  for (const bucket of buckets) {
+    const date = bucketKeyToDate(bucket.key);
+    const day = days.get(date) || { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+    day.messageCount += bucket.messageCount;
+    day.sessionCount += bucket.sessionStartCount;
+    day.toolCallCount += bucket.toolCallCount;
+    days.set(date, day);
+  }
+  return Array.from(days.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function bucketsToDailyModelTokens(buckets: AnalyticsTimeBucket[]): DailyModelTokens[] {
+  const days = new Map<string, DailyModelTokens>();
+  for (const bucket of buckets) {
+    const date = bucketKeyToDate(bucket.key);
+    const day = days.get(date) || { date, tokensByModel: {}, costsByModel: {} };
+    for (const [model, tokens] of Object.entries(bucket.tokensByModel)) {
+      day.tokensByModel[model] = (day.tokensByModel[model] || 0) + tokens;
+    }
+    for (const [model, costs] of Object.entries(bucket.costsByModel)) {
+      day.costsByModel![model] = addCosts(day.costsByModel![model] || zeroCosts(), costs);
+    }
+    days.set(date, day);
+  }
+  return Array.from(days.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function bucketsToDailyChangeActivity(buckets: AnalyticsTimeBucket[]): DailyChangeActivity[] {
+  const days = new Map<string, DailyChangeActivity>();
+  for (const bucket of buckets) {
+    const date = bucketKeyToDate(bucket.key);
+    const day = days.get(date) || {
+      date,
+      ...zeroChangeTotals(),
+      sessionCount: 0,
+    };
+    const totals = addChangeTotals(day, bucket.changeTotals);
+    days.set(date, {
+      date,
+      ...totals,
+      sessionCount: day.sessionCount + bucket.activeSessionCount,
+    });
+  }
+  return Array.from(days.values()).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function addModelUsage(
+  modelUsage: DashboardStats['modelUsage'],
+  model: string,
+  row: UsageAggregateRow,
+  costs: CostEstimates,
+): void {
+  const existing = modelUsage[model] || {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    costUSD: 0,
+    contextWindow: 0,
+    maxOutputTokens: 0,
+    webSearchRequests: 0,
+    estimatedCost: 0,
+    estimatedCosts: zeroCosts(),
+  } satisfies ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates };
+
+  existing.inputTokens += numberValue(row.input_tokens);
+  existing.outputTokens += numberValue(row.output_tokens);
+  existing.cacheReadInputTokens += numberValue(row.cache_read_tokens);
+  existing.cacheCreationInputTokens += numberValue(row.cache_write_tokens);
+  existing.reasoningOutputTokens = (existing.reasoningOutputTokens || 0) + numberValue(row.reasoning_output_tokens);
+  existing.estimatedCosts = addCosts(existing.estimatedCosts, costs);
+  existing.estimatedCost = existing.estimatedCosts[DEFAULT_COST_MODE];
+  modelUsage[model] = existing;
+}
+
+function emptyDashboardStats(range: TimeRangeParams = {}): DashboardStats {
+  const context = getAggregationContext(range);
+  const buckets = new Map<string, MutableAnalyticsTimeBucket>();
+  for (const key of listBucketKeys(range, context.granularity)) {
+    ensureBucket(buckets, key, context.granularity);
+  }
+  const usageBuckets = finalizeBuckets(buckets);
+  const dailyActivity = bucketsToDailyActivity(usageBuckets);
+  return {
+    totalSessions: 0,
+    totalMessages: 0,
+    totalTokens: 0,
+    estimatedCost: 0,
+    estimatedCosts: zeroCosts(),
+    dailyActivity,
+    dailyModelTokens: bucketsToDailyModelTokens(usageBuckets),
+    changeTotals: zeroChangeTotals(),
+    dailyChangeActivity: bucketsToDailyChangeActivity(usageBuckets),
+    timeZone: context.timeZone,
+    bucketGranularity: context.granularity,
+    usageBuckets,
+    modelUsage: {},
+    hourCounts: {},
+    firstSessionDate: '',
+    longestSession: { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
+    projectCount: 0,
+    recentSessions: [],
+  };
+}
+
+function parseSummary(row: SummaryPayloadRow): CachedSessionSummary | null {
+  try {
+    const parsed = JSON.parse(row.payload_json) as CachedSessionSummary;
+    if (parsed?.cacheVersion !== SESSION_SUMMARY_CACHE_VERSION) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function loadRecentSessions(db: SqliteDatabase, sourceKeys: Set<string>): SessionInfo[] {
+  const keys = Array.from(sourceKeys);
+  if (keys.length === 0) return [];
+
+  const summaries: CachedSessionSummary[] = [];
+  for (let index = 0; index < keys.length; index += 500) {
+    const chunk = keys.slice(index, index + 500);
+    const rows = db.query<SummaryPayloadRow>(
+      `SELECT payload_json
+       FROM session_summaries
+       WHERE source_key IN (${chunk.map(() => '?').join(',')})
+       ORDER BY created_at_ms DESC`,
+      chunk,
+    );
+    for (const row of rows) {
+      const summary = parseSummary(row);
+      if (summary) summaries.push(summary);
+    }
+  }
+
+  return summariesToSessions(summaries).slice(0, 10);
+}
+
+function longestSession(db: SqliteDatabase, providerList: AgentKind[]) {
+  const params: unknown[] = [];
+  const where = [providerFilterSql(providerList, params), VISIBLE_SUMMARY_SQL];
+  const row = db.get<LongestSessionRow>(
+    `SELECT
+       provider,
+       route_id,
+       native_id,
+       created_at,
+       created_at_ms,
+       updated_at_ms,
+       message_count
+     FROM session_summaries s
+     WHERE ${where.join(' AND ')}
+     ORDER BY (updated_at_ms - created_at_ms) DESC
+     LIMIT 1`,
+    params,
+  );
+  if (!row) return { sessionId: '', duration: 0, messageCount: 0, timestamp: '' };
+  return {
+    sessionId: row.provider === 'claude' ? row.native_id : row.route_id,
+    duration: Math.max(0, numberValue(row.updated_at_ms) - numberValue(row.created_at_ms)),
+    messageCount: numberValue(row.message_count),
+    timestamp: row.created_at,
+  };
+}
+
+export function getDashboardStatsSql(
+  providers: AgentDataProvider[],
+  range: TimeRangeParams = {},
+): DashboardStats | null {
+  const providerList = providerKinds(providers);
+  if (providerList.length === 0) return emptyDashboardStats(range);
+
+  return querySessionSummaryIndex((db) => {
+    const context = getAggregationContext(range);
+    const buckets = new Map<string, MutableAnalyticsTimeBucket>();
+    const localHourCache = new Map<number, { key: string; hour: number } | null>();
+    const modelUsage: DashboardStats['modelUsage'] = {};
+    const hourCounts: Record<string, number> = {};
+    const activeSessionIds = new Set<string>();
+    const activeProjectIds = new Set<string>();
+    const activeUsageSourceKeys = new Set<string>();
+    let estimatedCosts = zeroCosts();
+    let changeTotals = zeroChangeTotals();
+    let totalMessages = 0;
+    let totalTokens = 0;
+
+    for (const key of listBucketKeys(range, context.granularity)) {
+      ensureBucket(buckets, key, context.granularity);
+    }
+
+    const usageParams: unknown[] = [];
+    const usageWhere = [providerFilterSql(providerList, usageParams), VISIBLE_SUMMARY_SQL, 'u.timestamp_ms > 0'];
+    appendTimestampBounds(usageWhere, usageParams, 'u.timestamp_ms', range);
+    const usageRows = db.query<UsageAggregateRow>(
+      `SELECT
+         CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
+         u.model AS model,
+         SUM(u.message_count) AS message_count,
+         SUM(u.user_message_count) AS user_message_count,
+         SUM(u.assistant_message_count) AS assistant_message_count,
+         SUM(u.tool_call_count) AS tool_call_count,
+         SUM(u.input_tokens) AS input_tokens,
+         SUM(u.output_tokens) AS output_tokens,
+         SUM(u.cache_read_tokens) AS cache_read_tokens,
+         SUM(u.cache_write_tokens) AS cache_write_tokens,
+         SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
+         SUM(u.cost_api) AS cost_api,
+         SUM(u.cost_conservative) AS cost_conservative,
+         SUM(u.cost_subscription) AS cost_subscription,
+         SUM(CASE
+           WHEN u.assistant_message_count > 0
+             OR (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens) > 0
+           THEN 1 ELSE 0 END) AS activity_count
+       FROM usage_events u
+       JOIN session_summaries s ON s.source_key = u.source_key
+       WHERE ${usageWhere.join(' AND ')}
+       GROUP BY utc_hour_ms, u.model
+       ORDER BY utc_hour_ms ASC`,
+      usageParams,
+    );
+
+    for (const row of usageRows) {
+      const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
+      if (!localBucket) continue;
+
+      const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
+      const costs = rowCosts(row);
+      const tokens = usageTokenTotal(row);
+      const model = row.model || 'unknown';
+
+      bucket.messageCount += numberValue(row.message_count);
+      bucket.userMessageCount += numberValue(row.user_message_count);
+      bucket.assistantMessageCount += numberValue(row.assistant_message_count);
+      bucket.toolCallCount += numberValue(row.tool_call_count);
+      totalMessages += numberValue(row.message_count);
+      hourCounts[String(localBucket.hour)] = (hourCounts[String(localBucket.hour)] || 0) + numberValue(row.activity_count);
+
+      if (tokens > 0) {
+        bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
+        bucket.costsByModel[model] = addCosts(bucket.costsByModel[model] || zeroCosts(), costs);
+        estimatedCosts = addCosts(estimatedCosts, costs);
+        totalTokens += tokens;
+        addModelUsage(modelUsage, model, row, costs);
+      }
+    }
+
+    const changeParams: unknown[] = [];
+    const changeWhere = [providerFilterSql(providerList, changeParams), VISIBLE_SUMMARY_SQL, 'c.timestamp_ms > 0'];
+    appendTimestampBounds(changeWhere, changeParams, 'c.timestamp_ms', range);
+    const changeRows = db.query<ChangeAggregateRow>(
+      `SELECT
+         CAST(c.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
+         SUM(c.added_lines) AS addedLines,
+         SUM(c.removed_lines) AS removedLines,
+         SUM(c.net_line_delta) AS netLineDelta,
+         SUM(c.changed_lines) AS changedLines,
+         SUM(c.file_count) AS fileCount,
+         SUM(c.edit_count) AS editCount
+       FROM change_events c
+       JOIN session_summaries s ON s.source_key = c.source_key
+       WHERE ${changeWhere.join(' AND ')}
+       GROUP BY utc_hour_ms
+       ORDER BY utc_hour_ms ASC`,
+      changeParams,
+    );
+
+    for (const row of changeRows) {
+      const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
+      if (!localBucket) continue;
+      const eventTotals = {
+        addedLines: numberValue(row.addedLines),
+        removedLines: numberValue(row.removedLines),
+        netLineDelta: numberValue(row.netLineDelta),
+        changedLines: numberValue(row.changedLines),
+        fileCount: numberValue(row.fileCount),
+        editCount: numberValue(row.editCount),
+      };
+      const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
+      bucket.changeTotals = addChangeTotals(bucket.changeTotals, eventTotals);
+      changeTotals = addChangeTotals(changeTotals, eventTotals);
+    }
+
+    const activeParams: unknown[] = [];
+    const activeUsageWhere = [providerFilterSql(providerList, activeParams), VISIBLE_SUMMARY_SQL, 'u.timestamp_ms > 0'];
+    appendTimestampBounds(activeUsageWhere, activeParams, 'u.timestamp_ms', range);
+    const activeChangeParams: unknown[] = [];
+    const activeChangeWhere = [providerFilterSql(providerList, activeChangeParams), VISIBLE_SUMMARY_SQL, 'c.timestamp_ms > 0'];
+    appendTimestampBounds(activeChangeWhere, activeChangeParams, 'c.timestamp_ms', range);
+    const activeRows = db.query<ActiveSessionRow>(
+      `SELECT
+         u.source_key AS source_key,
+         s.project_route_id AS project_route_id,
+         CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
+         1 AS has_usage
+       FROM usage_events u
+       JOIN session_summaries s ON s.source_key = u.source_key
+       WHERE ${activeUsageWhere.join(' AND ')}
+       GROUP BY u.source_key, utc_hour_ms
+       UNION ALL
+       SELECT
+         c.source_key AS source_key,
+         s.project_route_id AS project_route_id,
+         CAST(c.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
+         0 AS has_usage
+       FROM change_events c
+       JOIN session_summaries s ON s.source_key = c.source_key
+       WHERE ${activeChangeWhere.join(' AND ')}
+       GROUP BY c.source_key, utc_hour_ms`,
+      [...activeParams, ...activeChangeParams],
+    );
+
+    for (const row of activeRows) {
+      const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
+      if (!localBucket) continue;
+      const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
+      bucket.activeSessionIds.add(row.source_key);
+      activeSessionIds.add(row.source_key);
+      activeProjectIds.add(row.project_route_id);
+      if (numberValue(row.has_usage) > 0) activeUsageSourceKeys.add(row.source_key);
+    }
+
+    const startParams: unknown[] = [];
+    const startWhere = [providerFilterSql(providerList, startParams), VISIBLE_SUMMARY_SQL];
+    appendTimestampBounds(startWhere, startParams, 's.created_at_ms', range);
+    const startRows = db.query<SessionStartRow>(
+      `SELECT source_key, created_at
+       FROM session_summaries s
+       WHERE ${startWhere.join(' AND ')}`,
+      startParams,
+    );
+    for (const row of startRows) {
+      const key = localBucketForTimestamp(row.created_at, context);
+      if (!key) continue;
+      ensureBucket(buckets, key, context.granularity).sessionStartIds.add(row.source_key);
+    }
+
+    const usageBuckets = finalizeBuckets(buckets);
+    const dailyActivity = bucketsToDailyActivity(usageBuckets);
+    const dailyModelTokens = bucketsToDailyModelTokens(usageBuckets);
+    const dailyChangeActivity = bucketsToDailyChangeActivity(usageBuckets);
+
+    return {
+      totalSessions: activeSessionIds.size,
+      totalMessages,
+      totalTokens,
+      estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
+      estimatedCosts,
+      dailyActivity,
+      dailyModelTokens,
+      changeTotals,
+      dailyChangeActivity,
+      timeZone: context.timeZone,
+      bucketGranularity: context.granularity,
+      usageBuckets,
+      modelUsage,
+      hourCounts,
+      firstSessionDate: dailyActivity.find(day => day.messageCount > 0 || day.sessionCount > 0)?.date || '',
+      longestSession: longestSession(db, providerList),
+      projectCount: activeProjectIds.size,
+      recentSessions: loadRecentSessions(db, activeUsageSourceKeys),
+    };
+  });
+}
+
+function ensureProject(projects: Map<string, ProjectInfo>, row: ProjectUsageRow): ProjectInfo {
+  const existing = projects.get(row.project_route_id);
+  if (existing) return existing;
+
+  const project: ProjectInfo = {
+    id: row.provider === 'claude' ? row.native_project_id : row.project_route_id,
+    agentKind: row.provider,
+    nativeId: row.native_project_id,
+    routeId: row.project_route_id,
+    name: row.project_name,
+    path: row.cwd || row.project_name,
+    sessionCount: 0,
+    totalMessages: 0,
+    totalTokens: 0,
+    estimatedCost: 0,
+    estimatedCosts: zeroCosts(),
+    lastActive: '',
+    models: [],
+  };
+  projects.set(row.project_route_id, project);
+  return project;
+}
+
+export function getProjectsSql(
+  providers: AgentDataProvider[],
+  range: TimeRangeParams = {},
+): ProjectInfo[] | null {
+  const providerList = providerKinds(providers);
+  if (providerList.length === 0) return [];
+
+  return querySessionSummaryIndex((db) => {
+    const context = getAggregationContext(range);
+    const localHourCache = new Map<number, { key: string; hour: number } | null>();
+    const params: unknown[] = [];
+    const where = [providerFilterSql(providerList, params), VISIBLE_SUMMARY_SQL, 'u.timestamp_ms > 0'];
+    appendTimestampBounds(where, params, 'u.timestamp_ms', range);
+    const rows = db.query<ProjectUsageRow>(
+      `SELECT
+         u.source_key AS source_key,
+         s.provider AS provider,
+         s.native_project_id AS native_project_id,
+         s.project_route_id AS project_route_id,
+         s.project_name AS project_name,
+         s.cwd AS cwd,
+         CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
+         u.model AS model,
+         SUM(u.message_count) AS message_count,
+         SUM(u.user_message_count) AS user_message_count,
+         SUM(u.assistant_message_count) AS assistant_message_count,
+         SUM(u.tool_call_count) AS tool_call_count,
+         SUM(u.input_tokens) AS input_tokens,
+         SUM(u.output_tokens) AS output_tokens,
+         SUM(u.cache_read_tokens) AS cache_read_tokens,
+         SUM(u.cache_write_tokens) AS cache_write_tokens,
+         SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
+         SUM(u.cost_api) AS cost_api,
+         SUM(u.cost_conservative) AS cost_conservative,
+         SUM(u.cost_subscription) AS cost_subscription,
+         SUM(CASE
+           WHEN u.assistant_message_count > 0
+             OR (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens) > 0
+           THEN 1 ELSE 0 END) AS activity_count,
+         MAX(u.timestamp_ms) AS last_timestamp_ms
+       FROM usage_events u
+       JOIN session_summaries s ON s.source_key = u.source_key
+       WHERE ${where.join(' AND ')}
+       GROUP BY u.source_key, utc_hour_ms, u.model
+       ORDER BY last_timestamp_ms DESC`,
+      params,
+    );
+
+    const projects = new Map<string, ProjectInfo>();
+    const sessionsByProject = new Map<string, Set<string>>();
+    const modelsByProject = new Map<string, Set<string>>();
+
+    for (const row of rows) {
+      if (!localBucketForUtcHour(row.utc_hour_ms, context, localHourCache)) continue;
+
+      const project = ensureProject(projects, row);
+      const sessions = sessionsByProject.get(row.project_route_id) || new Set<string>();
+      sessions.add(row.source_key);
+      sessionsByProject.set(row.project_route_id, sessions);
+
+      const models = modelsByProject.get(row.project_route_id) || new Set<string>();
+      if (row.model) models.add(row.model);
+      modelsByProject.set(row.project_route_id, models);
+
+      const tokens = usageTokenTotal(row);
+      project.totalMessages += numberValue(row.message_count);
+      project.totalTokens += tokens;
+      project.estimatedCosts = addCosts(project.estimatedCosts, rowCosts(row));
+      project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
+
+      const lastActive = new Date(numberValue(row.last_timestamp_ms)).toISOString();
+      if (!project.lastActive || lastActive > project.lastActive) project.lastActive = lastActive;
+    }
+
+    for (const [projectId, project] of projects) {
+      project.sessionCount = sessionsByProject.get(projectId)?.size || 0;
+      project.models = Array.from(modelsByProject.get(projectId) || []).sort();
+    }
+
+    return Array.from(projects.values()).sort((left, right) => right.lastActive.localeCompare(left.lastActive));
+  });
+}
+
+export function getCostAnalyticsSql(
+  providers: AgentDataProvider[],
+  range: TimeRangeParams = {},
+): CostAnalyticsSqlPayload | null {
+  const stats = getDashboardStatsSql(providers, range);
+  if (!stats) return null;
+  const projects = getProjectsSql(providers, range);
+  if (!projects) return null;
+  return {
+    stats: {
+      ...stats,
+      hourCounts: {},
+      longestSession: { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
+      recentSessions: [],
+    },
+    projects,
+  };
+}
+
+function appendCreatedDateRange(where: string[], params: unknown[], range: TimeRangeParams): void {
+  if (range.start) {
+    where.push('substr(s.created_at, 1, 10) >= ?');
+    params.push(range.start);
+  }
+  if (range.end) {
+    where.push('substr(s.created_at, 1, 10) <= ?');
+    params.push(range.end);
+  }
+}
+
+function sessionWhereSql(providers: AgentKind[], options: SessionSqlQuery, params: unknown[]): string {
+  const where = [providerFilterSql(providers, params), VISIBLE_SUMMARY_SQL];
+  appendCreatedDateRange(where, params, options.range || {});
+
+  if (options.query?.trim()) {
+    where.push('instr(s.search_text, ?) > 0');
+    params.push(options.query.trim().toLowerCase());
+  }
+
+  if (options.projectId) {
+    if (options.projectAgentKind) {
+      where.push('s.provider = ?');
+      params.push(options.projectAgentKind);
+    }
+    where.push('(s.native_project_id = ? OR s.project_route_id = ?)');
+    params.push(options.nativeProjectId || options.projectId, options.projectId);
+  }
+
+  return where.join(' AND ');
+}
+
+export function getSessionsSql(
+  providers: AgentDataProvider[],
+  options: SessionSqlQuery = {},
+): SessionSqlPage | null {
+  const providerList = providerKinds(providers);
+  const limit = options.limit && options.limit > 0 ? options.limit : 50;
+  const offset = options.offset && options.offset > 0 ? options.offset : 0;
+  if (providerList.length === 0) return { sessions: [], total: 0, limit, offset };
+
+  return querySessionSummaryIndex((db) => {
+    const countParams: unknown[] = [];
+    const countWhere = sessionWhereSql(providerList, options, countParams);
+    const total = numberValue(db.get<CountRow>(
+      `SELECT COUNT(*) AS count FROM session_summaries s WHERE ${countWhere}`,
+      countParams,
+    )?.count);
+
+    const pageParams: unknown[] = [];
+    const pageWhere = sessionWhereSql(providerList, options, pageParams);
+    const rows = db.query<SummaryPayloadRow>(
+      `SELECT payload_json
+       FROM session_summaries s
+       WHERE ${pageWhere}
+       ORDER BY s.created_at_ms DESC
+       LIMIT ? OFFSET ?`,
+      [...pageParams, limit, offset],
+    );
+    const summaries = rows
+      .map(parseSummary)
+      .filter((summary): summary is CachedSessionSummary => Boolean(summary));
+
+    return {
+      sessions: summariesToSessions(summaries),
+      total,
+      limit,
+      offset,
+    };
+  });
+}
+
+export function getProjectSessionsSql(
+  providers: AgentDataProvider[],
+  options: Omit<SessionSqlQuery, 'limit' | 'offset' | 'query'>,
+): SessionInfo[] | null {
+  const providerList = providerKinds(providers);
+  if (providerList.length === 0) return [];
+
+  return querySessionSummaryIndex((db) => {
+    const params: unknown[] = [];
+    const where = sessionWhereSql(providerList, options, params);
+    const rows = db.query<SummaryPayloadRow>(
+      `SELECT payload_json
+       FROM session_summaries s
+       WHERE ${where}
+       ORDER BY s.created_at_ms DESC`,
+      params,
+    );
+    return summariesToSessions(rows
+      .map(parseSummary)
+      .filter((summary): summary is CachedSessionSummary => Boolean(summary)));
+  });
+}
+
+export function getSessionSummarySql(
+  providers: AgentDataProvider[],
+  routeId: string,
+): SessionInfo | null | undefined {
+  const providerList = providerKinds(providers);
+  if (providerList.length === 0) return null;
+
+  return querySessionSummaryIndex((db) => {
+    const params: unknown[] = [];
+    const where = [providerFilterSql(providerList, params), VISIBLE_SUMMARY_SQL, '(s.route_id = ? OR s.native_id = ?)'];
+    params.push(routeId, routeId);
+    const row = db.get<SummaryPayloadRow>(
+      `SELECT payload_json FROM session_summaries s WHERE ${where.join(' AND ')} LIMIT 1`,
+      params,
+    );
+    const summary = row ? parseSummary(row) : null;
+    return summary ? summaryToSessionInfo(summary) : null;
+  });
+}
+
+
+
 // Filename: src\lib\agent-data\analytics.ts
 
 import type { AgentDataProvider } from './provider';
 import { getIndexedSessionSnapshot } from './indexer';
+import { getCostAnalyticsSql, getDashboardStatsSql, getProjectsSql } from './analytics-sql';
 import {
   summariesToCostAnalytics,
   summariesToDashboardStats,
@@ -10965,6 +11901,13 @@ export function getCachedDashboardStats(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): DashboardStats {
+  try {
+    const sqlStats = getDashboardStatsSql(providers, range);
+    if (sqlStats) return sqlStats;
+  } catch {
+    // Fall back to the payload cache if the SQLite analytics path is unavailable.
+  }
+
   const entry = getMemoEntry(providers, range);
   entry.stats ||= summariesToDashboardStats(entry.summaries, range);
   return entry.stats;
@@ -10974,6 +11917,13 @@ export function getCachedProjects(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): ProjectInfo[] {
+  try {
+    const sqlProjects = getProjectsSql(providers, range);
+    if (sqlProjects) return sqlProjects;
+  } catch {
+    // Fall back to the payload cache if the SQLite analytics path is unavailable.
+  }
+
   const entry = getMemoEntry(providers, range);
   entry.projects ||= sortProjectsByLastActive(summariesToProjects(entry.summaries, range));
   return entry.projects;
@@ -10983,6 +11933,13 @@ export function getCachedCostAnalytics(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): CostAnalyticsPayload {
+  try {
+    const sqlCosts = getCostAnalyticsSql(providers, range);
+    if (sqlCosts) return sqlCosts;
+  } catch {
+    // Fall back to the payload cache if the SQLite analytics path is unavailable.
+  }
+
   const entry = getMemoEntry(providers, range);
   if (!entry.costs) {
     entry.costs = summariesToCostAnalytics(entry.summaries, range);
@@ -20515,6 +21472,7 @@ import {
   type CachedSessionSummary,
   type SessionSummarySource,
 } from './session-summary';
+import { buildLegacyChangeEvents, buildLegacyUsageEvents } from './event-metrics';
 import {
   clearSessionSummaryCache as clearJsonSessionSummaryCache,
   getSessionSummaryCacheDir,
@@ -20548,6 +21506,10 @@ interface SourceKeyRow extends Record<string, unknown> {
 
 interface SummaryPayloadRow extends Record<string, unknown> {
   payload_json: string;
+}
+
+interface TableColumnRow extends Record<string, unknown> {
+  name: string;
 }
 
 export interface SessionSummaryIndexCommit {
@@ -20652,6 +21614,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_api REAL NOT NULL DEFAULT 0,
+  cost_conservative REAL NOT NULL DEFAULT 0,
+  cost_subscription REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (source_key, event_index)
 );
 
@@ -20678,8 +21643,14 @@ CREATE INDEX IF NOT EXISTS idx_summaries_provider_updated
 CREATE INDEX IF NOT EXISTS idx_summaries_project
   ON session_summaries(provider, project_route_id, created_at_ms DESC);
 
+CREATE INDEX IF NOT EXISTS idx_session_summaries_project
+  ON session_summaries(project_route_id);
+
 CREATE INDEX IF NOT EXISTS idx_usage_events_time
   ON usage_events(timestamp_ms);
+
+CREATE INDEX IF NOT EXISTS idx_usage_events_model
+  ON usage_events(model);
 
 CREATE INDEX IF NOT EXISTS idx_change_events_time
   ON change_events(timestamp_ms);
@@ -20738,6 +21709,17 @@ function bumpRevision(db: SqliteDatabase): void {
   setMeta(db, 'revision', String(nextRevision));
 }
 
+function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string): void {
+  const columns = new Set(db.query<TableColumnRow>(`PRAGMA table_info(${table})`).map(row => row.name));
+  if (!columns.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+}
+
+function ensureSchemaCompatibility(db: SqliteDatabase): void {
+  ensureColumn(db, 'usage_events', 'cost_api', 'cost_api REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'usage_events', 'cost_conservative', 'cost_conservative REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'usage_events', 'cost_subscription', 'cost_subscription REAL NOT NULL DEFAULT 0');
+}
+
 function initializeSchema(db: SqliteDatabase): void {
   db.exec(SCHEMA_SQL);
   const schemaVersion = getMeta(db, 'schema_version');
@@ -20750,6 +21732,7 @@ function initializeSchema(db: SqliteDatabase): void {
     db.exec(SCHEMA_SQL);
   }
 
+  ensureSchemaCompatibility(db);
   setMeta(db, 'schema_version', String(SQLITE_SCHEMA_VERSION));
   setMeta(db, 'summary_cache_version', String(SESSION_SUMMARY_CACHE_VERSION));
   if (!getMeta(db, 'revision')) setMeta(db, 'revision', '0');
@@ -21055,7 +22038,8 @@ function replaceTools(db: SqliteDatabase, sourceKey: string, summary: CachedSess
 
 function replaceUsageEvents(db: SqliteDatabase, sourceKey: string, summary: CachedSessionSummary): void {
   db.run('DELETE FROM usage_events WHERE source_key = ?', [sourceKey]);
-  for (const [index, event] of (summary.usageEvents || []).entries()) {
+  const events = summary.usageEvents?.length ? summary.usageEvents : buildLegacyUsageEvents(summary);
+  for (const [index, event] of events.entries()) {
     db.run(
       `INSERT INTO usage_events (
         source_key,
@@ -21072,8 +22056,11 @@ function replaceUsageEvents(db: SqliteDatabase, sourceKey: string, summary: Cach
         output_tokens,
         cache_read_tokens,
         cache_write_tokens,
-        reasoning_output_tokens
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        reasoning_output_tokens,
+        cost_api,
+        cost_conservative,
+        cost_subscription
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sourceKey,
         index,
@@ -21090,6 +22077,9 @@ function replaceUsageEvents(db: SqliteDatabase, sourceKey: string, summary: Cach
         event.cacheReadTokens,
         event.cacheWriteTokens,
         event.reasoningOutputTokens || 0,
+        event.estimatedCosts.api || 0,
+        event.estimatedCosts.conservative || 0,
+        event.estimatedCosts.subscription || 0,
       ],
     );
   }
@@ -21097,7 +22087,14 @@ function replaceUsageEvents(db: SqliteDatabase, sourceKey: string, summary: Cach
 
 function replaceChangeEvents(db: SqliteDatabase, sourceKey: string, summary: CachedSessionSummary): void {
   db.run('DELETE FROM change_events WHERE source_key = ?', [sourceKey]);
-  for (const [index, event] of (summary.changeEvents || []).entries()) {
+  const events = summary.changeEvents?.length
+    ? summary.changeEvents
+    : buildLegacyChangeEvents({
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        changeTotals: summary.changeTotals,
+      });
+  for (const [index, event] of events.entries()) {
     db.run(
       `INSERT INTO change_events (
         source_key,
@@ -21167,6 +22164,17 @@ function readSqliteCache(providers?: AgentKind[]): SessionSummaryCacheFile {
       generatedAt: getMeta(db, 'generated_at'),
       summaries: readSummaries(db, providers),
     };
+  } finally {
+    db.close();
+  }
+}
+
+export function querySessionSummaryIndex<T>(callback: (db: SqliteDatabase) => T): T | null {
+  const db = openIndexDatabase(false);
+  if (!db) return null;
+  try {
+    importJsonCacheIfEmpty(db);
+    return callback(db);
   } finally {
     db.close();
   }
@@ -21557,8 +22565,8 @@ export function resetSessionSummaryStoreForTests(): void {
 
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
 import {
+  bucketKeyFromLocalTimeParts,
   bucketKeyToDate,
-  getBucketKey,
   getEventLocalDate,
   getLocalTimeParts,
   isDateInRange,
@@ -21823,10 +22831,9 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
     recordSessionStart(summary, context, buckets, sessionId);
 
     for (const event of getSummaryUsageEvents(summary)) {
-      if (!isEventInRange(event.timestamp, context)) continue;
-      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
       const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
-      if (!bucketKey || !localParts) continue;
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
 
       const bucket = ensureBucket(buckets, bucketKey, context.granularity);
       bucket.messageCount += event.messageCount;
@@ -21856,9 +22863,9 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
     }
 
     for (const event of getSummaryChangeEvents(summary)) {
-      if (!isEventInRange(event.timestamp, context)) continue;
-      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
-      if (!bucketKey) continue;
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
       const bucket = ensureBucket(buckets, bucketKey, context.granularity);
       bucket.changeTotals = addChangeTotals(bucket.changeTotals, event);
       bucket.activeSessionIds.add(sessionId);
@@ -21943,9 +22950,9 @@ export function summariesToCostAnalytics(
     recordSessionStart(summary, context, buckets, sessionId);
 
     for (const event of getSummaryUsageEvents(summary)) {
-      if (!isEventInRange(event.timestamp, context)) continue;
-      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
-      if (!bucketKey) continue;
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
 
       const bucket = ensureBucket(buckets, bucketKey, context.granularity);
       bucket.messageCount += event.messageCount;
@@ -21986,9 +22993,9 @@ export function summariesToCostAnalytics(
     }
 
     for (const event of getSummaryChangeEvents(summary)) {
-      if (!isEventInRange(event.timestamp, context)) continue;
-      const bucketKey = getBucketKey(event.timestamp, context.timeZone, context.granularity);
-      if (!bucketKey) continue;
+      const localParts = getLocalTimeParts(event.timestamp, context.timeZone);
+      if (!localParts || !isDateInRange(localParts.date, context.range)) continue;
+      const bucketKey = bucketKeyFromLocalTimeParts(localParts, context.granularity);
 
       const bucket = ensureBucket(buckets, bucketKey, context.granularity);
       bucket.changeTotals = addChangeTotals(bucket.changeTotals, event);
@@ -22106,9 +23113,9 @@ function recordSessionStart(
   buckets: Map<string, MutableAnalyticsTimeBucket>,
   sessionId: string,
 ): void {
-  if (!isEventInRange(summary.createdAt, context)) return;
-  const key = getBucketKey(summary.createdAt, context.timeZone, context.granularity);
-  if (!key) return;
+  const localParts = getLocalTimeParts(summary.createdAt, context.timeZone);
+  if (!localParts || !isDateInRange(localParts.date, context.range)) return;
+  const key = bucketKeyFromLocalTimeParts(localParts, context.granularity);
   ensureBucket(buckets, key, context.granularity).sessionStartIds.add(sessionId);
 }
 
@@ -22527,18 +23534,39 @@ export interface LocalTimeParts {
   hour: number;
 }
 
-export function getLocalTimeParts(timestamp: string, timeZone: string): LocalTimeParts | null {
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return null;
+const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
-  const parts = new Intl.DateTimeFormat('en-US', {
+function getFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = formatterCache.get(timeZone);
+  if (cached) return cached;
+
+  const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     hourCycle: 'h23',
-  }).formatToParts(date);
+  });
+  formatterCache.set(timeZone, formatter);
+  return formatter;
+}
+
+export function getLocalTimeParts(timestamp: string, timeZone: string): LocalTimeParts | null {
+  if (timeZone === 'UTC' && timestamp.length >= 19 && timestamp[10] === 'T') {
+    const hour = Number.parseInt(timestamp.slice(11, 13), 10);
+    if (Number.isFinite(hour)) {
+      return {
+        date: timestamp.slice(0, 10),
+        hour,
+      };
+    }
+  }
+
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+
+  const parts = getFormatter(timeZone).formatToParts(date);
 
   const values = new Map(parts.map(part => [part.type, part.value]));
   const year = values.get('year');
@@ -22553,6 +23581,18 @@ export function getLocalTimeParts(timestamp: string, timeZone: string): LocalTim
   };
 }
 
+export function bucketKeyFromLocalTimeParts(
+  parts: LocalTimeParts,
+  granularity: BucketGranularity,
+): string {
+  if (granularity === 'day') return parts.date;
+
+  const hour = granularity === '4h'
+    ? Math.floor(parts.hour / 4) * 4
+    : parts.hour;
+  return `${parts.date}T${String(hour).padStart(2, '0')}:00`;
+}
+
 export function getBucketKey(
   timestamp: string,
   timeZone: string,
@@ -22560,12 +23600,7 @@ export function getBucketKey(
 ): string | null {
   const parts = getLocalTimeParts(timestamp, timeZone);
   if (!parts) return null;
-  if (granularity === 'day') return parts.date;
-
-  const hour = granularity === '4h'
-    ? Math.floor(parts.hour / 4) * 4
-    : parts.hour;
-  return `${parts.date}T${String(hour).padStart(2, '0')}:00`;
+  return bucketKeyFromLocalTimeParts(parts, granularity);
 }
 
 export function getEventLocalDate(timestamp: string, timeZone: string): string | null {

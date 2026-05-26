@@ -6,6 +6,7 @@ import {
   type CachedSessionSummary,
   type SessionSummarySource,
 } from './session-summary';
+import { isSessionSourceRecentlyModified } from './source-stability';
 import { buildLegacyChangeEvents, buildLegacyUsageEvents } from './event-metrics';
 import {
   clearSessionSummaryCache as clearJsonSessionSummaryCache,
@@ -851,7 +852,7 @@ export function getSessionSummaryIndexStatus(
   for (const source of sources) {
     const summary = summariesByKey.get(sourceSummaryCacheKey(source));
     if (!summary) continue;
-    if (isSummaryValidForSource(summary, source)) validCount++;
+    if (isSummaryValidForSource(summary, source, { allowPartial: isSessionSourceRecentlyModified(source) })) validCount++;
     else staleCount++;
   }
 

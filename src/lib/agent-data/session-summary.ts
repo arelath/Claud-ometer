@@ -33,6 +33,7 @@ import {
   type CachedUsageEvent,
 } from './event-metrics';
 import type { AgentKind } from './types';
+import { getSummaryProjectPath, makeProjectPathRouteId } from './project-path';
 
 export const SESSION_SUMMARY_CACHE_VERSION = 4;
 
@@ -99,6 +100,7 @@ export interface CachedSessionSummary {
   toolsUsed: Record<string, number>;
   compaction: CompactionInfo;
   searchTextPreview?: string;
+  isPartial?: boolean;
 }
 
 function summaryTokenTotal(summary: CachedSessionSummary): number {
@@ -197,6 +199,13 @@ export function summariesToSessions(summaries: CachedSessionSummary[]): SessionI
   return sortSummariesByTimestamp(filterVisibleSessionSummaries(summaries)).map(summaryToSessionInfo);
 }
 
+function addProjectAgentKind(project: ProjectInfo, agentKind: AgentKind): void {
+  if (!project.agentKinds?.includes(agentKind)) {
+    project.agentKinds = [...(project.agentKinds || []), agentKind].sort();
+  }
+  project.agentKind = project.agentKinds.length === 1 ? project.agentKinds[0] : undefined;
+}
+
 export function summariesToProjects(summaries: CachedSessionSummary[], range: TimeRangeParams = {}): ProjectInfo[] {
   const visibleSummaries = filterVisibleSessionSummaries(summaries);
   const projects = new Map<string, ProjectInfo>();
@@ -206,10 +215,12 @@ export function summariesToProjects(summaries: CachedSessionSummary[], range: Ti
     const usageEvents = getSummaryUsageEvents(summary).filter(event => isEventInRange(event.timestamp, context));
     if (usageEvents.length === 0) continue;
 
-    const publicProjectId = summary.provider === 'claude' ? summary.nativeProjectId : summary.projectRouteId;
-    const project = projects.get(summary.projectRouteId) || {
-      id: publicProjectId,
+    const projectPath = getSummaryProjectPath(summary);
+    const projectKey = projectPath || summary.projectRouteId;
+    const project = projects.get(projectKey) || {
+      id: projectPath ? makeProjectPathRouteId(projectPath) : summary.projectRouteId,
       agentKind: summary.provider,
+      agentKinds: [summary.provider],
       nativeId: summary.nativeProjectId,
       routeId: summary.projectRouteId,
       name: summary.projectName,
@@ -222,6 +233,7 @@ export function summariesToProjects(summaries: CachedSessionSummary[], range: Ti
       lastActive: '',
       models: [],
     };
+    addProjectAgentKind(project, summary.provider);
 
     project.sessionCount += 1;
     for (const event of usageEvents) {
@@ -233,7 +245,7 @@ export function summariesToProjects(summaries: CachedSessionSummary[], range: Ti
     }
     project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
     project.models = Array.from(new Set([...project.models, ...summary.models]));
-    projects.set(summary.projectRouteId, project);
+    projects.set(projectKey, project);
   }
 
   return Array.from(projects.values()).sort((left, right) => right.lastActive.localeCompare(left.lastActive));
@@ -262,7 +274,7 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
   for (const summary of sortedSummaries) {
     const summaryKey = summary.routeId || summary.nativeId;
     const sessionId = summaryKey;
-    const projectId = summary.projectRouteId;
+    const projectId = getSummaryProjectPath(summary) || summary.projectRouteId;
     recordSessionStart(summary, context, buckets, sessionId);
 
     for (const event of getSummaryUsageEvents(summary)) {
@@ -378,7 +390,7 @@ export function summariesToCostAnalytics(
   for (const summary of sortedSummaries) {
     const summaryKey = summary.routeId || summary.nativeId;
     const sessionId = summaryKey;
-    const projectId = summary.projectRouteId;
+    const projectId = getSummaryProjectPath(summary) || summary.projectRouteId;
     let project: ProjectInfo | undefined;
     let countedProjectSession = false;
 
@@ -654,13 +666,18 @@ function ensureCostProject(
   projects: Map<string, ProjectInfo>,
   summary: CachedSessionSummary,
 ): ProjectInfo {
-  const existing = projects.get(summary.projectRouteId);
-  if (existing) return existing;
+  const projectPath = getSummaryProjectPath(summary);
+  const projectKey = projectPath || summary.projectRouteId;
+  const existing = projects.get(projectKey);
+  if (existing) {
+    addProjectAgentKind(existing, summary.provider);
+    return existing;
+  }
 
-  const publicProjectId = summary.provider === 'claude' ? summary.nativeProjectId : summary.projectRouteId;
   const project: ProjectInfo = {
-    id: publicProjectId,
+    id: projectPath ? makeProjectPathRouteId(projectPath) : summary.projectRouteId,
     agentKind: summary.provider,
+    agentKinds: [summary.provider],
     nativeId: summary.nativeProjectId,
     routeId: summary.projectRouteId,
     name: summary.projectName,
@@ -673,7 +690,7 @@ function ensureCostProject(
     lastActive: '',
     models: [],
   };
-  projects.set(summary.projectRouteId, project);
+  projects.set(projectKey, project);
   return project;
 }
 

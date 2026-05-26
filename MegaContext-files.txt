@@ -83,6 +83,7 @@ include: src\config\pricing.ts
 include: src\hooks\use-debounce.ts
 include: src\hooks\use-session-view-state.ts
 include: src\lib\agent-data\aggregate.ts
+include: src\lib\agent-data\analytics-sql.ts
 include: src\lib\agent-data\analytics.ts
 include: src\lib\agent-data\archive.ts
 include: src\lib\agent-data\cache.ts

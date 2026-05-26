@@ -84,7 +84,8 @@ export function useSessions(limit = 50, offset = 0, query = '', fallbackData?: S
 }
 
 export function useProjectSessions(projectId: string, fallbackData?: SessionInfo[]) {
-  return useSWR<SessionInfo[]>(`/api/sessions?projectId=${projectId}`, fetcher, { fallbackData });
+  const params = new URLSearchParams({ projectId });
+  return useSWR<SessionInfo[]>(`/api/sessions?${params.toString()}`, fetcher, { fallbackData });
 }
 
 export function useSessionDetail(sessionId: string) {

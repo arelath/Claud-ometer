@@ -37,6 +37,9 @@ export function ProjectDetailClient({ projectId, initialSessions }: { projectId:
   const totalMessages = sessions.reduce((sum, s) => sum + s.messageCount, 0);
   const totalCost = sessions.reduce((sum, s) => sum + pickCost(s.estimatedCosts, s.estimatedCost), 0);
   const totalToolCalls = sessions.reduce((sum, s) => sum + s.toolCallCount, 0);
+  const agentKinds = Array.from(new Set(sessions
+    .map(session => session.agentKind)
+    .filter((agentKind): agentKind is NonNullable<typeof agentKind> => Boolean(agentKind))));
 
   // Aggregate tool usage across sessions
   const toolUsage: Record<string, number> = {};
@@ -61,7 +64,7 @@ export function ProjectDetailClient({ projectId, initialSessions }: { projectId:
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold tracking-tight">{projectName}</h1>
-            {sessions?.[0]?.agentKind && <AgentBadge agentKind={sessions[0].agentKind} />}
+            {agentKinds.map(agentKind => <AgentBadge key={agentKind} agentKind={agentKind} />)}
           </div>
           <p className="text-sm text-muted-foreground">{sessions.length} sessions</p>
         </div>

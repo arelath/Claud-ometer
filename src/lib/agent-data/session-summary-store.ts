@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import type { AgentDataProvider } from './provider';
 import {
+  summaryCacheKey,
   sourceSummaryCacheKey,
   type SessionSummaryCacheStatus,
 } from './session-summary-cache';
@@ -8,6 +9,7 @@ import {
   clearSessionSummaryIndexCache as clearPersistentSessionSummaryCache,
   commitSessionSummaryIndex,
   getSessionSummaryIndexStatus as buildCacheStatus,
+  readSessionSummaryIndexCache,
   getValidSessionSummariesForSources,
 } from './session-summary-sqlite-store';
 import {
@@ -15,6 +17,10 @@ import {
   type CachedSessionSummary,
   type SessionSummarySource,
 } from './session-summary';
+import {
+  getRecentSessionSources,
+  getStableSessionSources,
+} from './source-stability';
 
 interface MemoEntry {
   key: string;
@@ -86,11 +92,66 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function buildSummaries(providers: AgentDataProvider[], sources: SessionSummarySource[]): Promise<CachedSessionSummary[]> {
-  const cachedByKey = getValidSessionSummariesForSources(sources);
-  const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
+function getReusableRecentSummaries(sources: SessionSummarySource[]): Map<string, CachedSessionSummary> {
+  const cache = readSessionSummaryIndexCache();
+  const summariesByKey = new Map(cache.summaries.map(summary => [summaryCacheKey(summary), summary]));
+  const reusable = new Map<string, CachedSessionSummary>();
 
-  const updatedSummaries = (await mapWithConcurrency(sources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
+  for (const source of sources) {
+    const key = sourceSummaryCacheKey(source);
+    const summary = summariesByKey.get(key);
+    if (
+      summary?.cacheVersion === SESSION_SUMMARY_CACHE_VERSION
+      && summary.provider === source.provider
+      && summary.parserVersion === source.parserVersion
+      && summary.sourceFilePath === source.sourceFilePath
+    ) {
+      reusable.set(key, summary);
+    }
+  }
+
+  return reusable;
+}
+
+async function buildRecentSummaries(
+  providers: AgentDataProvider[],
+  sources: SessionSummarySource[],
+  reusableByKey: Map<string, CachedSessionSummary>,
+): Promise<CachedSessionSummary[]> {
+  const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
+  const summaries = await mapWithConcurrency(sources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
+    const provider = providerByKind.get(source.provider);
+    try {
+      if (provider?.buildLightweightSessionSummary) {
+        return {
+          ...provider.buildLightweightSessionSummary(source),
+          isPartial: true,
+        };
+      }
+      if (provider?.buildSessionSummary) return provider.buildSessionSummary(source);
+    } catch {
+      // Keep the last indexed prefix if a hot log is between writes.
+    }
+    return reusableByKey.get(sourceSummaryCacheKey(source)) || null;
+  });
+
+  return summaries.filter((summary): summary is CachedSessionSummary => Boolean(summary));
+}
+
+async function buildSummaries(
+  providers: AgentDataProvider[],
+  sources: SessionSummarySource[],
+  options: { force?: boolean; nowMs?: number } = {},
+): Promise<CachedSessionSummary[]> {
+  const nowMs = options.nowMs ?? Date.now();
+  const stableSources = getStableSessionSources(sources, nowMs);
+  const recentSources = getRecentSessionSources(sources, nowMs);
+  const cachedByKey = options.force ? new Map<string, CachedSessionSummary>() : getValidSessionSummariesForSources(stableSources);
+  const recentSummariesByKey = getReusableRecentSummaries(recentSources);
+  const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
+  const recentSummaries = await buildRecentSummaries(providers, recentSources, recentSummariesByKey);
+
+  const updatedSummaries = (await mapWithConcurrency(stableSources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
     const cached = cachedByKey.get(sourceSummaryCacheKey(source));
     if (cached) return cached;
 
@@ -101,10 +162,11 @@ async function buildSummaries(providers: AgentDataProvider[], sources: SessionSu
   commitSessionSummaryIndex({
     touchedProviders: providers.map(provider => provider.kind),
     discoveredSources: sources,
-    updatedSummaries,
+    updatedSummaries: [...updatedSummaries, ...recentSummaries],
   });
 
-  return updatedSummaries.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return [...updatedSummaries, ...recentSummaries]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export async function getCachedSessionSummaries(providers: AgentDataProvider[]): Promise<CachedSessionSummary[]> {
@@ -112,6 +174,7 @@ export async function getCachedSessionSummaries(providers: AgentDataProvider[]):
   if (supportedProviders.length === 0) return [];
 
   const sources = await discoverSources(supportedProviders);
+  const nowMs = Date.now();
   const key = manifestKey(supportedProviders, sources);
   const memoKey = supportedProviders.map(provider => provider.kind).sort().join(',');
   const cached = memo.get(memoKey);
@@ -120,7 +183,7 @@ export async function getCachedSessionSummaries(providers: AgentDataProvider[]):
   const running = inflight.get(key);
   if (running) return running;
 
-  const promise = buildSummaries(supportedProviders, sources)
+  const promise = buildSummaries(supportedProviders, sources, { nowMs })
     .then((summaries) => {
       memo.set(memoKey, { key, value: summaries });
       return summaries;
@@ -142,15 +205,8 @@ export async function rebuildCachedSessionSummaries(providers: AgentDataProvider
   resetSessionSummaryStoreForTests();
   const supportedProviders = providers.filter(providerHasSummarySupport);
   const sources = await discoverSources(supportedProviders);
-  const summaries = await mapWithConcurrency(sources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
-    const provider = supportedProviders.find(item => item.kind === source.provider);
-    return provider!.buildSessionSummary!(source);
-  });
-  commitSessionSummaryIndex({
-    touchedProviders: supportedProviders.map(provider => provider.kind),
-    discoveredSources: sources,
-    updatedSummaries: summaries,
-  });
+  const nowMs = Date.now();
+  const summaries = await buildSummaries(supportedProviders, sources, { force: true, nowMs });
   const key = manifestKey(supportedProviders, sources);
   const memoKey = supportedProviders.map(provider => provider.kind).sort().join(',');
   memo.set(memoKey, { key, value: summaries });

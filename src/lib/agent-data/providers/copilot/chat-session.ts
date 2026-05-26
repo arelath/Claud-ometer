@@ -1,8 +1,9 @@
 import fs from 'fs';
-import type { SessionMessageDisplay, TokenUsage } from '@/lib/claude-data/types';
+import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionMessageImageDisplay, TokenUsage } from '@/lib/claude-data/types';
 import { calculateCostAllModes } from '@/config/pricing';
 import { zeroCosts } from '@/lib/claude-data/cost-utils';
 import { asRecord, getFileSignature, signatureToString } from './io';
+import { dedupeImages, extractCopilotImages, summarizeImages } from '@/lib/session-images';
 
 const JSONL_READ_CHUNK_SIZE = 1024 * 1024;
 
@@ -68,11 +69,13 @@ interface ChatSessionParseState {
   requestCount: number;
   requestIds: Map<number, string>;
   requestModels: Map<number, string>;
-  requestMessages: Map<number, { content: string; timestamp?: string }>;
+  requestMessages: Map<number, { content: string; timestamp?: string; images?: SessionMessageImageDisplay[] }>;
   responseMessages: Map<number, string>;
+  toolResultMessages: Map<number, SessionMessageDisplay[]>;
   requestUsage: Map<number, CopilotUsageTotals>;
   completionTokenFallback: Map<number, number>;
   modelDetails: Map<string, ModelDetails>;
+  inputImages: SessionMessageImageDisplay[];
 }
 
 interface CachedChatSessionSummary {
@@ -212,6 +215,78 @@ function collectResponseText(value: unknown): string {
   }
 
   return parts.join('\n\n').trim();
+}
+
+function optionalImages(images: SessionMessageImageDisplay[]): SessionMessageImageDisplay[] | undefined {
+  return images.length > 0 ? images : undefined;
+}
+
+function getToolResultContent(value: unknown): string {
+  const record = asRecord(value);
+  if (!record) return collectResponseText(value);
+
+  return collectResponseText(record.content)
+    || getTextValue(record.message)
+    || getTextValue(record.result)
+    || '';
+}
+
+function buildImageToolResultMessage(
+  toolUseId: string,
+  value: unknown,
+  timestamp: string | undefined,
+): SessionMessageDisplay | null {
+  const images = extractCopilotImages(value, 'Tool result image');
+  if (images.length === 0) return null;
+
+  const details = toolUseId
+    ? [{ key: 'tool_use_id', label: 'tool_use_id', value: toolUseId }]
+    : [];
+  const block: SessionMessageBlockDisplay = {
+    type: 'tool-result',
+    title: 'Tool result',
+    summary: summarizeImages(images),
+    content: getToolResultContent(value),
+    details,
+    images,
+  };
+
+  return {
+    role: 'tool-result',
+    content: block.summary,
+    timestamp: timestamp || new Date(0).toISOString(),
+    blocks: [block],
+  };
+}
+
+function buildToolResultImageMessages(value: unknown, timestamp?: string): SessionMessageDisplay[] {
+  const record = asRecord(value);
+  const metadata = asRecord(record?.metadata);
+  const toolCallResults = asRecord(metadata?.toolCallResults);
+  const messages: SessionMessageDisplay[] = [];
+
+  if (toolCallResults) {
+    for (const [toolUseId, result] of Object.entries(toolCallResults)) {
+      const message = buildImageToolResultMessage(toolUseId, result, timestamp);
+      if (message) messages.push(message);
+    }
+  }
+
+  if (messages.length === 0) {
+    const message = buildImageToolResultMessage('', value, timestamp);
+    if (message) messages.push(message);
+  }
+
+  return messages;
+}
+
+function extractRequestImages(record: Record<string, unknown>): SessionMessageImageDisplay[] {
+  return dedupeImages([
+    ...extractCopilotImages(record.message),
+    ...extractCopilotImages(record.variableData),
+    ...extractCopilotImages(record.inputState),
+    ...extractCopilotImages(record.attachments),
+  ]);
 }
 
 function parseChatSessionLine(line: string): VscodeChatSessionRecord | null {
@@ -407,13 +482,29 @@ function recordRequestObject(state: ChatSessionParseState, index: number, value:
   if (version) state.version = version;
 
   const message = getTextValue(record.message);
-  if (message) {
-    state.requestMessages.set(index, { content: message, timestamp });
+  const requestImagesFromRecord = extractRequestImages(record);
+  const usedInputImages = requestImagesFromRecord.length === 0 && state.inputImages.length > 0;
+  const requestImages = requestImagesFromRecord.length > 0
+    ? requestImagesFromRecord
+    : state.inputImages;
+  if (state.inputImages.length > 0 && (usedInputImages || requestImagesFromRecord.length > 0 || message)) {
+    state.inputImages = [];
+  }
+
+  if (message || requestImages.length > 0) {
+    state.requestMessages.set(index, {
+      content: message,
+      timestamp,
+      images: optionalImages(requestImages),
+    });
     state.title ||= firstLine(message);
   }
 
   const response = collectResponseText(record.response);
   if (response) state.responseMessages.set(index, response);
+
+  const toolResultMessages = buildToolResultImageMessages(record.result, timestamp);
+  if (toolResultMessages.length > 0) state.toolResultMessages.set(index, toolResultMessages);
 
   const model = getModelFromRequest(record) || state.selectedModel;
   if (model) state.requestModels.set(index, model);
@@ -446,6 +537,11 @@ function applyPatch(state: ChatSessionParseState, record: VscodeChatSessionRecor
 
   if (keyPath[0] === 'inputState' && keyPath[1] === 'selectedModel') {
     recordSelectedModel(state, record.v);
+    return;
+  }
+
+  if (keyPath[0] === 'inputState' && keyPath[1] === 'attachments') {
+    state.inputImages = extractCopilotImages(record.v);
     return;
   }
 
@@ -486,6 +582,12 @@ function applyPatch(state: ChatSessionParseState, record: VscodeChatSessionRecor
   }
 
   if (keyPath[2] === 'result' || keyPath[2] === 'usage') {
+    if (keyPath[2] === 'result') {
+      const timestamp = state.requestMessages.get(requestIndex)?.timestamp || state.updatedAt || state.createdAt;
+      const toolResultMessages = buildToolResultImageMessages(record.v, timestamp);
+      if (toolResultMessages.length > 0) state.toolResultMessages.set(requestIndex, toolResultMessages);
+    }
+
     const usage = collectUsageObjects(record.v);
     if (hasUsage(usage)) state.requestUsage.set(requestIndex, usage);
   }
@@ -548,6 +650,7 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
   const messageIndexes = new Set<number>([
     ...state.requestMessages.keys(),
     ...state.responseMessages.keys(),
+    ...state.toolResultMessages.keys(),
     ...requestIndexes,
   ]);
   for (const index of Array.from(messageIndexes).sort((left, right) => left - right)) {
@@ -565,11 +668,12 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
       )
       : zeroCosts();
 
-    if (request?.content) {
+    if (request && (request.content || request.images?.length)) {
       messages.push({
         role: 'user',
         content: request.content,
         timestamp: request.timestamp || state.createdAt || new Date(0).toISOString(),
+        images: request.images,
       });
     }
 
@@ -584,6 +688,9 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
         estimatedCosts,
       });
     }
+
+    const toolMessages = state.toolResultMessages.get(index) || [];
+    messages.push(...toolMessages);
   }
 
   const models = Array.from(new Set([
@@ -611,6 +718,10 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
       state.title,
       ...Array.from(state.requestMessages.values()).map(message => message.content),
       ...Array.from(state.responseMessages.values()),
+      ...Array.from(state.toolResultMessages.values()).flat().map(message => message.content),
+      ...Array.from(state.toolResultMessages.values()).flatMap(messages =>
+        messages.flatMap(message => message.blocks?.map(block => block.summary) || []),
+      ),
       ...models,
     ].filter((value): value is string => Boolean(value?.trim()))))
       .join('\n')
@@ -626,9 +737,11 @@ function parseCopilotChatSessionFile(filePath: string): CopilotChatSessionSummar
     requestModels: new Map(),
     requestMessages: new Map(),
     responseMessages: new Map(),
+    toolResultMessages: new Map(),
     requestUsage: new Map(),
     completionTokenFallback: new Map(),
     modelDetails: new Map(),
+    inputImages: [],
   };
 
   forEachChatSessionLineSync(filePath, record => {

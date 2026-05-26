@@ -10,6 +10,7 @@ import type {
   SessionMessage,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
+  SessionMessageImageDisplay,
   SessionPromptTokenBreakdown,
   SessionToolCallDisplay,
   DashboardStats,
@@ -46,6 +47,7 @@ import {
 } from './prompt-metrics';
 import { buildEventBlock, buildThinkingBlock, buildToolCallDisplay, buildToolResultBlock } from './tool-parser';
 import { computeLocalHourCounts, computeSupplementalStats, resetStatsAggregatorCache } from './stats-aggregator';
+import { extractClaudeImages } from '@/lib/session-images';
 
 interface SessionFileCacheEntry {
   signature: string;
@@ -53,7 +55,7 @@ interface SessionFileCacheEntry {
 }
 
 const sessionInfoCache = new Map<string, SessionFileCacheEntry>();
-export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v1';
+export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v2';
 
 type ParsedSessionInfo = SessionInfo & {
   modelUsage?: Record<string, ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates }>;
@@ -408,6 +410,10 @@ function buildPromptBreakdownOrUndefined(
   }
 }
 
+function optionalImages(images: SessionMessageImageDisplay[]): SessionMessageImageDisplay[] | undefined {
+  return images.length > 0 ? images : undefined;
+}
+
 async function parseSessionFileUncached(filePath: string, projectId: string, projectName: string): Promise<ParsedSessionInfo> {
   const sessionId = path.basename(filePath, '.jsonl');
   const parser = new SessionParser(sessionId, projectId, projectName);
@@ -464,6 +470,7 @@ export async function getSessionDetailFromFile(filePath: string, projectId: stri
         const content = msg.message.content;
         const textParts: string[] = [];
         const blocks: SessionMessageBlockDisplay[] = [];
+        const images = Array.isArray(content) ? extractClaudeImages(content) : [];
 
         // Detect command XML patterns
         const rawText = typeof content === 'string' ? content : '';
@@ -537,13 +544,14 @@ export async function getSessionDetailFromFile(filePath: string, projectId: stri
         }
 
         const text = textParts.join('\n').trim();
-        if (text || blocks.length > 0) {
+        if (text || blocks.length > 0 || images.length > 0) {
           const isToolResultOnly = !text && blocks.length > 0;
           messages.push({
             role: isToolResultOnly ? 'tool-result' : 'user',
             content: text,
             timestamp: msg.timestamp,
             blocks: blocks.length > 0 ? blocks : undefined,
+            images: optionalImages(images),
             isMeta: msg.isMeta,
           });
         }

@@ -12,6 +12,7 @@ import {
 } from '@/config/anthropic-schema';
 import { getDetailKeyTail, detailMatchesKey } from '@/lib/string-utils';
 import { isRecord } from './record-utils';
+import { extractClaudeImages, summarizeImages } from '@/lib/session-images';
 
 const TOOL_DETAIL_LABELS: Record<string, string> = {
   args: 'Args',
@@ -597,17 +598,24 @@ export function buildToolResultBlock(
     buildStructuredContent(toolUseResult) ||
     extractTextPreview(toolResultContent?.content) ||
     buildStructuredContent(toolResultContent);
+  const images = extractClaudeImages([toolResultContent?.content, toolUseResult], 'Tool result image');
 
   const title = toolUseResult && typeof toolUseResult.type === 'string'
     ? humanizeToolKey(toolUseResult.type)
     : 'Tool Result';
+  const summary = content
+    ? buildStructuredSummary(title, details, content)
+    : images.length > 0
+      ? summarizeImages(images)
+      : buildStructuredSummary(title, details, content);
 
   return {
     type: 'tool-result',
     title,
-    summary: buildStructuredSummary(title, details, content),
+    summary,
     details,
     content,
+    images: images.length > 0 ? images : undefined,
   };
 }
 

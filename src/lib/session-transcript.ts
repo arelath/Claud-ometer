@@ -42,10 +42,16 @@ function findDetail(
 function hasVisibleAssistantContent(message: SessionMessageDisplay): boolean {
   if (message.content.trim()) return true;
   if ((message.toolCalls || []).length > 0) return true;
+  if (messageHasImages(message)) return true;
   return (message.blocks || []).some(block => {
     if (block.type === 'thinking') return Boolean(block.summary || block.content);
     return Boolean(block.summary || block.content || block.details.length > 0);
   });
+}
+
+function messageHasImages(message: SessionMessageDisplay): boolean {
+  if ((message.images || []).length > 0) return true;
+  return (message.blocks || []).some(block => (block.images || []).length > 0);
 }
 
 function mergeAssistantRun(run: { message: SessionMessageDisplay; index: number }[]): SessionMessageDisplay | null {
@@ -598,6 +604,7 @@ export function messagePassesPreset(msg: SessionMessageDisplay, preset: FilterPr
   if (preset === 'tools') {
     return msg.role === 'user' || msg.role === 'assistant' || msg.role === 'tool-use' || msg.role === 'tool-result' || msg.role === 'command';
   }
+  if (messageHasImages(msg)) return true;
   return msg.role === 'user' || msg.role === 'assistant';
 }
 

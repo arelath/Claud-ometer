@@ -16,6 +16,7 @@ import type { CachedModelUsage } from '@/lib/agent-data/session-summary';
 import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
 import { asRecord, forEachCopilotJsonlLineSync, type CopilotTranscriptRecord } from './io';
 import type { CopilotSessionFileInfo } from './session-index';
+import { dedupeImages, extractCopilotImages, summarizeImages } from '@/lib/session-images';
 import {
   getCopilotChatSessionSummary,
   type CopilotChatSessionSummary,
@@ -570,6 +571,7 @@ function buildToolResultBlock(data: Record<string, unknown>, startTool?: Session
   const failed = data.success === false;
   const status = success ? 'completed' : failed ? 'failed' : 'finished';
   const details: SessionToolCallDetail[] = [];
+  const images = extractCopilotImages(data, 'Tool result image');
 
   addDetail(details, 'tool_use_id', toolCallId, 'tool_use_id');
   addDetail(details, 'status', status);
@@ -581,18 +583,119 @@ function buildToolResultBlock(data: Record<string, unknown>, startTool?: Session
   }
   addDetail(details, 'error', getOptionalString(data, 'error') || getOptionalString(data, 'message'));
 
-  const content = getOptionalString(data, 'output')
+  const rawContent = getOptionalString(data, 'output')
     || getOptionalString(data, 'result')
     || getOptionalString(data, 'content')
     || '';
+  const content = images.length > 0 && rawContent.replace(/\s+/g, '').startsWith(images[0]?.url.split(',')[1] || '\0')
+    ? ''
+    : rawContent;
 
   return {
     type: 'tool-result',
     title: startTool ? `${startTool.name} result` : 'Tool result',
-    summary: status,
+    summary: images.length > 0 ? summarizeImages(images) : status,
     content,
     details,
+    images: images.length > 0 ? images : undefined,
   };
+}
+
+function messageHasImages(message: SessionMessageDisplay): boolean {
+  return (message.images || []).length > 0
+    || (message.blocks || []).some(block => (block.images || []).length > 0);
+}
+
+function getToolUseIdFromDetails(details: SessionToolCallDetail[]): string | undefined {
+  return details.find(detail => detail.key === 'tool_use_id' || detail.key === 'toolUseId')?.value;
+}
+
+function getToolUseIdFromMessage(message: SessionMessageDisplay): string | undefined {
+  for (const block of message.blocks || []) {
+    const toolUseId = getToolUseIdFromDetails(block.details);
+    if (toolUseId) return toolUseId;
+  }
+  return message.toolCalls?.find(tool => tool.id)?.id;
+}
+
+function getImagesFromMessage(message: SessionMessageDisplay) {
+  return [
+    ...(message.images || []),
+    ...(message.blocks || []).flatMap(block => block.images || []),
+  ];
+}
+
+function mergeToolResultImages(
+  message: SessionMessageDisplay,
+  sidecar: SessionMessageDisplay,
+): SessionMessageDisplay {
+  const images = getImagesFromMessage(sidecar);
+  if (images.length === 0) return message;
+
+  const blocks = message.blocks && message.blocks.length > 0
+    ? message.blocks.map((block, index) => index === 0
+      ? { ...block, images: dedupeImages([...(block.images || []), ...images]) }
+      : block)
+    : sidecar.blocks;
+
+  return {
+    ...message,
+    content: message.content || sidecar.content,
+    blocks,
+    images: message.blocks && message.blocks.length > 0
+      ? message.images
+      : dedupeImages([...(message.images || []), ...images]),
+  };
+}
+
+function mergeSidecarImageMessages(
+  messages: SessionMessageDisplay[],
+  sidecarMessages: SessionMessageDisplay[],
+): SessionMessageDisplay[] {
+  const sidecarImageMessages = sidecarMessages.filter(messageHasImages);
+  if (sidecarImageMessages.length === 0) return messages;
+
+  const userSidecars = sidecarImageMessages.filter(message => message.role === 'user' && (message.images || []).length > 0);
+  const toolSidecarsById = new Map<string, SessionMessageDisplay[]>();
+  const usedSidecars = new Set<SessionMessageDisplay>();
+
+  for (const sidecar of sidecarImageMessages) {
+    if (sidecar.role !== 'tool-result') continue;
+    const toolUseId = getToolUseIdFromMessage(sidecar);
+    if (!toolUseId) continue;
+    const existing = toolSidecarsById.get(toolUseId) || [];
+    existing.push(sidecar);
+    toolSidecarsById.set(toolUseId, existing);
+  }
+
+  let userIndex = 0;
+  const merged = messages.map(message => {
+    if (message.role === 'user') {
+      const sidecar = userSidecars[userIndex++];
+      if (!sidecar?.images?.length) return message;
+      usedSidecars.add(sidecar);
+      return {
+        ...message,
+        images: dedupeImages([...(message.images || []), ...sidecar.images]),
+      };
+    }
+
+    if (message.role === 'tool-result') {
+      const toolUseId = getToolUseIdFromMessage(message);
+      const sidecars = toolUseId ? toolSidecarsById.get(toolUseId) || [] : [];
+      let nextMessage = message;
+      for (const sidecar of sidecars) {
+        nextMessage = mergeToolResultImages(nextMessage, sidecar);
+        usedSidecars.add(sidecar);
+      }
+      return nextMessage;
+    }
+
+    return message;
+  });
+
+  const unmatchedSidecars = sidecarImageMessages.filter(message => !usedSidecars.has(message));
+  return [...merged, ...unmatchedSidecars];
 }
 
 function createBoundedSearchCollector() {
@@ -732,11 +835,12 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
 
     if (record.type === 'user.message') {
       const content = getOptionalString(data, 'content') || '';
-      if (!content) continue;
+      const images = extractCopilotImages(data);
+      if (!content && images.length === 0) continue;
       userMessageCount++;
       title ||= firstLine(content);
       searchableParts.push(content);
-      messages.push({ role: 'user', content, timestamp });
+      messages.push({ role: 'user', content, timestamp, images: images.length > 0 ? images : undefined });
       continue;
     }
 
@@ -876,9 +980,10 @@ export function parseCopilotSessionSummaryFile(filePath: string, fileInfo: Copil
 
     if (record.type === 'user.message') {
       const content = getOptionalString(data, 'content') || '';
-      if (content) {
+      const images = extractCopilotImages(data);
+      if (content || images.length > 0) {
         userMessageCount++;
-        title ||= firstLine(content);
+        if (content) title ||= firstLine(content);
         search.add(content);
         pendingUserContent = content;
       }
@@ -1059,12 +1164,13 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
 
     if (record.type === 'user.message') {
       const content = getOptionalString(data, 'content') || '';
-      if (!content) continue;
+      const images = extractCopilotImages(data);
+      if (!content && images.length === 0) continue;
       userMessageCount++;
       title ||= firstLine(content);
       searchableParts.push(content);
       pendingUserContent = content;
-      messages.push({ role: 'user', content, timestamp });
+      messages.push({ role: 'user', content, timestamp, images: images.length > 0 ? images : undefined });
       continue;
     }
 
@@ -1182,10 +1288,11 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
     searchTextPreview: searchableParts.join('\n').toLowerCase().slice(0, SUMMARY_SEARCH_PREVIEW_LIMIT),
   };
   const info = buildBaseSessionInfo(filePath, summary);
+  const detailMessages = mergeSidecarImageMessages(messages, chatSummary.messages);
 
   return {
     info,
-    detail: { ...info, messages },
+    detail: { ...info, messages: detailMessages },
     searchableText: searchableParts.join('\n').toLowerCase(),
   };
 }

@@ -6,6 +6,7 @@ import { parseRouteId } from '@/lib/agent-data/route-id';
 import { getIndexedSessionSummaries } from '@/lib/agent-data/indexer';
 import { getProjectSessionsSql, getSessionsSql, type SessionSqlPage } from '@/lib/agent-data/analytics-sql';
 import { filterVisibleSessionSummaries, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
+import { isSummaryInProjectPath, parseProjectPathRouteId } from '@/lib/agent-data/project-path';
 import { filterByTimeRange, parseApiTimeRangeParams, type TimeRangeParams } from '@/lib/time-range';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 
@@ -91,16 +92,18 @@ export const GET = withErrorHandler(async (request: Request) => {
   }
 
   if (projectId) {
+    const projectPath = parseProjectPathRouteId(projectId);
     const parsedProjectId = parseRouteId(projectId);
-    const projectProviders = parsedProjectId.agentKind
+    const projectProviders = !projectPath && parsedProjectId.agentKind
       ? [resolveSessionProvider(projectId)].filter((provider): provider is AgentDataProvider => Boolean(provider))
       : providers;
     const nativeProjectId = parsedProjectId.nativeId;
     try {
       const sqlSessions = getProjectSessionsSql(projectProviders, {
         projectId,
+        projectPath: projectPath || undefined,
         nativeProjectId,
-        projectAgentKind: parsedProjectId.agentKind || undefined,
+        projectAgentKind: projectPath ? undefined : parsedProjectId.agentKind || undefined,
         range,
       });
       if (sqlSessions) return NextResponse.json(sqlSessions);
@@ -110,6 +113,7 @@ export const GET = withErrorHandler(async (request: Request) => {
 
     const summaries = getTimeFilteredSummaries(projectProviders, range);
     const sessions = sortSessionsByTimestamp(summariesToSessions(summaries.filter(summary => {
+      if (projectPath) return isSummaryInProjectPath(summary, projectPath);
       if (parsedProjectId.agentKind && summary.provider !== parsedProjectId.agentKind) return false;
       return summary.nativeProjectId === nativeProjectId || summary.projectRouteId === projectId;
     })));
