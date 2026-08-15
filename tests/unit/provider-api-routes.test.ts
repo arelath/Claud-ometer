@@ -163,7 +163,12 @@ describe('provider API routes', () => {
     const stats = await (await getStats(new Request('http://localhost/api/stats?agent=copilot'))).json();
     const session = sessions.find((item: { id: string }) => item.id === routeId);
 
-    expect(projects[0]).toMatchObject({ agentKind: 'copilot', id: `copilot:${copilotFixtureWorkspaceHash}`, name: 'AgentScope' });
+    expect(projects[0]).toMatchObject({
+      agentKind: 'copilot',
+      id: expect.stringMatching(/^path:/),
+      routeId: `copilot:${copilotFixtureWorkspaceHash}`,
+      name: 'AgentScope',
+    });
     expect(session).toMatchObject({ agentKind: 'copilot', id: routeId, toolCallCount: 2 });
     expect(detail).toMatchObject({ agentKind: 'copilot', id: routeId, messages: expect.any(Array) });
     expect(stats).toMatchObject({ totalSessions: 3, totalMessages: 10, projectCount: 1 });
@@ -247,7 +252,10 @@ describe('provider API routes', () => {
     const stats = await (await getStats(new Request('http://localhost/api/stats?agent=all'))).json();
 
     expect(new Set(projects.map((project: { id: string }) => project.id)).size).toBe(projects.length);
-    expect(projects.map((project: { agentKind?: string }) => project.agentKind)).toEqual(expect.arrayContaining(['claude', 'codex']));
+    const projectAgentKinds = projects.flatMap((project: { agentKind?: string; agentKinds?: string[] }) => (
+      project.agentKinds || (project.agentKind ? [project.agentKind] : [])
+    ));
+    expect(projectAgentKinds).toEqual(expect.arrayContaining(['claude', 'codex']));
     expect(search.map((session: { id: string }) => session.id)).toEqual(expect.arrayContaining([
       toolPairFixtureSessionId,
       `codex:${codexFixtureSessionId}`,
@@ -255,7 +263,7 @@ describe('provider API routes', () => {
     expect(legacyDetail).toMatchObject({ id: toolPairFixtureSessionId, agentKind: 'claude' });
     expect(codexDetail).toMatchObject({ id: `codex:${codexFixtureSessionId}`, agentKind: 'codex' });
     expect(stats.totalSessions).toBeGreaterThanOrEqual(5);
-    expect(stats.projectCount).toBeGreaterThanOrEqual(4);
+    expect(stats.projectCount).toBe(projects.length);
   });
 
   it('rejects invalid provider filters', async () => {

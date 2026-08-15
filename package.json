@@ -13,6 +13,7 @@
     "electron:pack": "npm run electron:prepare && electron-builder --dir",
     "electron:dist": "npm run electron:prepare && electron-builder --win --publish never",
     "electron:smoke": "node scripts/smoke-packaged-next-server.cjs",
+    "cache:baseline": "node scripts/session-index-baseline.mjs",
     "pricing:update": "node scripts/update-litellm-pricing.mjs",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",

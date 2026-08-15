@@ -1,7 +1,7 @@
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import * as reader from './reader';
 import { resetCodexSessionIndexCache } from './session-index';
-import { getCachedSessionSummaries } from '@/lib/agent-data/session-summary-store';
+import { getProviderSessionSummaries } from '@/lib/agent-data/provider-summary-view';
 import { summariesToDashboardStats, summariesToProjects, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 
 function summarySearchText(summary: CachedSessionSummary): string {
@@ -23,27 +23,27 @@ export const codexProvider: AgentDataProvider = {
   parserVersion: reader.CODEX_SESSION_SUMMARY_PARSER_VERSION,
   canResume: false,
   async getProjects() {
-    return summariesToProjects(await getCachedSessionSummaries([codexProvider]));
+    return summariesToProjects(await getProviderSessionSummaries(codexProvider));
   },
   async getSessions(limit, offset) {
-    return summariesToSessions(await getCachedSessionSummaries([codexProvider])).slice(offset || 0, (offset || 0) + (limit || 50));
+    return summariesToSessions(await getProviderSessionSummaries(codexProvider)).slice(offset || 0, (offset || 0) + (limit || 50));
   },
   async getProjectSessions(projectId) {
     const nativeProjectId = projectId.startsWith('codex:') ? projectId.slice('codex:'.length) : projectId;
-    return summariesToSessions((await getCachedSessionSummaries([codexProvider]))
+    return summariesToSessions((await getProviderSessionSummaries(codexProvider))
       .filter(summary => summary.nativeProjectId === nativeProjectId || summary.projectRouteId === projectId));
   },
   getSessionDetail: reader.getSessionDetail,
   async searchSessions(query, limit) {
-    if (!query.trim()) return summariesToSessions(await getCachedSessionSummaries([codexProvider])).slice(0, limit || 50);
+    if (!query.trim()) return summariesToSessions(await getProviderSessionSummaries(codexProvider)).slice(0, limit || 50);
     const lowerQuery = query.toLowerCase();
-    const summaries = (await getCachedSessionSummaries([codexProvider]))
+    const summaries = (await getProviderSessionSummaries(codexProvider))
       .filter(summary => summarySearchText(summary).includes(lowerQuery))
       .slice(0, limit || 50);
     return summariesToSessions(summaries);
   },
   async getDashboardStats() {
-    return summariesToDashboardStats(await getCachedSessionSummaries([codexProvider]));
+    return summariesToDashboardStats(await getProviderSessionSummaries(codexProvider));
   },
   discoverSessionSources: reader.discoverSessionSummarySources,
   buildSessionSummary: reader.buildSessionSummary,

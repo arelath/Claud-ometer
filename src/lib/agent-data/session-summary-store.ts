@@ -1,4 +1,5 @@
-import { createHash } from 'crypto';
+import os from 'os';
+import { createHash, randomUUID } from 'crypto';
 import type { AgentDataProvider } from './provider';
 import {
   summaryCacheKey,
@@ -9,27 +10,59 @@ import {
   clearSessionSummaryIndexCache as clearPersistentSessionSummaryCache,
   commitSessionSummaryIndex,
   getSessionSummaryIndexStatus as buildCacheStatus,
+  readSessionSummaryIndexRefreshMetrics,
+  readSourceParseCheckpoints,
   readSessionSummaryIndexCache,
-  getValidSessionSummariesForSources,
+  writeSessionSummaryIndexRefreshMetrics,
 } from './session-summary-sqlite-store';
 import {
   SESSION_SUMMARY_CACHE_VERSION,
   type CachedSessionSummary,
   type SessionSummarySource,
 } from './session-summary';
+import { createSessionRefreshPlan } from './session-index-planner';
+import type {
+  IncrementalSessionSummarySupportByProvider,
+  SourceParseCheckpoint,
+} from './session-parse-checkpoint';
 import {
-  getRecentSessionSources,
-  getStableSessionSources,
-} from './source-stability';
+  createSummaryParsePool,
+  type ParseSummaryResult,
+  type ParseSummaryTask,
+  type SummaryParsePoolMode,
+} from './session-summary-parse-pool';
+import type { AgentKind } from './types';
 
 interface MemoEntry {
   key: string;
   value: CachedSessionSummary[];
 }
 
+export interface SessionIndexRefreshMetrics {
+  runId: string;
+  startedAt: string;
+  completedAt?: string;
+  providers: AgentKind[];
+  sourceCount: number;
+  validCount: number;
+  recentCount: number;
+  fullBuildCount: number;
+  incrementalBuildCount: number;
+  failedBuildCount: number;
+  discoveryMsByProvider: Record<string, number>;
+  parseMsByProvider: Record<string, number>;
+  commitMs: number;
+  sqliteRowsWritten: number;
+  workerPoolSize: number;
+  workerMode: SummaryParsePoolMode;
+  error?: string;
+}
+
 const memo = new Map<string, MemoEntry>();
 const inflight = new Map<string, Promise<CachedSessionSummary[]>>();
-const SUMMARY_BUILD_CONCURRENCY = 1;
+const DEFAULT_MAX_SUMMARY_BUILD_CONCURRENCY = 4;
+const SUMMARY_BUILD_CONCURRENCY_ENV = 'AGENT_SCOPE_SUMMARY_BUILD_CONCURRENCY';
+let lastRefreshMetrics: SessionIndexRefreshMetrics | undefined;
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
@@ -39,17 +72,124 @@ function providerHasSummarySupport(provider: AgentDataProvider): boolean {
   return Boolean(provider.parserVersion && provider.discoverSessionSources && provider.buildSessionSummary);
 }
 
-async function discoverSources(providers: AgentDataProvider[]): Promise<SessionSummarySource[]> {
+function elapsedMs(start: number): number {
+  return Math.max(0, Date.now() - start);
+}
+
+function getSummaryBuildConcurrency(): number {
+  const configured = Number.parseInt(process.env[SUMMARY_BUILD_CONCURRENCY_ENV] || '', 10);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.min(configured, 32));
+  }
+
+  const parallelism = typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : os.cpus().length;
+  return Math.max(1, Math.min(Math.max(1, parallelism - 1), DEFAULT_MAX_SUMMARY_BUILD_CONCURRENCY));
+}
+
+function addProviderMs(target: Record<string, number>, provider: AgentKind, ms: number): void {
+  target[provider] = (target[provider] || 0) + ms;
+}
+
+function startRefreshMetrics(
+  providers: AgentDataProvider[],
+  discoveryMsByProvider: Record<string, number>,
+  workerPoolSize: number,
+  workerMode: SummaryParsePoolMode,
+): SessionIndexRefreshMetrics {
+  return {
+    runId: randomUUID(),
+    startedAt: new Date().toISOString(),
+    providers: providers.map(provider => provider.kind),
+    sourceCount: 0,
+    validCount: 0,
+    recentCount: 0,
+    fullBuildCount: 0,
+    incrementalBuildCount: 0,
+    failedBuildCount: 0,
+    discoveryMsByProvider,
+    parseMsByProvider: {},
+    commitMs: 0,
+    sqliteRowsWritten: 0,
+    workerPoolSize,
+    workerMode,
+  };
+}
+
+function completeRefreshMetrics(metrics: SessionIndexRefreshMetrics, error?: unknown): void {
+  metrics.completedAt = new Date().toISOString();
+  if (error) {
+    metrics.error = error instanceof Error ? error.message : String(error);
+  }
+  lastRefreshMetrics = { ...metrics };
+  writeSessionSummaryIndexRefreshMetrics(lastRefreshMetrics);
+}
+
+function estimateRowsWritten(
+  discoveredSources: SessionSummarySource[],
+  updatedSummaries: CachedSessionSummary[],
+  missingCount: number,
+): number {
+  let rows = discoveredSources.length + missingCount + 2;
+  for (const summary of updatedSummaries) {
+    rows += 2; // sources + session_summaries
+    rows += Object.keys(summary.modelUsage || {}).length;
+    rows += Object.keys(summary.toolsUsed || {}).length;
+    rows += summary.usageEvents?.length || 1;
+    rows += summary.changeEvents?.length || 1;
+  }
+  return rows;
+}
+
+function getIncrementalSupport(providers: AgentDataProvider[]): IncrementalSessionSummarySupportByProvider {
+  const support: IncrementalSessionSummarySupportByProvider = {};
+  for (const provider of providers) {
+    if (provider.incrementalSessionSummary) {
+      support[provider.kind] = {
+        checkpointVersion: provider.incrementalSessionSummary.checkpointVersion,
+      };
+    }
+  }
+  return support;
+}
+
+function parseResultMs(result: ParseSummaryResult): number {
+  return result.timings.readMs + result.timings.parseMs + result.timings.summarizeMs;
+}
+
+interface DiscoveryResult {
+  sources: SessionSummarySource[];
+  discoveryMsByProvider: Record<string, number>;
+}
+
+async function discoverSourcesWithMetrics(providers: AgentDataProvider[]): Promise<DiscoveryResult> {
   const results: SessionSummarySource[][] = [];
+  const discoveryMsByProvider: Record<string, number> = {};
   for (const provider of providers.filter(providerHasSummarySupport)) {
     await yieldToEventLoop();
+    const started = Date.now();
     results.push(await provider.discoverSessionSources!());
+    discoveryMsByProvider[provider.kind] = elapsedMs(started);
   }
-  return results.flat().sort((left, right) => {
+  const sources = results.flat().sort((left, right) => {
     const providerCompare = left.provider.localeCompare(right.provider);
     if (providerCompare) return providerCompare;
-    return left.sourceFilePath.localeCompare(right.sourceFilePath);
+      return left.sourceFilePath.localeCompare(right.sourceFilePath);
   });
+  const uniqueSources: SessionSummarySource[] = [];
+  const seenKeys = new Set<string>();
+  for (const source of sources) {
+    const key = sourceSummaryCacheKey(source);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    uniqueSources.push(source);
+  }
+  return { sources: uniqueSources, discoveryMsByProvider };
+}
+
+async function discoverSources(providers: AgentDataProvider[]): Promise<SessionSummarySource[]> {
+  return (await discoverSourcesWithMetrics(providers)).sources;
 }
 
 function manifestKey(providers: AgentDataProvider[], sources: SessionSummarySource[]): string {
@@ -113,14 +253,23 @@ function getReusableRecentSummaries(sources: SessionSummarySource[]): Map<string
   return reusable;
 }
 
+function summaryMatchesSourceSignature(summary: CachedSessionSummary, source: SessionSummarySource): boolean {
+  return summary.sourceSignature.size === source.sourceSignature.size
+    && summary.sourceSignature.mtimeMs === source.sourceSignature.mtimeMs;
+}
+
 async function buildRecentSummaries(
   providers: AgentDataProvider[],
   sources: SessionSummarySource[],
   reusableByKey: Map<string, CachedSessionSummary>,
+  concurrency: number,
+  metrics: SessionIndexRefreshMetrics,
+  options: { allowExactReuse?: boolean } = {},
 ): Promise<CachedSessionSummary[]> {
   const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
-  const summaries = await mapWithConcurrency(sources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
+  const summaries = await mapWithConcurrency(sources, concurrency, async (source) => {
     const provider = providerByKind.get(source.provider);
+    const started = Date.now();
     try {
       if (provider?.buildLightweightSessionSummary) {
         return {
@@ -128,9 +277,16 @@ async function buildRecentSummaries(
           isPartial: true,
         };
       }
+      const reusable = reusableByKey.get(sourceSummaryCacheKey(source));
+      if (options.allowExactReuse !== false && reusable && summaryMatchesSourceSignature(reusable, source)) {
+        return reusable;
+      }
       if (provider?.buildSessionSummary) return provider.buildSessionSummary(source);
     } catch {
+      metrics.failedBuildCount += 1;
       // Keep the last indexed prefix if a hot log is between writes.
+    } finally {
+      addProviderMs(metrics.parseMsByProvider, source.provider, elapsedMs(started));
     }
     return reusableByKey.get(sourceSummaryCacheKey(source)) || null;
   });
@@ -138,42 +294,147 @@ async function buildRecentSummaries(
   return summaries.filter((summary): summary is CachedSessionSummary => Boolean(summary));
 }
 
+interface ParseResultCollections {
+  updatedSummaries: CachedSessionSummary[];
+  updatedCheckpoints: SourceParseCheckpoint[];
+  deletedCheckpointKeys: string[];
+  failedFallbackSummaries: CachedSessionSummary[];
+}
+
+function collectParseResults(
+  results: ParseSummaryResult[],
+  tasksBySourceKey: Map<string, ParseSummaryTask>,
+  existingCheckpointsByKey: Map<string, SourceParseCheckpoint>,
+  metrics: SessionIndexRefreshMetrics,
+): ParseResultCollections {
+  const updatedSummaries: CachedSessionSummary[] = [];
+  const updatedCheckpoints: SourceParseCheckpoint[] = [];
+  const deletedCheckpointKeys: string[] = [];
+  const failedFallbackSummaries: CachedSessionSummary[] = [];
+  const checkpointUpdateKeys = new Set<string>();
+
+  for (const result of results) {
+    addProviderMs(metrics.parseMsByProvider, result.provider, parseResultMs(result));
+    const task = tasksBySourceKey.get(result.sourceKey);
+    if (result.error || !result.summary) {
+      metrics.failedBuildCount += 1;
+      if (task?.previousSummary && !task.previousSummary.isPartial) {
+        failedFallbackSummaries.push(task.previousSummary);
+      }
+      continue;
+    }
+
+    updatedSummaries.push(result.summary);
+    if (result.checkpoint) {
+      updatedCheckpoints.push(result.checkpoint);
+      checkpointUpdateKeys.add(result.sourceKey);
+    }
+    if (result.mode === 'full' && existingCheckpointsByKey.has(result.sourceKey) && !checkpointUpdateKeys.has(result.sourceKey)) {
+      deletedCheckpointKeys.push(result.sourceKey);
+    }
+  }
+
+  return {
+    updatedSummaries,
+    updatedCheckpoints,
+    deletedCheckpointKeys,
+    failedFallbackSummaries,
+  };
+}
+
 async function buildSummaries(
   providers: AgentDataProvider[],
   sources: SessionSummarySource[],
-  options: { force?: boolean; nowMs?: number } = {},
+  options: { force?: boolean; nowMs?: number; discoveryMsByProvider?: Record<string, number> } = {},
 ): Promise<CachedSessionSummary[]> {
   const nowMs = options.nowMs ?? Date.now();
-  const stableSources = getStableSessionSources(sources, nowMs);
-  const recentSources = getRecentSessionSources(sources, nowMs);
-  const cachedByKey = options.force ? new Map<string, CachedSessionSummary>() : getValidSessionSummariesForSources(stableSources);
-  const recentSummariesByKey = getReusableRecentSummaries(recentSources);
-  const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
-  const recentSummaries = await buildRecentSummaries(providers, recentSources, recentSummariesByKey);
-
-  const updatedSummaries = (await mapWithConcurrency(stableSources, SUMMARY_BUILD_CONCURRENCY, async (source) => {
-    const cached = cachedByKey.get(sourceSummaryCacheKey(source));
-    if (cached) return cached;
-
-    const provider = providerByKind.get(source.provider);
-    return provider?.buildSessionSummary ? provider.buildSessionSummary(source) : null;
-  })).filter((summary): summary is CachedSessionSummary => Boolean(summary));
-
-  commitSessionSummaryIndex({
+  const concurrency = getSummaryBuildConcurrency();
+  const cache = readSessionSummaryIndexCache();
+  const cachedSummaries = cache.summaries;
+  const cachedByKey = new Map(cachedSummaries.map(summary => [summaryCacheKey(summary), summary]));
+  const checkpointsByKey = readSourceParseCheckpoints(sources);
+  const parsePool = createSummaryParsePool(providers, { concurrency });
+  const plan = createSessionRefreshPlan({
+    sources,
+    cachedSummaries,
     touchedProviders: providers.map(provider => provider.kind),
-    discoveredSources: sources,
-    updatedSummaries: [...updatedSummaries, ...recentSummaries],
+    checkpointsByKey,
+    incrementalSupport: getIncrementalSupport(providers),
+    force: options.force,
+    nowMs,
   });
+  const metrics = startRefreshMetrics(providers, options.discoveryMsByProvider || {}, parsePool.size, parsePool.mode);
+  metrics.sourceCount = sources.length;
+  metrics.validCount = plan.valid.length;
+  metrics.recentCount = plan.recent.length;
+  metrics.fullBuildCount = plan.fullBuild.length;
+  metrics.incrementalBuildCount = plan.incrementalBuild.length;
+  lastRefreshMetrics = metrics;
 
-  return [...updatedSummaries, ...recentSummaries]
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const validSummaries = plan.valid
+    .map(source => cachedByKey.get(sourceSummaryCacheKey(source)))
+    .filter((summary): summary is CachedSessionSummary => Boolean(summary));
+  const recentSummariesByKey = getReusableRecentSummaries(plan.recent);
+  try {
+    const recentSummaries = await buildRecentSummaries(
+      providers,
+      plan.recent,
+      recentSummariesByKey,
+      concurrency,
+      metrics,
+      { allowExactReuse: !options.force },
+    );
+    const parseTasks: ParseSummaryTask[] = [
+      ...plan.fullBuild.map(source => ({
+        provider: source.provider,
+        source,
+        mode: 'full' as const,
+        previousSummary: cachedByKey.get(sourceSummaryCacheKey(source)),
+      })),
+      ...plan.incrementalBuild.map(source => ({
+        provider: source.provider,
+        source,
+        mode: 'incremental' as const,
+        previousSummary: cachedByKey.get(sourceSummaryCacheKey(source)),
+        checkpoint: checkpointsByKey.get(sourceSummaryCacheKey(source)),
+      })),
+    ];
+    const tasksBySourceKey = new Map(parseTasks.map(task => [sourceSummaryCacheKey(task.source), task]));
+    const parseResults = await parsePool.run(parseTasks);
+    const {
+      updatedSummaries,
+      updatedCheckpoints,
+      deletedCheckpointKeys,
+      failedFallbackSummaries,
+    } = collectParseResults(parseResults, tasksBySourceKey, checkpointsByKey, metrics);
+    const summariesToCommit = [...updatedSummaries, ...recentSummaries];
+    const commitStarted = Date.now();
+    commitSessionSummaryIndex({
+      touchedProviders: plan.touchedProviders,
+      discoveredSources: sources,
+      updatedSummaries: summariesToCommit,
+      updatedCheckpoints,
+      deletedCheckpointKeys,
+    });
+    metrics.commitMs = elapsedMs(commitStarted);
+    metrics.sqliteRowsWritten = estimateRowsWritten(sources, summariesToCommit, plan.missingCachedKeys.length);
+    completeRefreshMetrics(metrics);
+
+    return [...validSummaries, ...updatedSummaries, ...recentSummaries, ...failedFallbackSummaries]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  } catch (error) {
+    completeRefreshMetrics(metrics, error);
+    throw error;
+  } finally {
+    await parsePool.close();
+  }
 }
 
 export async function getCachedSessionSummaries(providers: AgentDataProvider[]): Promise<CachedSessionSummary[]> {
   const supportedProviders = providers.filter(providerHasSummarySupport);
   if (supportedProviders.length === 0) return [];
 
-  const sources = await discoverSources(supportedProviders);
+  const { sources, discoveryMsByProvider } = await discoverSourcesWithMetrics(supportedProviders);
   const nowMs = Date.now();
   const key = manifestKey(supportedProviders, sources);
   const memoKey = supportedProviders.map(provider => provider.kind).sort().join(',');
@@ -183,7 +444,7 @@ export async function getCachedSessionSummaries(providers: AgentDataProvider[]):
   const running = inflight.get(key);
   if (running) return running;
 
-  const promise = buildSummaries(supportedProviders, sources, { nowMs })
+  const promise = buildSummaries(supportedProviders, sources, { nowMs, discoveryMsByProvider })
     .then((summaries) => {
       memo.set(memoKey, { key, value: summaries });
       return summaries;
@@ -204,9 +465,9 @@ export async function getSessionSummaryCacheStatus(providers: AgentDataProvider[
 export async function rebuildCachedSessionSummaries(providers: AgentDataProvider[]): Promise<CachedSessionSummary[]> {
   resetSessionSummaryStoreForTests();
   const supportedProviders = providers.filter(providerHasSummarySupport);
-  const sources = await discoverSources(supportedProviders);
+  const { sources, discoveryMsByProvider } = await discoverSourcesWithMetrics(supportedProviders);
   const nowMs = Date.now();
-  const summaries = await buildSummaries(supportedProviders, sources, { force: true, nowMs });
+  const summaries = await buildSummaries(supportedProviders, sources, { force: true, nowMs, discoveryMsByProvider });
   const key = manifestKey(supportedProviders, sources);
   const memoKey = supportedProviders.map(provider => provider.kind).sort().join(',');
   memo.set(memoKey, { key, value: summaries });
@@ -223,6 +484,13 @@ export function resetSessionSummaryStore(): void {
   inflight.clear();
 }
 
+export function getLastSessionIndexRefreshMetrics(): SessionIndexRefreshMetrics | undefined {
+  if (lastRefreshMetrics) return { ...lastRefreshMetrics };
+  const persisted = readSessionSummaryIndexRefreshMetrics<SessionIndexRefreshMetrics>();
+  return persisted ? { ...persisted } : undefined;
+}
+
 export function resetSessionSummaryStoreForTests(): void {
   resetSessionSummaryStore();
+  lastRefreshMetrics = undefined;
 }

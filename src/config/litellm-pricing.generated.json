@@ -1,6 +1,6 @@
 {
   "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-  "updatedAt": "2026-05-06T05:43:48.077Z",
+  "updatedAt": "2026-07-17T19:33:24.908Z",
   "models": {
     "claude-3-7-sonnet-20250219": {
       "provider": "anthropic",
@@ -36,6 +36,13 @@
       "outputPerMillion": 15,
       "cacheWritePerMillion": 3.75,
       "cacheReadPerMillion": 0.3
+    },
+    "claude-fable-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 1
     },
     "claude-haiku-4-5": {
       "provider": "anthropic",
@@ -114,6 +121,13 @@
       "cacheWritePerMillion": 6.25,
       "cacheReadPerMillion": 0.5
     },
+    "claude-opus-4-8": {
+      "provider": "anthropic",
+      "inputPerMillion": 5,
+      "outputPerMillion": 25,
+      "cacheWritePerMillion": 6.25,
+      "cacheReadPerMillion": 0.5
+    },
     "claude-sonnet-4-20250514": {
       "provider": "anthropic",
       "inputPerMillion": 3,
@@ -141,6 +155,13 @@
       "outputPerMillion": 15,
       "cacheWritePerMillion": 3.75,
       "cacheReadPerMillion": 0.3
+    },
+    "claude-sonnet-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.2
     },
     "gpt-3.5-turbo": {
       "provider": "openai",
@@ -568,6 +589,34 @@
       "outputPerMillion": 180,
       "cacheWritePerMillion": 0,
       "cacheReadPerMillion": 3
+    },
+    "gpt-5.6": {
+      "provider": "openai",
+      "inputPerMillion": 5,
+      "outputPerMillion": 30,
+      "cacheWritePerMillion": 6.25,
+      "cacheReadPerMillion": 0.5
+    },
+    "gpt-5.6-luna": {
+      "provider": "openai",
+      "inputPerMillion": 1,
+      "outputPerMillion": 6,
+      "cacheWritePerMillion": 1.25,
+      "cacheReadPerMillion": 0.1
+    },
+    "gpt-5.6-sol": {
+      "provider": "openai",
+      "inputPerMillion": 5,
+      "outputPerMillion": 30,
+      "cacheWritePerMillion": 6.25,
+      "cacheReadPerMillion": 0.5
+    },
+    "gpt-5.6-terra": {
+      "provider": "openai",
+      "inputPerMillion": 2.5,
+      "outputPerMillion": 15,
+      "cacheWritePerMillion": 3.125,
+      "cacheReadPerMillion": 0.25
     },
     "o1": {
       "provider": "openai",

@@ -53,7 +53,11 @@ describe('CostModeProvider', () => {
     expect(localStorage.getItem('agentscope-cost-mode')).toBe('api');
   });
 
-  it('rejects use outside the provider', () => {
-    expect(() => render(<CostModeProbe />)).toThrow('useCostMode must be used within CostModeProvider');
+  it('falls back to the default mode outside the provider', () => {
+    render(<CostModeProbe />);
+
+    expect(screen.getByTestId('mode')).toHaveTextContent('subscription');
+    expect(screen.getByTestId('label')).toHaveTextContent('Subscription');
+    expect(screen.getByTestId('picked')).toHaveTextContent('2');
   });
 });

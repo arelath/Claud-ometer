@@ -361,6 +361,7 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
   let compactions = 0;
   const compactionTimestamps: string[] = [];
   const compactionEvents: Array<{ time: number; source: CodexCompactionSource }> = [];
+  let hasSessionMetadata = false;
 
   const recordCompaction = (timestamp: string, source: CodexCompactionSource) => {
     const time = parseTimestampMs(timestamp);
@@ -386,14 +387,17 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
     }
 
     if (record.type === 'session_meta') {
-      const git = asRecord(payload.git);
-      nativeId = getOptionalString(payload, 'id') || nativeId;
-      cwd = getOptionalString(payload, 'cwd') || cwd;
-      version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
-      gitBranch = getOptionalString(git, 'branch')
-        || getOptionalString(payload, 'git_branch')
-        || getOptionalString(payload, 'gitBranch')
-        || gitBranch;
+      if (!hasSessionMetadata) {
+        const git = asRecord(payload.git);
+        nativeId = getOptionalString(payload, 'id') || nativeId;
+        cwd = getOptionalString(payload, 'cwd') || cwd;
+        version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
+        gitBranch = getOptionalString(git, 'branch')
+          || getOptionalString(payload, 'git_branch')
+          || getOptionalString(payload, 'gitBranch')
+          || gitBranch;
+        hasSessionMetadata = true;
+      }
       return;
     }
 
@@ -575,6 +579,7 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
   const compactionTimestamps: string[] = [];
   const compactionEvents: Array<{ time: number; source: CodexCompactionSource; messageIndex: number }> = [];
   let lastAssistantMessageIndex: number | null = null;
+  let hasSessionMetadata = false;
 
   const pushAssistantMessage = (message: SessionMessageDisplay) => {
     messages.push(message);
@@ -625,14 +630,17 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
     }
 
     if (record.type === 'session_meta') {
-      const git = asRecord(payload.git);
-      nativeId = getOptionalString(payload, 'id') || nativeId;
-      cwd = getOptionalString(payload, 'cwd') || cwd;
-      version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
-      gitBranch = getOptionalString(git, 'branch')
-        || getOptionalString(payload, 'git_branch')
-        || getOptionalString(payload, 'gitBranch')
-        || gitBranch;
+      if (!hasSessionMetadata) {
+        const git = asRecord(payload.git);
+        nativeId = getOptionalString(payload, 'id') || nativeId;
+        cwd = getOptionalString(payload, 'cwd') || cwd;
+        version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
+        gitBranch = getOptionalString(git, 'branch')
+          || getOptionalString(payload, 'git_branch')
+          || getOptionalString(payload, 'gitBranch')
+          || gitBranch;
+        hasSessionMetadata = true;
+      }
       continue;
     }
 

@@ -91,6 +91,7 @@ function readSessionFileInfo(filePath: string, titleHints: Map<string, string>):
   let model = '';
   let gitBranch = '';
   let version = '';
+  let hasSessionMetadata = false;
 
   try {
     const prefix = readFilePrefix(filePath);
@@ -112,16 +113,19 @@ function readSessionFileInfo(filePath: string, titleHints: Map<string, string>):
       }
 
       if (type === 'session_meta') {
-        const git = asRecord(payload?.git);
-        nativeId = getOptionalString(payload, 'id') || nativeId;
-        cwd = getOptionalString(payload, 'cwd') || cwd;
-        version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
-        gitBranch = getOptionalString(git, 'branch')
-          || getOptionalString(payload, 'git_branch')
-          || getOptionalString(payload, 'gitBranch')
-          || gitBranch;
-        createdAt = getOptionalString(payload, 'timestamp') || createdAt;
-        updatedAt = timestamp || updatedAt || createdAt;
+        if (!hasSessionMetadata) {
+          const git = asRecord(payload?.git);
+          nativeId = getOptionalString(payload, 'id') || nativeId;
+          cwd = getOptionalString(payload, 'cwd') || cwd;
+          version = getOptionalString(payload, 'cli_version') || getOptionalString(payload, 'version') || version;
+          gitBranch = getOptionalString(git, 'branch')
+            || getOptionalString(payload, 'git_branch')
+            || getOptionalString(payload, 'gitBranch')
+            || gitBranch;
+          createdAt = getOptionalString(payload, 'timestamp') || createdAt;
+          updatedAt = timestamp || updatedAt || createdAt;
+          hasSessionMetadata = true;
+        }
       }
 
       if (type === 'turn_context') {

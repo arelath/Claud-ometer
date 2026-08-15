@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   asRecord,
-  forEachCursorJsonlLineSync,
+  forEachCursorJsonlPrefixLineSync,
   getCursorDir,
   getCursorProjectsDir,
   getCursorStateDbPath,
@@ -40,6 +40,7 @@ interface DiscoveryCacheEntry {
 }
 
 const discoveryCache = new Map<string, DiscoveryCacheEntry>();
+const TITLE_PREFIX_BYTES = 128 * 1024;
 
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = record?.[key];
@@ -97,10 +98,12 @@ function getProjectName(projectId: string, cwd: string): string {
 function readJsonlTitle(filePath: string): string | undefined {
   let title: string | undefined;
   try {
-    forEachCursorJsonlLineSync(filePath, record => {
-      if (title || record.role !== 'user') return;
+    forEachCursorJsonlPrefixLineSync(filePath, TITLE_PREFIX_BYTES, record => {
+      if (title) return false;
+      if (record.role !== 'user') return;
       const text = extractTextFromMessage(record.message);
       if (text) title = firstLine(text);
+      return title ? false : undefined;
     });
   } catch {
     return undefined;
@@ -110,7 +113,7 @@ function readJsonlTitle(filePath: string): string | undefined {
 
 function readTextTitle(filePath: string): string | undefined {
   try {
-    const prefix = fs.readFileSync(filePath, 'utf-8').slice(0, 128 * 1024);
+    const prefix = fs.readFileSync(filePath, 'utf-8').slice(0, TITLE_PREFIX_BYTES);
     const userQuery = prefix.match(/<user_query>([\s\S]*?)(?:<\/user_query>|$)/i)?.[1];
     if (userQuery?.trim()) return firstLine(userQuery);
 

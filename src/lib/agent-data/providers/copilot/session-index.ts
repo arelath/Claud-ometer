@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import {
   asRecord,
-  forEachCopilotJsonlLineSync,
+  forEachCopilotJsonlPrefixLineSync,
+  forEachCopilotJsonlTailLineSync,
   getCopilotDir,
   getCopilotLegacySessionStateDir,
   getCopilotWorkspaceStorageDir,
@@ -61,6 +62,8 @@ interface CopilotSessionSourceFile {
 }
 
 const discoveryCache = new Map<string, DiscoveryCacheEntry>();
+const DISCOVERY_PREFIX_BYTES = 128 * 1024;
+const DISCOVERY_TAIL_BYTES = 128 * 1024;
 
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = record?.[key];
@@ -198,31 +201,80 @@ function getTranscriptFilePath(workspaceDir: string, nativeId: string): string |
   return fs.existsSync(filePath) ? filePath : undefined;
 }
 
+interface TranscriptDiscoveryMetadata {
+  nativeId?: string;
+  createdAt: string;
+  updatedAt: string;
+  producer: string;
+  version: string;
+  vscodeVersion: string;
+  title: string;
+}
+
+function emptyTranscriptDiscoveryMetadata(overrides: Partial<TranscriptDiscoveryMetadata> = {}): TranscriptDiscoveryMetadata {
+  return {
+    createdAt: '',
+    updatedAt: '',
+    producer: '',
+    version: '',
+    vscodeVersion: '',
+    title: '',
+    ...overrides,
+  };
+}
+
+function applyDiscoveryPrefixRecord(metadata: TranscriptDiscoveryMetadata, record: { type: string; data?: unknown; timestamp?: string }): void {
+  const data = asRecord(record.data) || {};
+  const timestamp = record.timestamp || getOptionalString(data, 'timestamp');
+  if (timestamp) {
+    if (!metadata.createdAt) metadata.createdAt = timestamp;
+    metadata.updatedAt = timestamp;
+  }
+
+  if (record.type === 'session.start') {
+    metadata.nativeId = getOptionalString(data, 'sessionId') || metadata.nativeId;
+    metadata.producer = getOptionalString(data, 'producer') || metadata.producer;
+    metadata.version = getOptionalString(data, 'copilotVersion') || metadata.version;
+    metadata.vscodeVersion = getOptionalString(data, 'vscodeVersion') || metadata.vscodeVersion;
+    metadata.createdAt = getOptionalString(data, 'startTime') || metadata.createdAt || timestamp || '';
+    metadata.updatedAt = timestamp || metadata.createdAt || metadata.updatedAt;
+  } else if (record.type === 'user.message' && !metadata.title) {
+    metadata.title = firstLine(getOptionalString(data, 'content') || '');
+  }
+}
+
+function applyDiscoveryTailRecord(metadata: TranscriptDiscoveryMetadata, record: { data?: unknown; timestamp?: string }): void {
+  const data = asRecord(record.data) || {};
+  const timestamp = record.timestamp || getOptionalString(data, 'timestamp');
+  if (timestamp) metadata.updatedAt = timestamp;
+}
+
+function readTranscriptDiscoveryMetadata(
+  filePath: string,
+  overrides: Partial<TranscriptDiscoveryMetadata> = {},
+): TranscriptDiscoveryMetadata {
+  const metadata = emptyTranscriptDiscoveryMetadata(overrides);
+
+  try {
+    forEachCopilotJsonlPrefixLineSync(filePath, DISCOVERY_PREFIX_BYTES, record => {
+      applyDiscoveryPrefixRecord(metadata, record);
+    });
+    forEachCopilotJsonlTailLineSync(filePath, DISCOVERY_TAIL_BYTES, record => {
+      applyDiscoveryTailRecord(metadata, record);
+    });
+  } catch {
+    // Fall back to file metadata.
+  }
+
+  return metadata;
+}
+
 function readLegacySessionFileInfo(filePath: string): CopilotSessionFileInfo {
   const sessionDir = path.dirname(filePath);
   const nativeId = path.basename(sessionDir);
   const workspaceInfo = readLegacyWorkspaceInfo(sessionDir, nativeId);
   const projectId = normalizeLegacyProjectId(workspaceInfo.cwd || nativeId);
-  let createdAt = '';
-  let updatedAt = '';
-  let title = '';
-
-  try {
-    forEachCopilotJsonlLineSync(filePath, record => {
-      const data = asRecord(record.data) || {};
-      const timestamp = record.timestamp || getOptionalString(data, 'timestamp');
-      if (timestamp) {
-        if (!createdAt) createdAt = timestamp;
-        updatedAt = timestamp;
-      }
-
-      if (record.type === 'user.message' && !title) {
-        title = firstLine(getOptionalString(data, 'content') || '');
-      }
-    });
-  } catch {
-    // Fall back to file metadata.
-  }
+  const metadata = readTranscriptDiscoveryMetadata(filePath);
 
   const signaturePaths = [
     filePath,
@@ -233,8 +285,8 @@ function readLegacySessionFileInfo(filePath: string): CopilotSessionFileInfo {
   const fallbackTimestamp = primarySignature.mtimeMs > 0
     ? new Date(primarySignature.mtimeMs).toISOString()
     : new Date(0).toISOString();
-  createdAt ||= fallbackTimestamp;
-  updatedAt ||= fallbackTimestamp;
+  const createdAt = metadata.createdAt || fallbackTimestamp;
+  const updatedAt = metadata.updatedAt || fallbackTimestamp;
 
   return {
     filePath,
@@ -250,7 +302,7 @@ function readLegacySessionFileInfo(filePath: string): CopilotSessionFileInfo {
     cwd: workspaceInfo.cwd,
     createdAt,
     updatedAt,
-    title,
+    title: metadata.title,
     signature: signatureToString(sourceSignature),
     sourceSignature,
   };
@@ -262,40 +314,21 @@ function readSessionFileInfo(filePath: string, transcriptFilePath?: string, chat
   const chatSummary = chatSessionFilePath ? getCopilotChatSessionSummary(chatSessionFilePath) : undefined;
 
   let nativeId = fallbackIdFromFilename(filePath);
-  let createdAt = chatSummary?.createdAt || '';
-  let updatedAt = chatSummary?.updatedAt || '';
-  let producer = '';
-  let version = chatSummary?.version || '';
-  let vscodeVersion = '';
-  let title = chatSummary?.title || '';
+  const metadata = transcriptFilePath
+    ? readTranscriptDiscoveryMetadata(transcriptFilePath, {
+        createdAt: chatSummary?.createdAt || '',
+        updatedAt: chatSummary?.updatedAt || '',
+        version: chatSummary?.version || '',
+        title: chatSummary?.title || '',
+      })
+    : emptyTranscriptDiscoveryMetadata({
+        createdAt: chatSummary?.createdAt || '',
+        updatedAt: chatSummary?.updatedAt || '',
+        version: chatSummary?.version || '',
+        title: chatSummary?.title || '',
+      });
 
-  if (transcriptFilePath) {
-    try {
-      forEachCopilotJsonlLineSync(transcriptFilePath, record => {
-      const data = asRecord(record.data) || {};
-      const timestamp = record.timestamp || getOptionalString(data, 'timestamp');
-      if (timestamp) {
-        if (!createdAt) createdAt = timestamp;
-        updatedAt = timestamp;
-      }
-
-      if (record.type === 'session.start') {
-        nativeId = getOptionalString(data, 'sessionId') || nativeId;
-        producer = getOptionalString(data, 'producer') || producer;
-        version = getOptionalString(data, 'copilotVersion') || version;
-        vscodeVersion = getOptionalString(data, 'vscodeVersion') || vscodeVersion;
-        createdAt = getOptionalString(data, 'startTime') || createdAt || timestamp || '';
-        updatedAt = timestamp || createdAt || updatedAt;
-      } else if (record.type === 'user.message' && !title) {
-        title = firstLine(getOptionalString(data, 'content') || '');
-      }
-    });
-    } catch {
-      // Fall back to transcript/chat session file metadata.
-    }
-  }
-
-  nativeId = chatSummary?.nativeId || nativeId;
+  nativeId = chatSummary?.nativeId || metadata.nativeId || nativeId;
   chatSessionFilePath ||= getChatSessionFilePath(workspaceInfo.workspaceDir, nativeId)
     || getChatSessionFilePath(workspaceInfo.workspaceDir, fallbackIdFromFilename(filePath));
   const signaturePaths = [
@@ -308,8 +341,8 @@ function readSessionFileInfo(filePath: string, transcriptFilePath?: string, chat
   const fallbackTimestamp = primarySignature.mtimeMs > 0
     ? new Date(primarySignature.mtimeMs).toISOString()
     : new Date(0).toISOString();
-  createdAt ||= fallbackTimestamp;
-  updatedAt ||= fallbackTimestamp;
+  const createdAt = metadata.createdAt || fallbackTimestamp;
+  const updatedAt = metadata.updatedAt || fallbackTimestamp;
 
   return {
     filePath,
@@ -327,10 +360,10 @@ function readSessionFileInfo(filePath: string, transcriptFilePath?: string, chat
     workspaceUri: workspaceInfo.workspaceUri,
     createdAt,
     updatedAt,
-    producer,
-    version,
-    vscodeVersion,
-    title,
+    producer: metadata.producer,
+    version: metadata.version,
+    vscodeVersion: metadata.vscodeVersion,
+    title: metadata.title,
     signature: signatureToString(sourceSignature),
     sourceSignature,
   };

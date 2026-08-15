@@ -8,6 +8,7 @@ import {
 } from './session-summary';
 import { isSessionSourceRecentlyModified } from './source-stability';
 import { buildLegacyChangeEvents, buildLegacyUsageEvents } from './event-metrics';
+import type { SourceParseCheckpoint } from './session-parse-checkpoint';
 import {
   clearSessionSummaryCache as clearJsonSessionSummaryCache,
   getSessionSummaryCacheDir,
@@ -31,6 +32,10 @@ interface MetaRow extends Record<string, unknown> {
   value: string;
 }
 
+interface OptionalMetaRow extends Record<string, unknown> {
+  value?: string;
+}
+
 interface CountRow extends Record<string, unknown> {
   count: number;
 }
@@ -43,6 +48,21 @@ interface SummaryPayloadRow extends Record<string, unknown> {
   payload_json: string;
 }
 
+interface CheckpointRow extends Record<string, unknown> {
+  source_key: string;
+  provider: AgentKind;
+  parser_version: string;
+  checkpoint_version: number;
+  source_file_path: string;
+  source_size: number;
+  source_mtime_ms: number;
+  last_complete_offset: number;
+  record_count: number;
+  component_state_json: string;
+  accumulator_json: string;
+  updated_at: string;
+}
+
 interface TableColumnRow extends Record<string, unknown> {
   name: string;
 }
@@ -51,6 +71,8 @@ export interface SessionSummaryIndexCommit {
   touchedProviders: AgentKind[];
   discoveredSources: SessionSummarySource[];
   updatedSummaries: CachedSessionSummary[];
+  updatedCheckpoints?: SourceParseCheckpoint[];
+  deletedCheckpointKeys?: string[];
 }
 
 const SCHEMA_SQL = `
@@ -93,6 +115,7 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   git_branch TEXT NOT NULL DEFAULT '',
   version TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT 'unknown',
+  models_json TEXT NOT NULL DEFAULT '[]',
   message_count INTEGER NOT NULL DEFAULT 0,
   user_message_count INTEGER NOT NULL DEFAULT 0,
   assistant_message_count INTEGER NOT NULL DEFAULT 0,
@@ -108,6 +131,10 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   changed_lines INTEGER NOT NULL DEFAULT 0,
   changed_file_count INTEGER NOT NULL DEFAULT 0,
   edit_count INTEGER NOT NULL DEFAULT 0,
+  compactions INTEGER NOT NULL DEFAULT 0,
+  microcompactions INTEGER NOT NULL DEFAULT 0,
+  compaction_tokens_saved INTEGER NOT NULL DEFAULT 0,
+  compaction_timestamps_json TEXT NOT NULL DEFAULT '[]',
   search_text TEXT NOT NULL DEFAULT '',
   payload_json TEXT NOT NULL
 );
@@ -169,6 +196,21 @@ CREATE TABLE IF NOT EXISTS change_events (
   PRIMARY KEY (source_key, event_index)
 );
 
+CREATE TABLE IF NOT EXISTS source_parse_checkpoints (
+  source_key TEXT PRIMARY KEY REFERENCES sources(source_key) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  parser_version TEXT NOT NULL,
+  checkpoint_version INTEGER NOT NULL,
+  source_file_path TEXT NOT NULL,
+  source_size INTEGER NOT NULL,
+  source_mtime_ms REAL NOT NULL,
+  last_complete_offset INTEGER NOT NULL DEFAULT 0,
+  record_count INTEGER NOT NULL DEFAULT 0,
+  component_state_json TEXT NOT NULL DEFAULT '{}',
+  accumulator_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_summaries_provider_created
   ON session_summaries(provider, created_at_ms DESC);
 
@@ -192,6 +234,7 @@ CREATE INDEX IF NOT EXISTS idx_change_events_time
 `;
 
 const DROP_SCHEMA_SQL = `
+DROP TABLE IF EXISTS source_parse_checkpoints;
 DROP TABLE IF EXISTS change_events;
 DROP TABLE IF EXISTS usage_events;
 DROP TABLE IF EXISTS summary_tools;
@@ -239,6 +282,10 @@ function setMeta(db: SqliteDatabase, key: string, value: string): void {
   );
 }
 
+function getOptionalMeta(db: SqliteDatabase, key: string): string | undefined {
+  return db.get<OptionalMetaRow>('SELECT value FROM cache_meta WHERE key = ?', [key])?.value;
+}
+
 function bumpRevision(db: SqliteDatabase): void {
   const nextRevision = numberValue(getMeta(db, 'revision')) + 1;
   setMeta(db, 'revision', String(nextRevision));
@@ -250,6 +297,11 @@ function ensureColumn(db: SqliteDatabase, table: string, column: string, definit
 }
 
 function ensureSchemaCompatibility(db: SqliteDatabase): void {
+  ensureColumn(db, 'session_summaries', 'models_json', "models_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'session_summaries', 'compactions', 'compactions INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'session_summaries', 'microcompactions', 'microcompactions INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'session_summaries', 'compaction_tokens_saved', 'compaction_tokens_saved INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'session_summaries', 'compaction_timestamps_json', "compaction_timestamps_json TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'usage_events', 'cost_api', 'cost_api REAL NOT NULL DEFAULT 0');
   ensureColumn(db, 'usage_events', 'cost_conservative', 'cost_conservative REAL NOT NULL DEFAULT 0');
   ensureColumn(db, 'usage_events', 'cost_subscription', 'cost_subscription REAL NOT NULL DEFAULT 0');
@@ -298,6 +350,23 @@ function parseSummaryRow(row: SummaryPayloadRow): CachedSessionSummary | null {
   } catch {
     return null;
   }
+}
+
+function checkpointFromRow(row: CheckpointRow): SourceParseCheckpoint {
+  return {
+    sourceKey: row.source_key,
+    provider: row.provider,
+    parserVersion: row.parser_version,
+    checkpointVersion: numberValue(row.checkpoint_version),
+    sourceFilePath: row.source_file_path,
+    sourceSize: numberValue(row.source_size),
+    sourceMtimeMs: numberValue(row.source_mtime_ms),
+    lastCompleteOffset: numberValue(row.last_complete_offset),
+    recordCount: numberValue(row.record_count),
+    componentStateJson: row.component_state_json || '{}',
+    accumulatorJson: row.accumulator_json || '{}',
+    updatedAt: row.updated_at,
+  };
 }
 
 function summarySearchText(summary: CachedSessionSummary): string {
@@ -425,6 +494,7 @@ function upsertSummary(db: SqliteDatabase, summary: CachedSessionSummary, now: s
       git_branch,
       version,
       model,
+      models_json,
       message_count,
       user_message_count,
       assistant_message_count,
@@ -440,10 +510,14 @@ function upsertSummary(db: SqliteDatabase, summary: CachedSessionSummary, now: s
       changed_lines,
       changed_file_count,
       edit_count,
+      compactions,
+      microcompactions,
+      compaction_tokens_saved,
+      compaction_timestamps_json,
       search_text,
       payload_json
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
     ON CONFLICT(source_key) DO UPDATE SET
       route_id = excluded.route_id,
@@ -465,6 +539,7 @@ function upsertSummary(db: SqliteDatabase, summary: CachedSessionSummary, now: s
       git_branch = excluded.git_branch,
       version = excluded.version,
       model = excluded.model,
+      models_json = excluded.models_json,
       message_count = excluded.message_count,
       user_message_count = excluded.user_message_count,
       assistant_message_count = excluded.assistant_message_count,
@@ -480,6 +555,10 @@ function upsertSummary(db: SqliteDatabase, summary: CachedSessionSummary, now: s
       changed_lines = excluded.changed_lines,
       changed_file_count = excluded.changed_file_count,
       edit_count = excluded.edit_count,
+      compactions = excluded.compactions,
+      microcompactions = excluded.microcompactions,
+      compaction_tokens_saved = excluded.compaction_tokens_saved,
+      compaction_timestamps_json = excluded.compaction_timestamps_json,
       search_text = excluded.search_text,
       payload_json = excluded.payload_json`,
     [
@@ -503,6 +582,7 @@ function upsertSummary(db: SqliteDatabase, summary: CachedSessionSummary, now: s
       summary.gitBranch || '',
       summary.version || '',
       summary.model || 'unknown',
+      JSON.stringify(summary.models || []),
       summary.messageCount,
       summary.userMessageCount,
       summary.assistantMessageCount,
@@ -518,6 +598,10 @@ function upsertSummary(db: SqliteDatabase, summary: CachedSessionSummary, now: s
       changeTotals.changedLines,
       changeTotals.fileCount,
       changeTotals.editCount,
+      summary.compaction?.compactions || 0,
+      summary.compaction?.microcompactions || 0,
+      summary.compaction?.totalTokensSaved || 0,
+      JSON.stringify(summary.compaction?.compactionTimestamps || []),
       summarySearchText(summary),
       JSON.stringify(summary),
     ],
@@ -659,6 +743,57 @@ function replaceChangeEvents(db: SqliteDatabase, sourceKey: string, summary: Cac
   }
 }
 
+function upsertCheckpoint(db: SqliteDatabase, checkpoint: SourceParseCheckpoint): void {
+  db.run(
+    `INSERT INTO source_parse_checkpoints (
+      source_key,
+      provider,
+      parser_version,
+      checkpoint_version,
+      source_file_path,
+      source_size,
+      source_mtime_ms,
+      last_complete_offset,
+      record_count,
+      component_state_json,
+      accumulator_json,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(source_key) DO UPDATE SET
+      provider = excluded.provider,
+      parser_version = excluded.parser_version,
+      checkpoint_version = excluded.checkpoint_version,
+      source_file_path = excluded.source_file_path,
+      source_size = excluded.source_size,
+      source_mtime_ms = excluded.source_mtime_ms,
+      last_complete_offset = excluded.last_complete_offset,
+      record_count = excluded.record_count,
+      component_state_json = excluded.component_state_json,
+      accumulator_json = excluded.accumulator_json,
+      updated_at = excluded.updated_at`,
+    [
+      checkpoint.sourceKey,
+      checkpoint.provider,
+      checkpoint.parserVersion,
+      checkpoint.checkpointVersion,
+      checkpoint.sourceFilePath,
+      checkpoint.sourceSize,
+      checkpoint.sourceMtimeMs,
+      checkpoint.lastCompleteOffset,
+      checkpoint.recordCount,
+      checkpoint.componentStateJson || '{}',
+      checkpoint.accumulatorJson || '{}',
+      checkpoint.updatedAt,
+    ],
+  );
+}
+
+function deleteCheckpoints(db: SqliteDatabase, sourceKeys: string[]): void {
+  for (const sourceKey of sourceKeys) {
+    db.run('DELETE FROM source_parse_checkpoints WHERE source_key = ?', [sourceKey]);
+  }
+}
+
 function readSummaries(db: SqliteDatabase, providers?: AgentKind[]): CachedSessionSummary[] {
   const rows = providers?.length
     ? db.query<SummaryPayloadRow>(
@@ -670,6 +805,19 @@ function readSummaries(db: SqliteDatabase, providers?: AgentKind[]): CachedSessi
   return rows
     .map(parseSummaryRow)
     .filter((summary): summary is CachedSessionSummary => Boolean(summary));
+}
+
+function readCheckpoints(db: SqliteDatabase, sources?: SessionSummarySource[]): Map<string, SourceParseCheckpoint> {
+  const rows = db.query<CheckpointRow>('SELECT * FROM source_parse_checkpoints');
+  const sourceKeys = sources ? new Set(sources.map(sourceSummaryCacheKey)) : null;
+  const checkpoints = new Map<string, SourceParseCheckpoint>();
+
+  for (const row of rows) {
+    if (sourceKeys && !sourceKeys.has(row.source_key)) continue;
+    checkpoints.set(row.source_key, checkpointFromRow(row));
+  }
+
+  return checkpoints;
 }
 
 function importJsonCacheIfEmpty(db: SqliteDatabase): void {
@@ -715,6 +863,54 @@ export function querySessionSummaryIndex<T>(callback: (db: SqliteDatabase) => T)
   }
 }
 
+const LAST_REFRESH_METRICS_META_KEY = 'last_refresh_metrics_json';
+
+export function writeSessionSummaryIndexRefreshMetrics(metrics: unknown): void {
+  if (!isSqliteIndexEnabled()) return;
+  try {
+    const db = openIndexDatabase(false);
+    if (!db) return;
+    try {
+      setMeta(db, LAST_REFRESH_METRICS_META_KEY, JSON.stringify(metrics));
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Metrics are diagnostic-only and should never affect index refreshes.
+  }
+}
+
+export function readSessionSummaryIndexRefreshMetrics<T>(): T | undefined {
+  if (!isSqliteIndexEnabled()) return undefined;
+  try {
+    const db = openIndexDatabase(false);
+    if (!db) return undefined;
+    try {
+      const raw = getOptionalMeta(db, LAST_REFRESH_METRICS_META_KEY);
+      return raw ? JSON.parse(raw) as T : undefined;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+export function readSourceParseCheckpoints(sources?: SessionSummarySource[]): Map<string, SourceParseCheckpoint> {
+  if (!isSqliteIndexEnabled()) return new Map();
+  try {
+    const db = openIndexDatabase(false);
+    if (!db) return new Map();
+    try {
+      return readCheckpoints(db, sources);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return new Map();
+  }
+}
+
 function deleteMissingProviderSources(db: SqliteDatabase, provider: AgentKind, discoveredKeys: Set<string>): void {
   const rows = db.query<SourceKeyRow>('SELECT source_key FROM sources WHERE provider = ?', [provider]);
   for (const row of rows) {
@@ -724,7 +920,13 @@ function deleteMissingProviderSources(db: SqliteDatabase, provider: AgentKind, d
   }
 }
 
-function commitSqliteIndex({ touchedProviders, discoveredSources, updatedSummaries }: SessionSummaryIndexCommit): void {
+function commitSqliteIndex({
+  touchedProviders,
+  discoveredSources,
+  updatedSummaries,
+  updatedCheckpoints = [],
+  deletedCheckpointKeys = [],
+}: SessionSummaryIndexCommit): void {
   const db = openIndexDatabase(false);
   if (!db) {
     const cache = readSessionSummaryCache();
@@ -754,6 +956,10 @@ function commitSqliteIndex({ touchedProviders, discoveredSources, updatedSummari
       }
       for (const summary of updatedSummaries) {
         upsertSummary(db, summary, now);
+      }
+      deleteCheckpoints(db, deletedCheckpointKeys);
+      for (const checkpoint of updatedCheckpoints) {
+        upsertCheckpoint(db, checkpoint);
       }
       setMeta(db, 'generated_at', now);
       bumpRevision(db);

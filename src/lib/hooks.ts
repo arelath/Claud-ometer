@@ -75,6 +75,8 @@ export function useSessions(limit = 50, offset = 0, query = '', fallbackData?: S
   params.set('includeTotal', '1');
   if (timeRange?.start) params.set('start', timeRange.start);
   if (timeRange?.end) params.set('end', timeRange.end);
+  if (timeRange?.timeZone) params.set('tz', timeRange.timeZone);
+  if (timeRange?.granularity) params.set('granularity', timeRange.granularity);
   const hasTimeRange = Boolean(timeRange?.start || timeRange?.end);
   const url = `/api/sessions?${params.toString()}`;
   const fallbackPage = fallbackData && !hasTimeRange

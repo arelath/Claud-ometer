@@ -134,7 +134,7 @@ describe('Codex session discovery', () => {
     ]);
   });
 
-  it('invalidates discovery when file size changes', async () => {
+  it('invalidates discovery when file size changes without adopting inherited session metadata', async () => {
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });
     const filePath = path.join(sessionsDir, 'rollout-2026-05-08T10-16-36-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl');
@@ -146,7 +146,10 @@ describe('Codex session discovery', () => {
     const second = await sessionIndex.discoverCodexSessionFiles();
 
     expect(first[0].nativeId).toBe('one');
-    expect(second[0].nativeId).toBe('two');
+    expect(second[0]).toMatchObject({
+      nativeId: 'one',
+      updatedAt: '2026-05-08T10:21:00.000Z',
+    });
   });
 
   it('invalidates discovery when only mtime changes', async () => {

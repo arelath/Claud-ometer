@@ -4,6 +4,7 @@ import {
   bucketKeyToDate,
   getLocalTimeParts,
   isDateInRange,
+  isTimestampInLocalDateRange,
   listBucketKeys,
   normalizeBucketGranularity,
   normalizeTimeZone,
@@ -28,8 +29,8 @@ import type { TimeRangeParams } from '@/lib/time-range';
 import { querySessionSummaryIndex } from './session-summary-sqlite-store';
 import {
   SESSION_SUMMARY_CACHE_VERSION,
-  summariesToSessions,
   summaryToSessionInfo,
+  type CachedModelUsage,
   type CachedSessionSummary,
 } from './session-summary';
 import {
@@ -55,9 +56,66 @@ interface CountRow extends Record<string, unknown> {
   count: number;
 }
 
-interface SummaryPayloadRow extends Record<string, unknown> {
-  payload_json: string;
-  created_at_ms?: number;
+interface SessionSummaryScalarRow extends Record<string, unknown> {
+  source_key: string;
+  route_id: string;
+  native_id: string;
+  provider: AgentKind;
+  parser_version: string;
+  native_project_id: string;
+  project_route_id: string;
+  project_name: string;
+  source_file_path: string;
+  source_size: number;
+  source_mtime_ms: number;
+  created_at: string;
+  created_at_ms: number;
+  updated_at: string;
+  updated_at_ms: number;
+  title?: string;
+  cwd: string;
+  git_branch: string;
+  version: string;
+  model: string;
+  models_json?: string;
+  message_count: number;
+  user_message_count: number;
+  assistant_message_count: number;
+  tool_call_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_output_tokens: number;
+  added_lines: number;
+  removed_lines: number;
+  net_line_delta: number;
+  changed_lines: number;
+  changed_file_count: number;
+  edit_count: number;
+  compactions?: number;
+  microcompactions?: number;
+  compaction_tokens_saved?: number;
+  compaction_timestamps_json?: string;
+}
+
+interface SessionModelUsageRow extends Record<string, unknown> {
+  source_key: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_output_tokens: number;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  web_search_requests?: number;
+}
+
+interface SessionToolRow extends Record<string, unknown> {
+  source_key: string;
+  tool_name: string;
+  tool_count: number;
 }
 
 interface UsageAggregateRow extends Record<string, unknown> {
@@ -144,6 +202,48 @@ const VISIBLE_SUMMARY_SQL = `(
   OR s.tool_call_count > 0
   OR (s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens) > 0
 )`;
+const SESSION_SUMMARY_SCALAR_COLUMNS = `
+  s.source_key,
+  s.route_id,
+  s.native_id,
+  s.provider,
+  s.parser_version,
+  s.native_project_id,
+  s.project_route_id,
+  s.project_name,
+  s.source_file_path,
+  s.source_size,
+  s.source_mtime_ms,
+  s.created_at,
+  s.created_at_ms,
+  s.updated_at,
+  s.updated_at_ms,
+  s.title,
+  s.cwd,
+  s.git_branch,
+  s.version,
+  s.model,
+  s.models_json,
+  s.message_count,
+  s.user_message_count,
+  s.assistant_message_count,
+  s.tool_call_count,
+  s.input_tokens,
+  s.output_tokens,
+  s.cache_read_tokens,
+  s.cache_write_tokens,
+  s.reasoning_output_tokens,
+  s.added_lines,
+  s.removed_lines,
+  s.net_line_delta,
+  s.changed_lines,
+  s.changed_file_count,
+  s.edit_count,
+  s.compactions,
+  s.microcompactions,
+  s.compaction_tokens_saved,
+  s.compaction_timestamps_json
+`;
 const UTC_RANGE_PADDING_MS = 36 * 60 * 60 * 1000;
 
 function providerKinds(providers: AgentDataProvider[]): AgentKind[] {
@@ -159,6 +259,155 @@ function providerFilterSql(providers: AgentKind[], params: unknown[]): string {
 function numberValue(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseStringArrayJson(value: unknown): string[] {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function chunked<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function loadSessionModelUsage(
+  db: SqliteDatabase,
+  sourceKeys: string[],
+): Map<string, Record<string, CachedModelUsage>> {
+  const usageBySource = new Map<string, Record<string, CachedModelUsage>>();
+  for (const chunk of chunked(sourceKeys, 500)) {
+    if (chunk.length === 0) continue;
+    const rows = db.query<SessionModelUsageRow>(
+      `SELECT
+         source_key,
+         model,
+         input_tokens,
+         output_tokens,
+         cache_read_tokens,
+         cache_write_tokens,
+         reasoning_output_tokens,
+         context_window,
+         max_output_tokens,
+         web_search_requests
+       FROM summary_model_usage
+       WHERE source_key IN (${chunk.map(() => '?').join(',')})`,
+      chunk,
+    );
+    for (const row of rows) {
+      const sourceUsage = usageBySource.get(row.source_key) || {};
+      sourceUsage[row.model || 'unknown'] = {
+        inputTokens: numberValue(row.input_tokens),
+        outputTokens: numberValue(row.output_tokens),
+        cacheReadInputTokens: numberValue(row.cache_read_tokens),
+        cacheCreationInputTokens: numberValue(row.cache_write_tokens),
+        reasoningOutputTokens: numberValue(row.reasoning_output_tokens),
+        contextWindow: row.context_window == null ? undefined : numberValue(row.context_window),
+        maxOutputTokens: row.max_output_tokens == null ? undefined : numberValue(row.max_output_tokens),
+        webSearchRequests: numberValue(row.web_search_requests),
+      };
+      usageBySource.set(row.source_key, sourceUsage);
+    }
+  }
+  return usageBySource;
+}
+
+function loadSessionTools(db: SqliteDatabase, sourceKeys: string[]): Map<string, Record<string, number>> {
+  const toolsBySource = new Map<string, Record<string, number>>();
+  for (const chunk of chunked(sourceKeys, 500)) {
+    if (chunk.length === 0) continue;
+    const rows = db.query<SessionToolRow>(
+      `SELECT source_key, tool_name, tool_count
+       FROM summary_tools
+       WHERE source_key IN (${chunk.map(() => '?').join(',')})`,
+      chunk,
+    );
+    for (const row of rows) {
+      const tools = toolsBySource.get(row.source_key) || {};
+      tools[row.tool_name] = numberValue(row.tool_count);
+      toolsBySource.set(row.source_key, tools);
+    }
+  }
+  return toolsBySource;
+}
+
+function scalarRowToSummary(
+  row: SessionSummaryScalarRow,
+  modelUsage: Record<string, CachedModelUsage>,
+  toolsUsed: Record<string, number>,
+): CachedSessionSummary {
+  const models = parseStringArrayJson(row.models_json);
+  return {
+    cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+    parserVersion: row.parser_version,
+    provider: row.provider,
+    nativeId: row.native_id,
+    routeId: row.route_id,
+    nativeProjectId: row.native_project_id,
+    projectRouteId: row.project_route_id,
+    projectName: row.project_name,
+    sourceFilePath: row.source_file_path,
+    sourceSignature: {
+      size: numberValue(row.source_size),
+      mtimeMs: numberValue(row.source_mtime_ms),
+    },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    title: row.title || undefined,
+    cwd: row.cwd || '',
+    gitBranch: row.git_branch || '',
+    version: row.version || '',
+    model: row.model || 'unknown',
+    models: models.length > 0 ? models : Object.keys(modelUsage),
+    messageCount: numberValue(row.message_count),
+    userMessageCount: numberValue(row.user_message_count),
+    assistantMessageCount: numberValue(row.assistant_message_count),
+    toolCallCount: numberValue(row.tool_call_count),
+    tokenTotals: {
+      input: numberValue(row.input_tokens),
+      output: numberValue(row.output_tokens),
+      cacheRead: numberValue(row.cache_read_tokens),
+      cacheWrite: numberValue(row.cache_write_tokens),
+      reasoningOutput: numberValue(row.reasoning_output_tokens),
+    },
+    modelUsage,
+    changeTotals: {
+      addedLines: numberValue(row.added_lines),
+      removedLines: numberValue(row.removed_lines),
+      netLineDelta: numberValue(row.net_line_delta),
+      changedLines: numberValue(row.changed_lines),
+      fileCount: numberValue(row.changed_file_count),
+      editCount: numberValue(row.edit_count),
+    },
+    toolsUsed,
+    compaction: {
+      compactions: numberValue(row.compactions),
+      microcompactions: numberValue(row.microcompactions),
+      totalTokensSaved: numberValue(row.compaction_tokens_saved),
+      compactionTimestamps: parseStringArrayJson(row.compaction_timestamps_json),
+    },
+  };
+}
+
+function scalarRowsToSessions(db: SqliteDatabase, rows: SessionSummaryScalarRow[]): SessionInfo[] {
+  const sourceKeys = rows.map(row => row.source_key);
+  const usageBySource = loadSessionModelUsage(db, sourceKeys);
+  const toolsBySource = loadSessionTools(db, sourceKeys);
+  return rows.map(row => summaryToSessionInfo(scalarRowToSummary(
+    row,
+    usageBySource.get(row.source_key) || {},
+    toolsBySource.get(row.source_key) || {},
+  )));
 }
 
 function getAggregationContext(range: TimeRangeParams = {}): AggregationContext {
@@ -388,37 +637,25 @@ function emptyDashboardStats(range: TimeRangeParams = {}): DashboardStats {
   };
 }
 
-function parseSummary(row: SummaryPayloadRow): CachedSessionSummary | null {
-  try {
-    const parsed = JSON.parse(row.payload_json) as CachedSessionSummary;
-    if (parsed?.cacheVersion !== SESSION_SUMMARY_CACHE_VERSION) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 function loadRecentSessions(db: SqliteDatabase, sourceKeys: Set<string>): SessionInfo[] {
   const keys = Array.from(sourceKeys);
   if (keys.length === 0) return [];
 
-  const summaries: CachedSessionSummary[] = [];
+  const rows: SessionSummaryScalarRow[] = [];
   for (let index = 0; index < keys.length; index += 500) {
     const chunk = keys.slice(index, index + 500);
-    const rows = db.query<SummaryPayloadRow>(
-      `SELECT payload_json
-       FROM session_summaries
+    rows.push(...db.query<SessionSummaryScalarRow>(
+      `SELECT ${SESSION_SUMMARY_SCALAR_COLUMNS}
+       FROM session_summaries s
        WHERE source_key IN (${chunk.map(() => '?').join(',')})
        ORDER BY created_at_ms DESC`,
       chunk,
-    );
-    for (const row of rows) {
-      const summary = parseSummary(row);
-      if (summary) summaries.push(summary);
-    }
+    ));
   }
 
-  return summariesToSessions(summaries).slice(0, 10);
+  return scalarRowsToSessions(db, rows)
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .slice(0, 10);
 }
 
 function longestSession(db: SqliteDatabase, providerList: AgentKind[]) {
@@ -791,6 +1028,11 @@ export function getCostAnalyticsSql(
 }
 
 function appendCreatedDateRange(where: string[], params: unknown[], range: TimeRangeParams): void {
+  if (range.timeZone) {
+    appendTimestampBounds(where, params, 's.created_at_ms', range);
+    return;
+  }
+
   if (range.start) {
     where.push('substr(s.created_at, 1, 10) >= ?');
     params.push(range.start);
@@ -826,6 +1068,22 @@ function sessionWhereSql(providers: AgentKind[], options: SessionSqlQuery, param
   return where.join(' AND ');
 }
 
+function needsLocalCreatedAtFilter(range: TimeRangeParams = {}): boolean {
+  return Boolean(range.timeZone && (range.start || range.end));
+}
+
+function isScalarRowInCreatedAtRange(row: SessionSummaryScalarRow, range: TimeRangeParams = {}): boolean {
+  if (!range.start && !range.end) return true;
+  if (range.timeZone) {
+    return isTimestampInLocalDateRange(row.created_at, normalizeTimeZone(range.timeZone), range);
+  }
+
+  const date = row.created_at.slice(0, 10);
+  if (range.start && date < range.start) return false;
+  if (range.end && date > range.end) return false;
+  return true;
+}
+
 export function getSessionsSql(
   providers: AgentDataProvider[],
   options: SessionSqlQuery = {},
@@ -836,6 +1094,26 @@ export function getSessionsSql(
   if (providerList.length === 0) return { sessions: [], total: 0, limit, offset };
 
   return querySessionSummaryIndex((db) => {
+    if (needsLocalCreatedAtFilter(options.range)) {
+      const params: unknown[] = [];
+      const where = sessionWhereSql(providerList, options, params);
+      const rows = db.query<SessionSummaryScalarRow>(
+        `SELECT ${SESSION_SUMMARY_SCALAR_COLUMNS}
+         FROM session_summaries s
+         WHERE ${where}
+         ORDER BY s.created_at_ms DESC`,
+        params,
+      );
+      const filteredRows = rows.filter(row => isScalarRowInCreatedAtRange(row, options.range));
+
+      return {
+        sessions: scalarRowsToSessions(db, filteredRows).slice(offset, offset + limit),
+        total: filteredRows.length,
+        limit,
+        offset,
+      };
+    }
+
     const countParams: unknown[] = [];
     const countWhere = sessionWhereSql(providerList, options, countParams);
     const total = numberValue(db.get<CountRow>(
@@ -845,20 +1123,17 @@ export function getSessionsSql(
 
     const pageParams: unknown[] = [];
     const pageWhere = sessionWhereSql(providerList, options, pageParams);
-    const rows = db.query<SummaryPayloadRow>(
-      `SELECT payload_json
+    const rows = db.query<SessionSummaryScalarRow>(
+      `SELECT ${SESSION_SUMMARY_SCALAR_COLUMNS}
        FROM session_summaries s
        WHERE ${pageWhere}
        ORDER BY s.created_at_ms DESC
        LIMIT ? OFFSET ?`,
       [...pageParams, limit, offset],
     );
-    const summaries = rows
-      .map(parseSummary)
-      .filter((summary): summary is CachedSessionSummary => Boolean(summary));
 
     return {
-      sessions: summariesToSessions(summaries),
+      sessions: scalarRowsToSessions(db, rows),
       total,
       limit,
       offset,
@@ -876,20 +1151,20 @@ export function getProjectSessionsSql(
   return querySessionSummaryIndex((db) => {
     const params: unknown[] = [];
     const where = sessionWhereSql(providerList, options, params);
-    const rows = db.query<SummaryPayloadRow>(
-      `SELECT payload_json
+    const rows = db.query<SessionSummaryScalarRow>(
+      `SELECT ${SESSION_SUMMARY_SCALAR_COLUMNS}
        FROM session_summaries s
        WHERE ${where}
        ORDER BY s.created_at_ms DESC`,
       params,
     );
-    const summaries = rows
-      .map(parseSummary)
-      .filter((summary): summary is CachedSessionSummary => Boolean(summary));
-    const filteredSummaries = options.projectPath
-      ? summaries.filter(summary => isSummaryInProjectPath(summary, options.projectPath || ''))
-      : summaries;
-    return summariesToSessions(filteredSummaries);
+    const rangeFilteredRows = needsLocalCreatedAtFilter(options.range)
+      ? rows.filter(row => isScalarRowInCreatedAtRange(row, options.range))
+      : rows;
+    const filteredRows = options.projectPath
+      ? rangeFilteredRows.filter(row => isSummaryInProjectPath({ cwd: row.cwd, projectName: row.project_name }, options.projectPath || ''))
+      : rangeFilteredRows;
+    return scalarRowsToSessions(db, filteredRows);
   });
 }
 
@@ -904,11 +1179,10 @@ export function getSessionSummarySql(
     const params: unknown[] = [];
     const where = [providerFilterSql(providerList, params), VISIBLE_SUMMARY_SQL, '(s.route_id = ? OR s.native_id = ?)'];
     params.push(routeId, routeId);
-    const row = db.get<SummaryPayloadRow>(
-      `SELECT payload_json FROM session_summaries s WHERE ${where.join(' AND ')} LIMIT 1`,
+    const row = db.get<SessionSummaryScalarRow>(
+      `SELECT ${SESSION_SUMMARY_SCALAR_COLUMNS} FROM session_summaries s WHERE ${where.join(' AND ')} LIMIT 1`,
       params,
     );
-    const summary = row ? parseSummary(row) : null;
-    return summary ? summaryToSessionInfo(summary) : null;
+    return row ? scalarRowsToSessions(db, [row])[0] : null;
   });
 }

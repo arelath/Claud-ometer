@@ -109,6 +109,80 @@ export function forEachCopilotJsonlLineSync(filePath: string, callback: (record:
   }
 }
 
+export function forEachCopilotJsonlPrefixLineSync(
+  filePath: string,
+  maxBytes: number,
+  callback: (record: CopilotTranscriptRecord) => boolean | void,
+): void {
+  if (!fs.existsSync(filePath) || maxBytes <= 0) return;
+
+  const buffer = Buffer.allocUnsafe(Math.min(JSONL_READ_CHUNK_SIZE, maxBytes));
+  const fd = fs.openSync(filePath, 'r');
+  let carry = '';
+  let remainingBytes = maxBytes;
+  let shouldContinue = true;
+
+  try {
+    while (shouldContinue && remainingBytes > 0) {
+      const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, remainingBytes), null);
+      if (bytesRead === 0) break;
+      remainingBytes -= bytesRead;
+
+      carry += buffer.subarray(0, bytesRead).toString('utf-8');
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() || '';
+
+      for (const line of lines) {
+        const parsed = parseCopilotJsonlLine(line);
+        if (parsed && callback(parsed) === false) {
+          shouldContinue = false;
+          break;
+        }
+      }
+    }
+
+    if (shouldContinue && remainingBytes > 0) {
+      const parsed = parseCopilotJsonlLine(carry);
+      if (parsed) callback(parsed);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export function forEachCopilotJsonlTailLineSync(
+  filePath: string,
+  maxBytes: number,
+  callback: (record: CopilotTranscriptRecord) => boolean | void,
+): void {
+  if (!fs.existsSync(filePath) || maxBytes <= 0) return;
+
+  const stat = fs.statSync(filePath);
+  const bytesToRead = Math.min(maxBytes, stat.size);
+  if (bytesToRead <= 0) return;
+
+  const fd = fs.openSync(filePath, 'r');
+  const buffer = Buffer.allocUnsafe(bytesToRead);
+
+  try {
+    const startOffset = stat.size - bytesToRead;
+    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, startOffset);
+    let text = buffer.subarray(0, bytesRead).toString('utf-8');
+
+    if (startOffset > 0) {
+      const firstNewline = text.search(/\r?\n/);
+      text = firstNewline >= 0 ? text.slice(firstNewline + (text[firstNewline] === '\r' && text[firstNewline + 1] === '\n' ? 2 : 1)) : '';
+    }
+
+    for (const line of text.split(/\r?\n/)) {
+      const parsed = parseCopilotJsonlLine(line);
+      if (parsed && callback(parsed) === false) break;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function listCopilotTranscriptFiles(workspaceStorageDir = getCopilotWorkspaceStorageDir()): string[] {
   if (!fs.existsSync(workspaceStorageDir)) return [];
 

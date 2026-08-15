@@ -61,14 +61,14 @@ describe('lib hook URL builders', () => {
 
   it('builds filtered analytics SWR keys', async () => {
     const hooks = await import('@/lib/hooks');
-    const range = { start: '2026-04-01', end: '2026-05-01' };
+    const range = { start: '2026-04-01', end: '2026-05-01', timeZone: 'America/Los_Angeles', granularity: '4h' as const };
 
     hooks.useStats({ totalSessions: 99 } as never, range);
     hooks.useProjects([], range);
     hooks.useSessions(25, 0, 'hello world', [], range);
 
-    expect(swrMock).toHaveBeenNthCalledWith(1, '/api/stats?start=2026-04-01&end=2026-05-01', expect.any(Function), { fallbackData: undefined });
-    expect(swrMock).toHaveBeenNthCalledWith(2, '/api/projects?start=2026-04-01&end=2026-05-01', expect.any(Function), { fallbackData: undefined });
-    expect(swrMock).toHaveBeenNthCalledWith(3, '/api/sessions?q=hello+world&limit=25&offset=0&includeTotal=1&start=2026-04-01&end=2026-05-01', expect.any(Function), { fallbackData: undefined });
+    expect(swrMock).toHaveBeenNthCalledWith(1, '/api/stats?start=2026-04-01&end=2026-05-01&tz=America%2FLos_Angeles&granularity=4h', expect.any(Function), { fallbackData: undefined });
+    expect(swrMock).toHaveBeenNthCalledWith(2, '/api/projects?start=2026-04-01&end=2026-05-01&tz=America%2FLos_Angeles&granularity=4h', expect.any(Function), { fallbackData: undefined });
+    expect(swrMock).toHaveBeenNthCalledWith(3, '/api/sessions?q=hello+world&limit=25&offset=0&includeTotal=1&start=2026-04-01&end=2026-05-01&tz=America%2FLos_Angeles&granularity=4h', expect.any(Function), { fallbackData: undefined });
   });
 });

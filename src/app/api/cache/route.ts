@@ -7,7 +7,6 @@ import {
   clearSessionSummaryCache,
 } from '@/lib/agent-data/session-summary-store';
 import {
-  ensureSessionIndexRefresh,
   getQuickSessionIndexStatus,
   getSessionIndexStatus,
   rebuildSessionIndex,
@@ -26,12 +25,7 @@ export const GET = withErrorHandler(async (request?: Request) => {
   const searchParams = request ? new URL(request.url).searchParams : new URLSearchParams();
   const providers = getActiveProviders();
   if (searchParams.get('quick') === '1') {
-    let status = getQuickSessionIndexStatus(providers);
-    if (status.status === 'empty' || status.status === 'stale') {
-      ensureSessionIndexRefresh(providers);
-      status = getQuickSessionIndexStatus(providers);
-    }
-    return NextResponse.json(status);
+    return NextResponse.json(await getSessionIndexStatus(providers));
   }
   return NextResponse.json(await getSessionIndexStatus(providers));
 }, 'Error reading cache status', 'Failed to read cache status');

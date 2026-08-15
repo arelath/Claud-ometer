@@ -3,7 +3,7 @@ import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import type { DashboardStats, LiveSessionInfo, ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
 import * as reader from '@/lib/claude-data/reader';
 import { getLiveSessions } from '@/lib/claude-data/live-sessions';
-import { getCachedSessionSummaries } from '@/lib/agent-data/session-summary-store';
+import { getProviderSessionSummaries } from '@/lib/agent-data/provider-summary-view';
 import { summariesToDashboardStats, summariesToProjects, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 
 function nativeId(id: string): string {
@@ -80,17 +80,17 @@ export const claudeProvider: AgentDataProvider = {
   parserVersion: claudeParserVersion,
   canResume: true,
   async getProjects() {
-    if (hasSummarySupport()) return summariesToProjects(await getCachedSessionSummaries([claudeProvider]));
+    if (hasSummarySupport()) return summariesToProjects(await getProviderSessionSummaries(claudeProvider));
     return (await reader.getProjects()).map(withProjectIdentity);
   },
   async getSessions(limit, offset) {
-    if (hasSummarySupport()) return summariesToSessions(await getCachedSessionSummaries([claudeProvider])).slice(offset || 0, (offset || 0) + (limit || 50));
+    if (hasSummarySupport()) return summariesToSessions(await getProviderSessionSummaries(claudeProvider)).slice(offset || 0, (offset || 0) + (limit || 50));
     return (await reader.getSessions(limit, offset)).map(withSessionIdentity);
   },
   async getProjectSessions(projectId) {
     if (hasSummarySupport()) {
       const nativeProjectId = nativeId(projectId);
-      return summariesToSessions((await getCachedSessionSummaries([claudeProvider]))
+      return summariesToSessions((await getProviderSessionSummaries(claudeProvider))
         .filter(summary => summary.nativeProjectId === nativeProjectId || summary.projectRouteId === projectId));
     }
     return (await reader.getProjectSessions(nativeId(projectId))).map(withSessionIdentity);
@@ -101,9 +101,9 @@ export const claudeProvider: AgentDataProvider = {
   },
   async searchSessions(query, limit) {
     if (hasSummarySupport()) {
-      if (!query.trim()) return summariesToSessions(await getCachedSessionSummaries([claudeProvider])).slice(0, limit || 50);
+      if (!query.trim()) return summariesToSessions(await getProviderSessionSummaries(claudeProvider)).slice(0, limit || 50);
       const lowerQuery = query.toLowerCase();
-      const summaries = (await getCachedSessionSummaries([claudeProvider]))
+      const summaries = (await getProviderSessionSummaries(claudeProvider))
         .filter(summary => summarySearchText(summary).includes(lowerQuery))
         .slice(0, limit || 50);
       return summariesToSessions(summaries);
@@ -111,7 +111,7 @@ export const claudeProvider: AgentDataProvider = {
     return (await reader.searchSessions(query, limit)).map(withSessionIdentity);
   },
   async getDashboardStats() {
-    if (hasSummarySupport()) return summariesToDashboardStats(await getCachedSessionSummaries([claudeProvider]));
+    if (hasSummarySupport()) return summariesToDashboardStats(await getProviderSessionSummaries(claudeProvider));
     const stats: DashboardStats = await reader.getDashboardStats();
     return {
       ...stats,

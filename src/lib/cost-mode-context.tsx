@@ -16,6 +16,12 @@ interface CostModeContextValue {
 const CostModeContext = createContext<CostModeContextValue | null>(null);
 
 const STORAGE_KEY = 'agentscope-cost-mode';
+const fallbackCostModeContext: CostModeContextValue = {
+  costMode: DEFAULT_COST_MODE,
+  setCostMode: () => undefined,
+  pickCost: (estimates, legacyFallback = 0) => estimates?.[DEFAULT_COST_MODE] ?? legacyFallback,
+  label: COST_MODE_LABELS[DEFAULT_COST_MODE],
+};
 
 function getInitialMode(): CostMode {
   if (typeof window === 'undefined') return DEFAULT_COST_MODE;
@@ -48,6 +54,5 @@ export function CostModeProvider({ children }: { children: ReactNode }) {
 
 export function useCostMode() {
   const ctx = useContext(CostModeContext);
-  if (!ctx) throw new Error('useCostMode must be used within CostModeProvider');
-  return ctx;
+  return ctx || fallbackCostModeContext;
 }

@@ -161,7 +161,8 @@ describe('agent archives', () => {
     expect(projectsPayload.projects).toEqual([
       expect.objectContaining({
         agentKind: 'codex',
-        id: expect.stringMatching(/^codex:/),
+        id: expect.stringMatching(/^path:/),
+        routeId: expect.stringMatching(/^codex:/),
       }),
     ]);
     expect(sessionsPayload.sessions).toEqual([

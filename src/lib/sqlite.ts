@@ -10,13 +10,15 @@ export interface SqliteDatabase {
 }
 
 type DatabaseSyncCtor = new (filePath: string, options?: { readOnly?: boolean }) => {
-  prepare(sql: string): {
-    all(...params: unknown[]): Row[];
-    get(...params: unknown[]): Row | undefined;
-    run(...params: unknown[]): unknown;
-  };
+  prepare(sql: string): SqliteStatement;
   exec?(sql: string): void;
   close(): void;
+};
+
+type SqliteStatement = {
+  all(...params: unknown[]): Row[];
+  get(...params: unknown[]): Row | undefined;
+  run(...params: unknown[]): unknown;
 };
 
 let DatabaseSync: DatabaseSyncCtor | null = null;
@@ -90,29 +92,40 @@ export function openDatabase(filePath: string, options: { readOnly?: boolean } =
   }
 
   const db = new DatabaseSync(filePath, { readOnly: options.readOnly !== false });
+  const statementCache = new Map<string, SqliteStatement>();
   try {
     db.exec?.('PRAGMA busy_timeout = 1000');
   } catch {
     // Best effort for older node:sqlite builds.
   }
 
+  function statement(sql: string): SqliteStatement {
+    const cached = statementCache.get(sql);
+    if (cached) return cached;
+    const prepared = db.prepare(sql);
+    statementCache.set(sql, prepared);
+    return prepared;
+  }
+
   function exec(sql: string): void {
     if (db.exec) {
       db.exec(sql);
+      statementCache.clear();
       return;
     }
-    db.prepare(sql).run();
+    statement(sql).run();
+    statementCache.clear();
   }
 
   return {
     query<T extends Row = Row>(sql: string, params: unknown[] = []): T[] {
-      return db.prepare(sql).all(...params) as T[];
+      return statement(sql).all(...params) as T[];
     },
     get<T extends Row = Row>(sql: string, params: unknown[] = []): T | undefined {
-      return db.prepare(sql).get(...params) as T | undefined;
+      return statement(sql).get(...params) as T | undefined;
     },
     run(sql: string, params: unknown[] = []) {
-      db.prepare(sql).run(...params);
+      statement(sql).run(...params);
     },
     exec,
     transaction<T>(callback: () => T): T {
@@ -131,6 +144,7 @@ export function openDatabase(filePath: string, options: { readOnly?: boolean } =
       }
     },
     close() {
+      statementCache.clear();
       db.close();
     },
   };

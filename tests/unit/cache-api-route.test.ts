@@ -80,16 +80,17 @@ describe('cache API route', () => {
     expect(cleared).toMatchObject({ summaryCount: 0 });
   });
 
-  it('quick status schedules stale refreshes without rebuilding inline', async () => {
+  it('quick status uses source-aware status without rebuilding inline', async () => {
     const indexer = await import('@/lib/agent-data/indexer');
-    vi.mocked(indexer.getQuickSessionIndexStatus)
-      .mockReturnValueOnce({ ...clearedStatus, status: 'stale', staleCount: 1 })
-      .mockReturnValueOnce({ ...clearedStatus, status: 'refreshing', staleCount: 1 });
+    vi.mocked(indexer.getSessionIndexStatus)
+      .mockResolvedValueOnce({ ...clearedStatus, status: 'refreshing', staleCount: 1 });
     const { GET } = await import('@/app/api/cache/route');
 
     const body = await (await GET(new Request('http://localhost/api/cache?quick=1'))).json();
 
-    expect(indexer.ensureSessionIndexRefresh).toHaveBeenCalledWith([provider]);
+    expect(indexer.getSessionIndexStatus).toHaveBeenCalledWith([provider]);
+    expect(indexer.getQuickSessionIndexStatus).not.toHaveBeenCalled();
+    expect(indexer.ensureSessionIndexRefresh).not.toHaveBeenCalled();
     expect(indexer.rebuildSessionIndex).not.toHaveBeenCalled();
     expect(body).toMatchObject({ status: 'refreshing', staleCount: 1 });
   });

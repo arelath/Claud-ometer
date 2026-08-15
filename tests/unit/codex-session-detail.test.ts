@@ -87,6 +87,70 @@ describe('Codex session detail parser', () => {
     expect(summary.searchTextPreview).toContain('fixture user text');
   });
 
+  it('keeps a subagent own identity when inherited history contains parent metadata', async () => {
+    const childId = '11111111-1111-4111-8111-111111111111';
+    const parentId = '22222222-2222-4222-8222-222222222222';
+    const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '09');
+    const filePath = path.join(sessionsDir, `rollout-2026-05-09T10-00-00-${childId}.jsonl`);
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(filePath, [
+      JSON.stringify({
+        timestamp: '2026-05-09T10:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: childId,
+          originator: 'codex_cli',
+          cwd: 'D:/repo/child',
+          cli_version: '1.0.0',
+          git: { branch: 'child-branch' },
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-09T10:00:01.000Z',
+        type: 'turn_context',
+        payload: { cwd: 'D:/repo/child', model: 'gpt-5.5' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-09T10:00:02.000Z',
+        type: 'session_meta',
+        payload: {
+          id: parentId,
+          cwd: 'D:/repo/parent',
+          cli_version: '0.9.0',
+          git: { branch: 'parent-branch' },
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-09T10:00:03.000Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'child result' }] },
+      }),
+    ].join('\n'));
+    const reader = await loadReader();
+
+    const source = (await reader.discoverSessionSummarySources())
+      .find(item => item.sourceFilePath === filePath);
+    expect(source).toBeTruthy();
+    const summary = await reader.buildSessionSummary(source!);
+    const detail = await reader.getSessionDetail(`codex:${childId}`);
+
+    expect(summary).toMatchObject({
+      nativeId: childId,
+      routeId: `codex:${childId}`,
+      cwd: 'D:/repo/child',
+      version: '1.0.0',
+      gitBranch: 'child-branch',
+    });
+    expect(detail).toMatchObject({
+      nativeId: childId,
+      routeId: `codex:${childId}`,
+      cwd: 'D:/repo/child',
+      version: '1.0.0',
+      gitBranch: 'child-branch',
+    });
+    await expect(reader.getSessionDetail(`codex:${parentId}`)).resolves.toBeNull();
+  });
+
   it('renders errors and compactions as visible system events', async () => {
     const reader = await loadReader();
     const detail = await reader.getSessionDetail('00000000-0000-0000-0000-000000000001');

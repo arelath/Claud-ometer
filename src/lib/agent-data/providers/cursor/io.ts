@@ -117,6 +117,47 @@ export function forEachCursorJsonlLineSync(filePath: string, callback: (record: 
   }
 }
 
+export function forEachCursorJsonlPrefixLineSync(
+  filePath: string,
+  maxBytes: number,
+  callback: (record: CursorTranscriptRecord) => boolean | void,
+): void {
+  if (!fs.existsSync(filePath) || maxBytes <= 0) return;
+
+  const buffer = Buffer.allocUnsafe(Math.min(JSONL_READ_CHUNK_SIZE, maxBytes));
+  const fd = fs.openSync(filePath, 'r');
+  let carry = '';
+  let remainingBytes = maxBytes;
+  let shouldContinue = true;
+
+  try {
+    while (shouldContinue && remainingBytes > 0) {
+      const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, remainingBytes), null);
+      if (bytesRead === 0) break;
+      remainingBytes -= bytesRead;
+
+      carry += buffer.subarray(0, bytesRead).toString('utf-8');
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() || '';
+
+      for (const line of lines) {
+        const parsed = parseCursorJsonlLine(line);
+        if (parsed && callback(parsed) === false) {
+          shouldContinue = false;
+          break;
+        }
+      }
+    }
+
+    if (shouldContinue && remainingBytes > 0) {
+      const parsed = parseCursorJsonlLine(carry);
+      if (parsed) callback(parsed);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function listCursorTranscriptFiles(projectsDir = getCursorProjectsDir()): string[] {
   if (!fs.existsSync(projectsDir)) return [];
 

@@ -3,8 +3,10 @@ import type { AgentDataProvider } from './provider';
 import { getLiveSessions } from '@/lib/claude-data/live-sessions';
 import {
   getCachedSessionSummaries,
+  getLastSessionIndexRefreshMetrics,
   getSessionSummaryCacheStatus,
   rebuildCachedSessionSummaries,
+  type SessionIndexRefreshMetrics,
 } from './session-summary-store';
 import {
   sourceSummaryCacheKey,
@@ -27,6 +29,7 @@ export interface SessionIndexStatus extends SessionSummaryCacheStatus {
   refreshStartedAt?: string;
   refreshCompletedAt?: string;
   refreshError?: string;
+  refreshMetrics?: SessionIndexRefreshMetrics;
 }
 
 export interface IndexedSessionSnapshot {
@@ -120,6 +123,13 @@ function summarizeStatus(cacheStatus: SessionSummaryCacheStatus, state: RuntimeS
     return { status: 'stale', unindexedCount };
   }
   return { status: 'fresh', unindexedCount };
+}
+
+function refreshMetricsForProviders(providers: AgentDataProvider[]): SessionIndexRefreshMetrics | undefined {
+  const providerKinds = new Set(supportedProviders(providers).map(provider => provider.kind));
+  const metrics = getLastSessionIndexRefreshMetrics();
+  if (!metrics) return undefined;
+  return metrics.providers.some(provider => providerKinds.has(provider)) ? metrics : undefined;
 }
 
 export function getIndexedSessionSummaries(providers: AgentDataProvider[]): CachedSessionSummary[] {
@@ -227,6 +237,7 @@ export async function getSessionIndexStatus(providers: AgentDataProvider[]): Pro
     refreshStartedAt: state.refreshStartedAt,
     refreshCompletedAt: state.refreshCompletedAt,
     refreshError: state.refreshError,
+    refreshMetrics: refreshMetricsForProviders(refreshProviders),
   };
 }
 
@@ -268,6 +279,7 @@ export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): Sess
     refreshStartedAt: state.refreshStartedAt,
     refreshCompletedAt: state.refreshCompletedAt,
     refreshError: state.refreshError,
+    refreshMetrics: refreshMetricsForProviders(refreshProviders),
   };
 }
 

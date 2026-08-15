@@ -8,6 +8,7 @@ import { getProjectSessionsSql, getSessionsSql, type SessionSqlPage } from '@/li
 import { filterVisibleSessionSummaries, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
 import { isSummaryInProjectPath, parseProjectPathRouteId } from '@/lib/agent-data/project-path';
 import { filterByTimeRange, parseApiTimeRangeParams, type TimeRangeParams } from '@/lib/time-range';
+import { isTimestampInLocalDateRange, normalizeTimeZone } from '@/lib/analytics-time';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 
 export const dynamic = 'force-dynamic';
@@ -61,6 +62,11 @@ function sqlPaginatedResponse(page: SessionSqlPage, includeTotal: boolean) {
 }
 
 function getTimeFilteredSummaries(providers: AgentDataProvider[], range: TimeRangeParams): CachedSessionSummary[] {
+  if (range.timeZone && (range.start || range.end)) {
+    const timeZone = normalizeTimeZone(range.timeZone);
+    return getIndexedSessionSummaries(providers)
+      .filter(summary => isTimestampInLocalDateRange(summary.createdAt, timeZone, range));
+  }
   return filterByTimeRange(getIndexedSessionSummaries(providers), range, summary => summary.createdAt);
 }
 

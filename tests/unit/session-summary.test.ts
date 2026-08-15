@@ -104,7 +104,9 @@ describe('session summary aggregation', () => {
     const stats = summariesToDashboardStats(summaries);
 
     expect(projects).toMatchObject([{
-      id: 'project-1',
+      id: expect.stringMatching(/^path:/),
+      agentKind: 'claude',
+      routeId: 'claude:project-1',
       sessionCount: 2,
       totalMessages: 5,
       totalTokens: 187,
