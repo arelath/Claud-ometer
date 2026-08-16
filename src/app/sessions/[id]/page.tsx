@@ -444,7 +444,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                       ) : groupedMessages.map((group, groupIndex) => {
                         let content: ReactNode = null;
                         if (group.type === 'compaction') {
-                          content = <CompactionDivider timestamp={group.timestamp} targetId={group.targetId} />;
+                          content = <CompactionDivider timestamp={group.timestamp} targetId={group.targetId} subagent={group.subagent} />;
                         } else if (group.type === 'user') {
                           content = <UserMessage msg={group.message} index={group.index} />;
                         } else if (group.type === 'assistant') {

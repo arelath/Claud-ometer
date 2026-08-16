@@ -300,8 +300,16 @@ function getPatchArtifactsFromResult(result?: CodexToolResult): Array<{ path: st
       : typeof change?.unifiedDiff === 'string'
         ? change.unifiedDiff
         : '';
-    if (!unifiedDiff) return [];
-    const parsed = parseUnifiedDiff(unifiedDiff);
+    const changeType = getOptionalString(change || {}, 'type');
+    const content = typeof change?.content === 'string' ? change.content : '';
+    const parsed = unifiedDiff
+      ? parseUnifiedDiff(unifiedDiff)
+      : changeType === 'add'
+        ? { oldText: '', newText: content, location: undefined }
+        : changeType === 'delete'
+          ? { oldText: content, newText: '', location: undefined }
+          : null;
+    if (!parsed) return [];
     return [{
       path: filePath,
       artifact: {
@@ -347,6 +355,14 @@ function buildPatchTools(payload: Record<string, unknown>, result?: CodexToolRes
     ]),
     artifact,
   }));
+}
+
+export function buildCodexPatchResultToolCalls(result: CodexToolResult): SessionToolCallDisplay[] {
+  return buildPatchTools({
+    type: 'custom_tool_call',
+    name: 'apply_patch',
+    call_id: result.callId,
+  }, result);
 }
 
 function buildGenericTool(payload: Record<string, unknown>, result?: CodexToolResult): SessionToolCallDisplay {

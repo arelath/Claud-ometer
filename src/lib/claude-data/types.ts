@@ -321,6 +321,15 @@ export interface SessionMessageImageDisplay {
   label?: string;
 }
 
+export interface SessionSubagentDisplay {
+  id: string;
+  parentId: string;
+  nickname?: string;
+  role?: string;
+  path?: string;
+  depth: number;
+}
+
 export interface SessionMessageDisplay {
   role: 'user' | 'assistant' | 'system' | 'tool-use' | 'tool-result' | 'command';
   content: string;
@@ -335,6 +344,7 @@ export interface SessionMessageDisplay {
   blocks?: SessionMessageBlockDisplay[];
   images?: SessionMessageImageDisplay[];
   isMeta?: boolean;
+  subagent?: SessionSubagentDisplay;
 }
 
 export interface DashboardStats {

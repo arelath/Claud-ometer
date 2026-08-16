@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { format } from 'date-fns';
 import { Brain, ChevronDown, Info, Terminal } from 'lucide-react';
-import type { SessionMessageBlockDisplay, SessionMessageDisplay } from '@/lib/claude-data/types';
+import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionSubagentDisplay } from '@/lib/claude-data/types';
 import { formatDisplayPath } from '@/lib/path-utils';
 import { normalizeDisplayNewlines } from '@/lib/string-utils';
 import { ANTHROPIC_FILE_DETAIL_KEYS } from '@/config/anthropic-schema';
@@ -15,6 +15,7 @@ import {
 import { SessionPill } from '../session-pill';
 import { useSessionRenderContext } from '../session-render-context';
 import { DetailPanel, type PillTone } from './ToolCall';
+import { SubagentIndicator } from './SubagentIndicator';
 
 export function BlockCard({ block }: { block: SessionMessageBlockDisplay }) {
   const { projectRoot } = useSessionRenderContext();
@@ -78,6 +79,7 @@ export function BlockCard({ block }: { block: SessionMessageBlockDisplay }) {
 export function SystemGroup({ messages }: { messages: { message: SessionMessageDisplay; index: number }[] }) {
   const [expanded, setExpanded] = useState(false);
   const firstIndex = messages[0]?.index;
+  const subagent = messages[0]?.message.subagent;
   const timeRange = (() => {
     const timestamps = messages
       .map(message => message.message.timestamp)
@@ -103,6 +105,7 @@ export function SystemGroup({ messages }: { messages: { message: SessionMessageD
         className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/30 border border-dashed border-border/50 rounded text-[11px] text-muted-foreground hover:bg-muted/50 transition-colors"
       >
         <span>{messages.length} system event{messages.length === 1 ? '' : 's'}</span>
+        <SubagentIndicator subagent={subagent} />
         <span className="opacity-60 truncate">- {labels.join(', ')}{timeRange ? ` - ${timeRange}` : ''}</span>
         <ChevronDown className="h-3 w-3 ml-auto shrink-0" />
       </button>
@@ -116,6 +119,7 @@ export function SystemGroup({ messages }: { messages: { message: SessionMessageD
         className="flex items-center gap-2 w-full text-[10px] text-muted-foreground hover:text-foreground mb-1"
       >
         <span>Collapse {messages.length} system events</span>
+        <SubagentIndicator subagent={subagent} />
         <ChevronDown className="h-3 w-3 ml-auto shrink-0 rotate-180 transition-transform" />
       </button>
       {messages.map(({ message, index }) => (
@@ -139,7 +143,11 @@ export function SystemGroup({ messages }: { messages: { message: SessionMessageD
   );
 }
 
-export function CompactionDivider({ timestamp, targetId }: { timestamp: string; targetId: string }) {
+export function CompactionDivider({ timestamp, targetId, subagent }: {
+  timestamp: string;
+  targetId: string;
+  subagent?: SessionSubagentDisplay;
+}) {
   const timeLabel = !Number.isNaN(new Date(timestamp).getTime())
     ? format(new Date(timestamp), 'h:mm:ss a')
     : null;
@@ -147,8 +155,9 @@ export function CompactionDivider({ timestamp, targetId }: { timestamp: string; 
   return (
     <div id={targetId} data-testid="conversation-compaction-marker" className="flex items-center gap-3 py-2.5">
       <div data-testid="conversation-compaction-line" className="h-px flex-1 bg-amber-500/50" />
-      <div className="shrink-0 rounded-full border border-amber-300/70 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
-        Context Window Compaction{timeLabel ? <span className="ml-1.5 font-mono font-normal opacity-70">{timeLabel}</span> : null}
+      <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-300/70 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-800 shadow-sm dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
+        <span>Context Window Compaction{timeLabel ? <span className="ml-1.5 font-mono font-normal opacity-70">{timeLabel}</span> : null}</span>
+        <SubagentIndicator subagent={subagent} />
       </div>
       <div data-testid="conversation-compaction-line" className="h-px flex-1 bg-amber-500/50" />
     </div>

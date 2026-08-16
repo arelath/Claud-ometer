@@ -13,6 +13,7 @@ import { findDetail } from '../detail-utils';
 import { useSessionRenderContext } from '../session-render-context';
 import { ToolCallInline, ToolResultInline } from './ToolCall';
 import { CompactionDivider, ThinkingSummary, BlockCard } from './SystemEvent';
+import { SubagentIndicator } from './SubagentIndicator';
 
 export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
   msg: SessionMessageDisplay;
@@ -51,12 +52,13 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
 
   return (
     <div id={`conversation-message-${index}`} data-testid="assistant-turn">
-      <div className="bg-card border border-border/50 rounded-lg p-3">
+      <div className={`bg-card border rounded-lg p-3 ${msg.subagent ? 'border-violet-400/50 bg-violet-500/[0.03]' : 'border-border/50'}`}>
         <div className="flex items-center gap-2 mb-1.5">
           <div className="w-[18px] h-[18px] rounded bg-amber-500/10 flex items-center justify-center">
             <Bot className="h-2.5 w-2.5 text-amber-600" />
           </div>
           <span className="text-[11px] font-medium text-foreground">{assistantLabel}</span>
+          <SubagentIndicator subagent={msg.subagent} />
           {modelLabel && <span className="text-[11px] text-muted-foreground">{modelLabel}</span>}
           {msg.timestamp && !Number.isNaN(new Date(msg.timestamp).getTime()) && (
             <span className="text-[11px] text-muted-foreground">- {format(new Date(msg.timestamp), 'h:mm:ss a')}</span>
@@ -125,6 +127,7 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
                   key={`nested-compaction-${item.index}-${item.timestamp}`}
                   timestamp={item.timestamp}
                   targetId={item.targetId}
+                  subagent={item.subagent}
                 />
               );
             }

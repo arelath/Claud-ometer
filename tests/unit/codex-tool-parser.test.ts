@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCodexToolCalls,
+  buildCodexPatchResultToolCalls,
   buildCodexToolResultBlock,
   collectCodexToolResults,
   parseJsonObject,
@@ -77,6 +78,67 @@ describe('Codex tool parser', () => {
       expect.objectContaining({ key: 'file_path', value: 'src/example.ts' }),
       expect.objectContaining({ key: 'status', value: 'success' }),
     ]));
+  });
+
+  it('creates diff artifacts directly from orphaned patch results', () => {
+    const results = collectCodexToolResults([{
+      timestamp: '2026-08-15T19:09:24.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'patch_apply_end',
+        call_id: 'exec-36079e9a-cb99-41f6-8220-e570d681a02d',
+        success: true,
+        changes: {
+          'D:\\dev\\repo\\src\\example.ts': {
+            unified_diff: [
+              'diff --git a/src/example.ts b/src/example.ts',
+              '--- a/src/example.ts',
+              '+++ b/src/example.ts',
+              '@@ -1 +1 @@',
+              '-old',
+              '+new',
+            ].join('\n'),
+          },
+          'D:\\dev\\repo\\src\\added.ts': {
+            type: 'add',
+            content: 'export const added = true;\n',
+          },
+          'D:\\dev\\repo\\src\\deleted.ts': {
+            type: 'delete',
+            content: 'export const deleted = true;\n',
+          },
+        },
+      },
+    }]);
+
+    const calls = buildCodexPatchResultToolCalls(results.get('exec-36079e9a-cb99-41f6-8220-e570d681a02d')!);
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toMatchObject({
+      name: 'apply_patch',
+      summary: 'D:\\dev\\repo\\src\\example.ts',
+      artifact: {
+        kind: 'diff',
+        oldText: 'old',
+        newText: 'new',
+      },
+    });
+    expect(calls[1]).toMatchObject({
+      summary: 'D:\\dev\\repo\\src\\added.ts',
+      artifact: {
+        kind: 'diff',
+        oldText: '',
+        newText: 'export const added = true;\n',
+      },
+    });
+    expect(calls[2]).toMatchObject({
+      summary: 'D:\\dev\\repo\\src\\deleted.ts',
+      artifact: {
+        kind: 'diff',
+        oldText: 'export const deleted = true;\n',
+        newText: '',
+      },
+    });
   });
 
   it('creates apply_patch diff artifacts from legacy patch input', () => {

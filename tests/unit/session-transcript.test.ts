@@ -392,4 +392,94 @@ describe('session transcript grouping', () => {
     expect(allMarkdown).toContain('## System Events');
     expect(allMarkdown).toContain('hidden until all events');
   });
+
+  it('keeps subagent turns and tool results isolated from the parent transcript', () => {
+    const child = {
+      id: 'child-session',
+      parentId: 'parent-session',
+      nickname: 'Faraday',
+      role: 'code_searcher',
+      path: '/root/subagent_metadata',
+      depth: 1,
+    };
+    const rootTool = toolCall('Read', 'shared-tool-id', { file_path: 'src/root.ts' });
+    const childTool = toolCall('Read', 'shared-tool-id', { file_path: 'src/child.ts' });
+    const messages: SessionMessageDisplay[] = [
+      { role: 'user', content: 'Inspect the repository.', timestamp: '2026-05-03T10:00:00.000Z' },
+      assistantWithTool(1, rootTool, 'Parent starts reading.'),
+      {
+        role: 'user',
+        content: 'Find the subagent metadata fields.',
+        timestamp: '2026-05-03T10:00:02.000Z',
+        subagent: child,
+      },
+      {
+        ...assistantWithTool(3, childTool, 'Child starts reading.'),
+        subagent: child,
+      },
+      {
+        ...toolResult(4, 'shared-tool-id', 'CHILD_RESULT'),
+        subagent: child,
+      },
+      { role: 'assistant', content: 'Parent conclusion.', timestamp: '2026-05-03T10:00:05.000Z' },
+    ];
+
+    const items = buildTranscriptItems(messages, 'tools');
+    const assistantItems = items.filter(item => item.type === 'assistant');
+
+    expect(assistantItems).toHaveLength(3);
+    expect(assistantItems[0].message.content).toBe('Parent starts reading.');
+    expect(assistantItems[0].toolPairs[0]?.toolResult).toBeUndefined();
+    expect(assistantItems[1].message.subagent).toEqual(child);
+    expect(assistantItems[1].toolPairs[0]?.toolResult?.message.content).toBe('');
+    expect(assistantItems[1].toolPairs[0]?.toolResult?.message.blocks?.[0]?.content).toBe('CHILD_RESULT');
+    expect(assistantItems[2].message.content).toBe('Parent conclusion.');
+
+    const markdown = buildTranscriptMarkdown(items, { assistantLabel: 'Codex' });
+    expect(markdown).toContain('> Subagent: Faraday · code_searcher · /root/subagent_metadata');
+    expect(markdown).toContain('Find the subagent metadata fields.');
+    expect(markdown).toContain('Child starts reading.');
+    expect(markdown).toContain('CHILD_RESULT');
+  });
+
+  it('keeps child compactions attributed and outside a root assistant timeline', () => {
+    const child = {
+      id: 'child-session',
+      parentId: 'parent-session',
+      nickname: 'Faraday',
+      role: 'code_searcher',
+      path: '/root/subagent_metadata',
+      depth: 1,
+    };
+    const read = toolCall('Read', 'root-read', { file_path: 'src/root.ts' });
+    const result = toolResult(5, 'root-read', 'ROOT_RESULT');
+    const messages: SessionMessageDisplay[] = [
+      { role: 'assistant', content: 'Root tool run.', timestamp: '2026-05-03T10:00:01.000Z' },
+      toolUse(2, read),
+      {
+        role: 'system',
+        content: 'Context compacted',
+        timestamp: '2026-05-03T10:00:03.000Z',
+        isMeta: true,
+        subagent: child,
+      },
+      result,
+    ];
+
+    const items = buildTranscriptItems(messages, 'tools', ['2026-05-03T10:00:03.000Z']);
+    const assistant = items.find(item => item.type === 'assistant');
+    const compaction = items.find(item => item.type === 'compaction');
+
+    expect(items.map(item => item.type)).toEqual(['assistant', 'compaction', 'assistant']);
+    expect(assistant?.type === 'assistant' ? assistant.toolTimeline : []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'compaction' }),
+    ]));
+    expect(assistant?.type === 'assistant' ? assistant.toolPairs[0]?.toolResult : undefined).toBeUndefined();
+    expect(items[2].type === 'assistant' ? items[2].toolPairs[0]?.toolResult?.message.blocks?.[0]?.content : undefined)
+      .toBe('ROOT_RESULT');
+    expect(compaction).toMatchObject({ type: 'compaction', subagent: child });
+    const markdown = buildTranscriptMarkdown(items, { assistantLabel: 'Codex' });
+    expect(markdown).toContain('> Subagent: Faraday · code_searcher · /root/subagent_metadata');
+    expect(markdown.indexOf('Context Window Compaction')).toBeLessThan(markdown.indexOf('ROOT_RESULT'));
+  });
 });

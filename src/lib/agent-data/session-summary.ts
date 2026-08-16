@@ -73,6 +73,7 @@ export interface CachedSessionSummary {
   projectRouteId: string;
   projectName: string;
   sourceFilePath: string;
+  sourceFilePaths?: string[];
   sourceSignature: SessionSourceSignature;
   createdAt: string;
   updatedAt: string;
@@ -168,7 +169,7 @@ export function summaryToSessionInfo(summary: CachedSessionSummary): SessionInfo
     projectName: summary.projectName,
     title: summary.title,
     sourceFilePath: summary.sourceFilePath,
-    sourceFilePaths: [summary.sourceFilePath],
+    sourceFilePaths: summary.sourceFilePaths?.length ? summary.sourceFilePaths : [summary.sourceFilePath],
     timestamp: summary.createdAt,
     duration: Math.max(0, new Date(summary.updatedAt).getTime() - new Date(summary.createdAt).getTime()),
     messageCount: summary.messageCount,

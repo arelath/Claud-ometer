@@ -170,4 +170,41 @@ describe('Codex session discovery', () => {
     expect(first[0].nativeId).toBe('one');
     expect(second[0].nativeId).toBe('two');
   });
+
+  it('groups explicit subagents under their root while preserving generic forks and orphans', async () => {
+    const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '10');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const writeSession = (id: string, payload: Record<string, unknown>) => {
+      fs.writeFileSync(
+        path.join(sessionsDir, `rollout-2026-05-10T10-00-00-${id}.jsonl`),
+        JSON.stringify({
+          timestamp: '2026-05-10T10:00:00.000Z',
+          type: 'session_meta',
+          payload: { id, originator: 'codex_cli', cwd: 'D:/repo', ...payload },
+        }),
+      );
+    };
+    writeSession('root', {});
+    writeSession('child', { parent_thread_id: 'root', session_id: 'root', agent_path: '/root/search', agent_role: 'code_searcher' });
+    writeSession('nested', { parent_thread_id: 'child', session_id: 'child', agent_path: '/root/search/review', agent_role: 'code_reviewer' });
+    writeSession('role-only', { session_id: 'root', agent_role: 'worker' });
+    writeSession('nickname-only', { session_id: 'root', agent_nickname: 'Hooke' });
+    writeSession('fork', { forked_from_id: 'root' });
+    writeSession('orphan', { parent_thread_id: 'missing', agent_path: '/root/orphan', agent_role: 'worker' });
+    const sessionIndex = await loadModule();
+
+    const logical = await sessionIndex.discoverCodexLogicalSessions();
+    const root = logical.find(session => session.root.nativeId === 'root');
+
+    expect(logical.map(session => session.root.nativeId).sort()).toEqual(['fork', 'orphan', 'root']);
+    expect(root?.members.map(member => ({ id: member.fileInfo.nativeId, depth: member.depth }))).toEqual([
+      { id: 'root', depth: 0 },
+      { id: 'child', depth: 1 },
+      { id: 'nickname-only', depth: 1 },
+      { id: 'role-only', depth: 1 },
+      { id: 'nested', depth: 2 },
+    ]);
+    expect(root?.sourceSignature.size).toBeGreaterThan(0);
+    expect(root?.signatureKey).toContain('child');
+  });
 });

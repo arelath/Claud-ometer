@@ -249,6 +249,46 @@ describe('session UI building blocks', () => {
     expect(screen.getByText('thinking summary')).toBeInTheDocument();
   });
 
+  it('labels subagent user, assistant, and system turns', () => {
+    const subagent = {
+      id: 'child-session',
+      parentId: 'parent-session',
+      nickname: 'Faraday',
+      role: 'code_searcher',
+      path: '/root/subagent_metadata',
+      depth: 1,
+    };
+
+    renderWithProviders(
+      <>
+        <UserMessage
+          index={0}
+          msg={{ role: 'user', content: 'Child assignment', timestamp: '2026-05-08T12:00:00.000Z', subagent }}
+        />
+        <AssistantCard
+          index={1}
+          msg={{ role: 'assistant', content: 'Child answer', timestamp: '2026-05-08T12:00:01.000Z', subagent }}
+          toolPairs={[]}
+        />
+        <SystemGroup
+          messages={[{
+            index: 2,
+            message: { role: 'system', content: 'Child event', timestamp: '2026-05-08T12:00:02.000Z', subagent },
+          }]}
+        />
+        <CompactionDivider
+          timestamp="2026-05-08T12:00:03.000Z"
+          targetId="child-compaction"
+          subagent={subagent}
+        />
+      </>,
+    );
+
+    expect(screen.getAllByText('Subagent: Faraday')).toHaveLength(4);
+    expect(screen.getAllByText('code_searcher')).toHaveLength(4);
+    expect(screen.getAllByLabelText(/Subagent Faraday, code_searcher, \/root\/subagent_metadata/)).toHaveLength(4);
+  });
+
   it('renders context token and file panels', () => {
     const copyPath = vi.fn();
     const jump = vi.fn();

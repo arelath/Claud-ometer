@@ -1,5 +1,10 @@
 import { buildAssistantTurnMetrics } from '@/lib/assistant-turn-metrics';
-import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
+import type {
+  SessionMessageBlockDisplay,
+  SessionMessageDisplay,
+  SessionSubagentDisplay,
+  SessionToolCallDisplay,
+} from '@/lib/claude-data/types';
 import { detailMatchesKey } from '@/lib/string-utils';
 
 export type FilterPreset = 'narrative' | 'tools' | 'all';
@@ -14,6 +19,12 @@ export interface CompactionMarker {
   timestamp: string;
   index: number;
   targetId: string;
+  subagent?: SessionSubagentDisplay;
+}
+
+export interface CompactionTimestampInput {
+  timestamp: string;
+  subagent?: SessionSubagentDisplay;
 }
 
 export type TranscriptItem = GroupedItem | CompactionMarker;
@@ -30,6 +41,34 @@ export type AssistantTimelineItem =
 export interface TranscriptTarget {
   type: 'user' | 'assistant' | 'system-group' | 'compaction';
   targetId: string;
+}
+
+function messageOriginKey(message: SessionMessageDisplay): string {
+  return message.subagent?.id || 'root';
+}
+
+function subagentOriginKey(subagent: SessionSubagentDisplay | undefined): string {
+  return subagent?.id || 'root';
+}
+
+interface TranscriptOriginBoundary {
+  index: number;
+  originKey: string;
+}
+
+function hasForeignBoundaryBetween(
+  leftIndex: number,
+  rightIndex: number,
+  originKey: string,
+  boundaries: TranscriptOriginBoundary[],
+): boolean {
+  const start = Math.min(leftIndex, rightIndex);
+  const end = Math.max(leftIndex, rightIndex);
+  return boundaries.some(boundary => (
+    boundary.index > start
+    && boundary.index < end
+    && boundary.originKey !== originKey
+  ));
 }
 
 function findDetail(
@@ -80,6 +119,7 @@ function mergeAssistantRun(run: { message: SessionMessageDisplay; index: number 
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     blocks: blocks.length > 0 ? blocks : undefined,
     isMeta: run.some(({ message }) => Boolean(message.isMeta)),
+    subagent: first.subagent,
   };
 }
 
@@ -199,12 +239,13 @@ function getToolPairTimeRange(pair: ToolPair): { start: number; end: number } | 
   };
 }
 
-function buildCompactionMarker(timestamp: string, index: number): CompactionMarker {
+function buildCompactionMarker(input: CompactionTimestampInput, index: number): CompactionMarker {
   return {
     type: 'compaction',
-    timestamp,
+    timestamp: input.timestamp,
     index,
     targetId: `conversation-compaction-${index}`,
+    subagent: input.subagent,
   };
 }
 
@@ -248,10 +289,14 @@ function insertCompactionsIntoAssistantTimeline(group: Extract<GroupedItem, { ty
   return { ...group, toolTimeline: timeline };
 }
 
-export function insertCompactionMarkers(groups: GroupedItem[], timestamps: string[]): TranscriptItem[] {
+export function insertCompactionMarkers(
+  groups: GroupedItem[],
+  timestamps: Array<string | CompactionTimestampInput>,
+): TranscriptItem[] {
   const validTimestamps = timestamps
-    .map(timestamp => ({ timestamp, time: parseTimestampMs(timestamp) }))
-    .filter((item): item is { timestamp: string; time: number } => item.time != null)
+    .map(input => typeof input === 'string' ? { timestamp: input } : input)
+    .map(input => ({ input, time: parseTimestampMs(input.timestamp) }))
+    .filter((item): item is { input: CompactionTimestampInput; time: number } => item.time != null)
     .sort((left, right) => left.time - right.time);
 
   if (validTimestamps.length === 0) return groups;
@@ -270,27 +315,32 @@ export function insertCompactionMarkers(groups: GroupedItem[], timestamps: strin
     const groupEnd = range.end;
 
     while (compactionIndex < validTimestamps.length && validTimestamps[compactionIndex].time < groupStart) {
-      items.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
+      items.push(buildCompactionMarker(validTimestamps[compactionIndex].input, compactionIndex));
       compactionIndex++;
     }
 
     const markersInsideGroup: CompactionMarker[] = [];
     while (compactionIndex < validTimestamps.length && validTimestamps[compactionIndex].time <= groupEnd) {
-      markersInsideGroup.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
+      markersInsideGroup.push(buildCompactionMarker(validTimestamps[compactionIndex].input, compactionIndex));
       compactionIndex++;
     }
 
-    items.push(group.type === 'assistant'
-      ? insertCompactionsIntoAssistantTimeline(group, markersInsideGroup)
-      : group);
-
-    if (group.type !== 'assistant') {
+    if (group.type === 'assistant') {
+      const groupOrigin = messageOriginKey(group.message);
+      const nestedMarkers = markersInsideGroup.filter(marker => subagentOriginKey(marker.subagent) === groupOrigin);
+      const externalMarkers = markersInsideGroup.filter(marker => subagentOriginKey(marker.subagent) !== groupOrigin);
+      const anchorTime = parseTimestampMs(group.message.timestamp) ?? groupStart;
+      items.push(...externalMarkers.filter(marker => (parseTimestampMs(marker.timestamp) ?? anchorTime) < anchorTime));
+      items.push(insertCompactionsIntoAssistantTimeline(group, nestedMarkers));
+      items.push(...externalMarkers.filter(marker => (parseTimestampMs(marker.timestamp) ?? anchorTime) >= anchorTime));
+    } else {
+      items.push(group);
       items.push(...markersInsideGroup);
     }
   }
 
   while (compactionIndex < validTimestamps.length) {
-    items.push(buildCompactionMarker(validTimestamps[compactionIndex].timestamp, compactionIndex));
+    items.push(buildCompactionMarker(validTimestamps[compactionIndex].input, compactionIndex));
     compactionIndex++;
   }
 
@@ -319,6 +369,7 @@ function buildSyntheticToolUseMessage(source: SessionMessageDisplay, tool: Sessi
     toolCalls: [tool],
     blocks: (source.blocks || []).filter(block => block.type === 'thinking'),
     isMeta: source.isMeta,
+    subagent: source.subagent,
   };
 }
 
@@ -331,12 +382,17 @@ function findMatchingToolResult(
   toolId: string | undefined,
   afterIndex: number,
   consumedIndexes: Set<number>,
+  originKey: string,
+  boundaries: TranscriptOriginBoundary[],
 ): { message: SessionMessageDisplay; index: number } | undefined {
   if (!toolId) return undefined;
+  const sourceIndex = items[afterIndex]?.index;
 
   for (let itemIndex = afterIndex + 1; itemIndex < items.length; itemIndex += 1) {
     const item = items[itemIndex];
+    if (sourceIndex != null && hasForeignBoundaryBetween(sourceIndex, item.index, originKey, boundaries)) break;
     if (!isToolFlowMessage(item.message)) break;
+    if (messageOriginKey(item.message) !== originKey) break;
     if (consumedIndexes.has(itemIndex)) continue;
     if (item.message.role === 'tool-result' && getToolResultId(item.message) === toolId) {
       return item;
@@ -360,6 +416,7 @@ function buildEmptyAssistantMessage(
     estimatedCosts: assistantMetrics.estimatedCosts,
     stopReason: last.stopReason,
     isMeta: run.some(({ message }) => Boolean(message.isMeta)),
+    subagent: last.subagent,
   };
 }
 
@@ -367,12 +424,14 @@ function consumeStandaloneToolUseRun(
   items: { message: SessionMessageDisplay; index: number }[],
   startIndex: number,
   consumedIndexes: Set<number>,
+  boundaries: TranscriptOriginBoundary[],
 ): { group: Extract<GroupedItem, { type: 'assistant' }>; nextIndex: number } {
   const { index } = items[startIndex];
   const toolUseRun: { message: SessionMessageDisplay; index: number }[] = [];
   const toolPairs: ToolPair[] = [];
   const pairedToolIds = new Set<string>();
   let j = startIndex;
+  const originKey = messageOriginKey(items[startIndex].message);
 
   while (j < items.length) {
     if (consumedIndexes.has(j)) {
@@ -381,6 +440,8 @@ function consumeStandaloneToolUseRun(
     }
 
     const item = items[j];
+    if (hasForeignBoundaryBetween(index, item.index, originKey, boundaries)) break;
+    if (messageOriginKey(item.message) !== originKey) break;
     if (item.message.role === 'tool-result') {
       toolPairs.push({ toolResult: item });
       consumedIndexes.add(j);
@@ -401,7 +462,7 @@ function consumeStandaloneToolUseRun(
             ? item
             : { message: buildSyntheticToolUseMessage(item.message, tool), index: item.index },
         };
-        const matchedResult = findMatchingToolResult(items, tool.id, j, consumedIndexes);
+        const matchedResult = findMatchingToolResult(items, tool.id, j, consumedIndexes, originKey, boundaries);
         if (matchedResult) {
           pair.toolResult = matchedResult;
           consumedIndexes.add(items.indexOf(matchedResult));
@@ -434,7 +495,10 @@ function consumeStandaloneToolUseRun(
 }
 
 /** Group messages: pair tool-use/tool-result with their parent assistant, collapse consecutive system messages, merge consecutive empty assistant turns. */
-export function groupMessages(items: { message: SessionMessageDisplay; index: number }[]): GroupedItem[] {
+export function groupMessages(
+  items: { message: SessionMessageDisplay; index: number }[],
+  boundaries: TranscriptOriginBoundary[] = [],
+): GroupedItem[] {
   const groups: GroupedItem[] = [];
   const consumedIndexes = new Set<number>();
   let i = 0;
@@ -453,7 +517,11 @@ export function groupMessages(items: { message: SessionMessageDisplay; index: nu
     } else if (message.role === 'assistant') {
       const assistantRun = [{ message, index }];
       let j = i + 1;
-      while (j < items.length && items[j].message.role === 'assistant') {
+      const originKey = messageOriginKey(message);
+      while (j < items.length
+        && items[j].message.role === 'assistant'
+        && messageOriginKey(items[j].message) === originKey
+        && !hasForeignBoundaryBetween(items[j - 1].index, items[j].index, originKey, boundaries)) {
         assistantRun.push(items[j]);
         j++;
       }
@@ -465,7 +533,7 @@ export function groupMessages(items: { message: SessionMessageDisplay; index: nu
 
       if (mergedMessage?.toolCalls) {
         for (const tool of mergedMessage.toolCalls) {
-          const matchedResult = findMatchingToolResult(items, tool.id, j - 1, consumedIndexes);
+          const matchedResult = findMatchingToolResult(items, tool.id, j - 1, consumedIndexes, originKey, boundaries);
           if (!matchedResult) continue;
 
           const owner = assistantRun.find(({ message: runMessage }) => (
@@ -496,15 +564,21 @@ export function groupMessages(items: { message: SessionMessageDisplay; index: nu
         }
 
         const next = items[j];
+        if (hasForeignBoundaryBetween(assistantRun[assistantRun.length - 1].index, next.index, originKey, boundaries)) break;
+        if (messageOriginKey(next.message) !== originKey) break;
         if (next.message.role === 'tool-use') {
           const pair: ToolPair = { toolUse: next };
           j++;
           const toolId = next.message.toolCalls?.[0]?.id;
-          const matchedResult = findMatchingToolResult(items, toolId, j - 1, consumedIndexes);
+          const matchedResult = findMatchingToolResult(items, toolId, j - 1, consumedIndexes, originKey, boundaries);
           if (matchedResult) {
             pair.toolResult = matchedResult;
             consumedIndexes.add(items.indexOf(matchedResult));
-          } else if (j < items.length && !consumedIndexes.has(j) && items[j].message.role === 'tool-result') {
+          } else if (j < items.length
+            && !consumedIndexes.has(j)
+            && items[j].message.role === 'tool-result'
+            && messageOriginKey(items[j].message) === originKey
+            && !hasForeignBoundaryBetween(next.index, items[j].index, originKey, boundaries)) {
             pair.toolResult = items[j];
             consumedIndexes.add(j);
             j++;
@@ -533,14 +607,17 @@ export function groupMessages(items: { message: SessionMessageDisplay; index: nu
     } else if (message.role === 'system' || message.role === 'command') {
       const systemBatch: { message: SessionMessageDisplay; index: number }[] = [{ message, index }];
       let j = i + 1;
-      while (j < items.length && (items[j].message.role === 'system' || items[j].message.role === 'command')) {
+      const originKey = messageOriginKey(message);
+      while (j < items.length
+        && (items[j].message.role === 'system' || items[j].message.role === 'command')
+        && messageOriginKey(items[j].message) === originKey) {
         systemBatch.push(items[j]);
         j++;
       }
       groups.push({ type: 'system-group', messages: systemBatch });
       i = j;
     } else if (message.role === 'tool-use') {
-      const { group, nextIndex } = consumeStandaloneToolUseRun(items, i, consumedIndexes);
+      const { group, nextIndex } = consumeStandaloneToolUseRun(items, i, consumedIndexes, boundaries);
       groups.push(group);
       i = nextIndex;
     } else if (message.role === 'tool-result') {
@@ -554,7 +631,18 @@ export function groupMessages(items: { message: SessionMessageDisplay; index: nu
   return groups;
 }
 
-function mergeAdjacentAssistantGroups(groups: GroupedItem[]): GroupedItem[] {
+function assistantGroupMaxIndex(group: Extract<GroupedItem, { type: 'assistant' }>): number {
+  return Math.max(
+    group.index,
+    ...group.toolPairs.flatMap(pair => [pair.toolUse?.index, pair.toolResult?.index]
+      .filter((index): index is number => index != null)),
+  );
+}
+
+function mergeAdjacentAssistantGroups(
+  groups: GroupedItem[],
+  boundaries: TranscriptOriginBoundary[] = [],
+): GroupedItem[] {
   const mergedGroups: GroupedItem[] = [];
   let assistantRun: Extract<GroupedItem, { type: 'assistant' }>[] = [];
 
@@ -587,6 +675,14 @@ function mergeAdjacentAssistantGroups(groups: GroupedItem[]): GroupedItem[] {
 
   for (const group of groups) {
     if (group.type === 'assistant') {
+      if (assistantRun.length > 0) {
+        const originKey = messageOriginKey(assistantRun[0].message);
+        const previous = assistantRun[assistantRun.length - 1];
+        if (originKey !== messageOriginKey(group.message)
+          || hasForeignBoundaryBetween(assistantGroupMaxIndex(previous), group.index, originKey, boundaries)) {
+          flushAssistantRun();
+        }
+      }
       assistantRun.push(group);
       continue;
     }
@@ -627,13 +723,29 @@ export function buildTranscriptItems(
   compactionTimestamps: string[] = [],
   toolFilter: string | null = null,
 ): TranscriptItem[] {
+  const compactionBoundaries = messages.flatMap((message, index) => (
+    message.isMeta
+    && message.content === 'Context compacted'
+    && compactionTimestamps.includes(message.timestamp)
+      ? [{ index, originKey: messageOriginKey(message) }]
+      : []
+  ));
   const groupedMessages = groupMessages(
     messages.map((message, index) => ({ message, index })).filter(({ message }) => messagePassesPreset(message, preset)),
+    compactionBoundaries,
   );
   const baseGroups = preset === 'tools'
-    ? collapseRepeatedReasoningInToolsView(mergeAdjacentAssistantGroups(groupedMessages))
+    ? collapseRepeatedReasoningInToolsView(mergeAdjacentAssistantGroups(groupedMessages, compactionBoundaries))
     : groupedMessages;
-  const groups = insertCompactionMarkers(baseGroups, compactionTimestamps);
+  const compactionInputs = compactionTimestamps.map(timestamp => ({
+    timestamp,
+    subagent: messages.find(message => (
+      message.timestamp === timestamp
+      && message.isMeta
+      && message.content === 'Context compacted'
+    ))?.subagent,
+  }));
+  const groups = insertCompactionMarkers(baseGroups, compactionInputs);
   return groups.filter(group => itemMatchesToolFilter(group, toolFilter));
 }
 
@@ -868,11 +980,24 @@ function appendMarkdownCompaction(parts: string[], item: CompactionMarker): void
   parts.push(`_Context Window Compaction${stamp ? `: ${stamp}` : ''}_`);
 }
 
+function appendMarkdownSubagent(parts: string[], subagent: SessionSubagentDisplay | undefined): void {
+  if (!subagent) return;
+  const identity = [subagent.nickname, subagent.role, subagent.path]
+    .filter(Boolean)
+    .join(' · ') || subagent.id;
+  parts.push(`> Subagent: ${identity}${subagent.depth > 1 ? ` · depth ${subagent.depth}` : ''}`);
+}
+
 export function buildTranscriptMarkdown(items: TranscriptItem[], options: TranscriptMarkdownOptions = {}): string {
   const parts: string[] = [];
   const assistantLabel = options.assistantLabel || 'Assistant';
 
   for (const item of items) {
+    appendMarkdownSubagent(parts, item.type === 'user' || item.type === 'assistant'
+      ? item.message.subagent
+      : item.type === 'system-group'
+        ? item.messages[0]?.message.subagent
+        : item.subagent);
     if (item.type === 'compaction') {
       appendMarkdownCompaction(parts, item);
     } else if (item.type === 'user') {

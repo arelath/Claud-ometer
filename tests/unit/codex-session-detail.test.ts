@@ -151,6 +151,148 @@ describe('Codex session detail parser', () => {
     await expect(reader.getSessionDetail(`codex:${parentId}`)).resolves.toBeNull();
   });
 
+  it('folds an explicit subagent into its parent with rebased usage and marked messages', async () => {
+    const parentId = '00000000-0000-0000-0000-000000000001';
+    const childId = '33333333-3333-4333-8333-333333333333';
+    const nestedId = '44444444-4444-4444-8444-444444444444';
+    const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '09');
+    const filePath = path.join(sessionsDir, `rollout-2026-05-09T11-00-00-${childId}.jsonl`);
+    const nestedFilePath = path.join(sessionsDir, `rollout-2026-05-09T11-01-00-${nestedId}.jsonl`);
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(filePath, [
+      JSON.stringify({
+        timestamp: '2026-05-09T11:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: childId,
+          session_id: parentId,
+          parent_thread_id: parentId,
+          forked_from_id: parentId,
+          agent_nickname: 'Faraday',
+          agent_role: 'code_searcher',
+          agent_path: '/root/search',
+          originator: 'codex_cli',
+          cwd: 'D:/repo/child',
+        },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:00:00.001Z', type: 'session_meta', payload: { id: parentId, cwd: 'D:/repo/parent' } }),
+      JSON.stringify({ timestamp: '2026-05-09T11:00:00.002Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'inherited parent text' }] } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:00:00.003Z',
+        type: 'event_msg',
+        payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 20, output_tokens: 20 } } },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:00:00.004Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo/child' } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          content: [{ type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/search\nSender: /root\nPayload:\ninspect child code' }],
+        },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:00:02.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'child answer' } }),
+      JSON.stringify({ timestamp: '2026-05-09T11:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'child answer' }] } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: { input_tokens: 30, cached_input_tokens: 10, output_tokens: 5 },
+            total_token_usage: { input_tokens: 130, cached_input_tokens: 30, output_tokens: 25 },
+          },
+        },
+      }),
+    ].join('\n'));
+    fs.writeFileSync(nestedFilePath, [
+      JSON.stringify({
+        timestamp: '2026-05-09T11:01:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: nestedId,
+          session_id: childId,
+          parent_thread_id: childId,
+          agent_nickname: 'Noether',
+          agent_role: 'code_reviewer',
+          originator: 'codex_cli',
+          cwd: 'D:/repo/child',
+        },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:00.000Z', type: 'event_msg', payload: { type: 'task_started' } }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:00.000Z', type: 'inter_agent_communication_metadata', payload: { trigger_turn: true } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:01:00.001Z',
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          author: '/root',
+          recipient: '/root/search',
+          content: [{ type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/search\nSender: /root\nPayload:\nancestor task must not repeat' }],
+        },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:00.002Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ancestor answer must not repeat' }] } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:01:00.003Z',
+        type: 'event_msg',
+        payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 150, cached_input_tokens: 40, output_tokens: 30 } } },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:00.004Z', type: 'turn_context', payload: { model: 'gpt-5.5', cwd: 'D:/repo/child' } }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:00.500Z', type: 'event_msg', payload: { type: 'task_started' } }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:00.750Z', type: 'inter_agent_communication_metadata', payload: { trigger_turn: true } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:01:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          author: '/root/search',
+          recipient: '/root/search/review',
+          content: [{ type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/search/review\nSender: /root/search\nPayload:\nreview nested code' }],
+        },
+      }),
+      JSON.stringify({ timestamp: '2026-05-09T11:01:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'nested review answer' }] } }),
+      JSON.stringify({
+        timestamp: '2026-05-09T11:01:03.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: { total_token_usage: { input_tokens: 160, cached_input_tokens: 42, output_tokens: 33 } },
+        },
+      }),
+    ].join('\n'));
+    const reader = await loadReader();
+
+    const sessions = await reader.getSessions();
+    const detail = await reader.getSessionDetail(`codex:${parentId}`);
+    const sources = await reader.discoverSessionSummarySources();
+    const summary = await reader.buildSessionSummary(sources[0]);
+
+    expect(sessions).toHaveLength(1);
+    expect(await reader.getSessionDetail(`codex:${childId}`)).toBeNull();
+    expect(await reader.getSessionDetail(`codex:${nestedId}`)).toBeNull();
+    expect(detail).toMatchObject({
+      nativeId: parentId,
+      messageCount: 7,
+      userMessageCount: 4,
+      assistantMessageCount: 3,
+      totalInputTokens: 153,
+      totalCacheReadTokens: 37,
+      totalOutputTokens: 26,
+    });
+    expect(detail?.sourceFilePaths).toHaveLength(3);
+    expect(detail?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: 'inspect child code', subagent: expect.objectContaining({ nickname: 'Faraday', role: 'code_searcher' }) }),
+      expect.objectContaining({ role: 'assistant', content: 'child answer', subagent: expect.objectContaining({ id: childId, path: '/root/search' }) }),
+      expect.objectContaining({ role: 'user', content: 'review nested code', subagent: expect.objectContaining({ id: nestedId, depth: 2 }) }),
+      expect.objectContaining({ role: 'assistant', content: 'nested review answer', subagent: expect.objectContaining({ nickname: 'Noether', depth: 2 }) }),
+    ]));
+    expect(JSON.stringify(detail?.messages)).not.toContain('inherited parent text');
+    expect(JSON.stringify(detail?.messages)).not.toContain('ancestor task must not repeat');
+    expect(JSON.stringify(detail?.messages)).not.toContain('ancestor answer must not repeat');
+    expect(summary).toMatchObject({ messageCount: 7, sourceFilePaths: expect.any(Array) });
+    expect(summary.sourceFilePaths).toHaveLength(3);
+  });
+
   it('renders errors and compactions as visible system events', async () => {
     const reader = await loadReader();
     const detail = await reader.getSessionDetail('00000000-0000-0000-0000-000000000001');
@@ -367,6 +509,60 @@ describe('Codex session detail parser', () => {
       removedLines: 1,
     });
     expect(summary.files[0].path).toBe('d:/dev/repo/src/app.ts');
+  });
+
+  it('feeds orphaned Desktop patch results into the Changes diff summary once', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const patchResult: CodexEnvelope = {
+      timestamp: '2026-08-15T19:09:24.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'patch_apply_end',
+        call_id: 'exec-36079e9a-cb99-41f6-8220-e570d681a02d',
+        success: true,
+        changes: {
+          'D:\\dev\\repo\\src\\example.ts': {
+            unified_diff: [
+              'diff --git a/src/example.ts b/src/example.ts',
+              '--- a/src/example.ts',
+              '+++ b/src/example.ts',
+              '@@ -1 +1 @@',
+              '-old',
+              '+new',
+            ].join('\n'),
+          },
+        },
+      },
+    };
+    const records: CodexEnvelope[] = [
+      { timestamp: '2026-08-15T19:09:23.000Z', type: 'session_meta', payload: { id: 'desktop-patch', cwd: 'D:/repo' } },
+      { timestamp: '2026-08-15T19:09:23.500Z', type: 'turn_context', payload: { model: 'gpt-5.6', cwd: 'D:/repo' } },
+      patchResult,
+    ];
+
+    const parsed = parseCodexRecords('D:/repo/desktop-patch.jsonl', records);
+    const summary = getSessionDiffSummary(parsed.detail.messages);
+
+    expect(summary).toMatchObject({
+      fileCount: 1,
+      editCount: 1,
+      addedLines: 1,
+      removedLines: 1,
+    });
+    expect(summary.files[0].path).toBe('D:/dev/repo/src/example.ts');
+
+    records.splice(2, 0, {
+      timestamp: '2026-08-15T19:09:23.750Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'apply_patch',
+        call_id: 'exec-36079e9a-cb99-41f6-8220-e570d681a02d',
+        input: 'patch',
+      },
+    });
+    const paired = parseCodexRecords('D:/repo/paired-patch.jsonl', records);
+    expect(getSessionDiffSummary(paired.detail.messages).editCount).toBe(1);
   });
 
   it('renders response output tool results when no enriched end event exists', async () => {

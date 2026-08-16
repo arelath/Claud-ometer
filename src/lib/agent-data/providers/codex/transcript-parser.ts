@@ -8,12 +8,15 @@ import type {
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
   SessionPromptTokenBreakdown,
+  SessionSubagentDisplay,
   TokenUsage,
 } from '@/lib/claude-data/types';
+import type { CachedModelUsage } from '@/lib/agent-data/session-summary';
 import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
 import { asRecord, getCodexPayloadKind, type CodexEnvelope } from './schema';
 import {
   collectCodexToolResults,
+  buildCodexPatchResultToolCalls,
   buildCodexToolCalls,
   buildCodexToolResultBlock,
   isCodexEnrichedToolResult,
@@ -26,6 +29,7 @@ export interface CodexParsedSession {
   detail: SessionDetail;
   searchableText: string;
   reasoningOutputTokens: number;
+  modelUsage: Record<string, CachedModelUsage>;
 }
 
 export interface CodexParsedSessionSummary {
@@ -326,12 +330,16 @@ function shouldSkipDuplicateAssistant(seen: Set<string>, text: string): boolean 
   return false;
 }
 
-export async function readCodexRecords(filePath: string): Promise<CodexEnvelope[]> {
+export function readCodexRecordsSync(filePath: string): CodexEnvelope[] {
   const records: CodexEnvelope[] = [];
   forEachCodexJsonlLineSync(filePath, record => {
     records.push(record);
   });
   return records;
+}
+
+export async function readCodexRecords(filePath: string): Promise<CodexEnvelope[]> {
+  return readCodexRecordsSync(filePath);
 }
 
 function getSummaryToolName(payload: Record<string, unknown>): string {
@@ -551,8 +559,21 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
   };
 }
 
-export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fileInfo?: CodexSessionFileInfo): CodexParsedSession {
+export function parseCodexRecords(
+  filePath: string,
+  records: CodexEnvelope[],
+  fileInfo?: CodexSessionFileInfo,
+  options: { subagent?: SessionSubagentDisplay } = {},
+): CodexParsedSession {
   const results = collectCodexToolResults(records);
+  const explicitPatchCallIds = new Set(records.flatMap(record => {
+    const kind = getCodexPayloadKind(record);
+    if (record.type !== 'response_item' || (kind !== 'custom_tool_call' && kind !== 'function_call')) return [];
+    const payload = asRecord(record.payload);
+    if (getOptionalString(payload, 'name') !== 'apply_patch') return [];
+    const callId = getOptionalString(payload, 'call_id');
+    return callId ? [callId] : [];
+  }));
   const messages: SessionMessageDisplay[] = [];
   const searchableParts: string[] = [];
   const seenAssistantText = new Set<string>();
@@ -812,6 +833,21 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
       if (kind === 'exec_command_end' || kind === 'patch_apply_end' || kind === 'web_search_end') {
         const result = results.get(getOptionalString(payload, 'call_id') || '');
         if (result) {
+          if (kind === 'patch_apply_end' && !explicitPatchCallIds.has(result.callId)) {
+            const toolCalls = buildCodexPatchResultToolCalls(result);
+            toolCallCount += toolCalls.length;
+            for (const tool of toolCalls) {
+              toolsUsed[tool.name] = (toolsUsed[tool.name] || 0) + 1;
+              searchableParts.push(tool.summary, ...tool.details.map(item => item.value));
+            }
+            messages.push({
+              role: 'tool-use',
+              content: '',
+              timestamp,
+              model,
+              toolCalls,
+            });
+          }
           const block = buildCodexToolResultBlock(result);
           searchableParts.push(block.summary, block.content || '', ...block.details.map(item => item.value));
           messages.push({
@@ -910,14 +946,31 @@ export function parseCodexRecords(filePath: string, records: CodexEnvelope[], fi
     },
   };
 
+  const displayMessages = options.subagent
+    ? messages.map(message => ({ ...message, subagent: options.subagent }))
+    : messages;
+
   return {
     info,
-    detail: { ...info, messages },
+    detail: { ...info, messages: displayMessages },
     searchableText: searchableParts.join('\n').toLowerCase(),
     reasoningOutputTokens: tokenUsageSource.reasoning_output_tokens || 0,
+    modelUsage: {
+      [model || 'unknown']: {
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheReadInputTokens: usage.cache_read_input_tokens,
+        cacheCreationInputTokens: usage.cache_creation_input_tokens,
+        reasoningOutputTokens: tokenUsageSource.reasoning_output_tokens || 0,
+      },
+    },
   };
 }
 
-export async function parseCodexSessionFile(filePath: string, fileInfo?: CodexSessionFileInfo): Promise<CodexParsedSession> {
-  return parseCodexRecords(filePath, await readCodexRecords(filePath), fileInfo);
+export async function parseCodexSessionFile(
+  filePath: string,
+  fileInfo?: CodexSessionFileInfo,
+  options: { records?: CodexEnvelope[]; subagent?: SessionSubagentDisplay } = {},
+): Promise<CodexParsedSession> {
+  return parseCodexRecords(filePath, options.records || await readCodexRecords(filePath), fileInfo, options);
 }
