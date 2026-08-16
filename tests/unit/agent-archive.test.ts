@@ -11,6 +11,7 @@ import {
   isExcludedCopilotExportPath,
   isExcludedCursorExportPath,
 } from '@/lib/agent-data/archive';
+import { seedSessionSummaryIndex } from '../shared/seed-session-index';
 
 describe('agent archives', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'agent-archive');
@@ -79,6 +80,7 @@ describe('agent archives', () => {
   });
 
   it('exports Codex sessions while excluding secrets', async () => {
+    fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(path.join(sessionsDir, 'rollout.jsonl'), '{}\n');
@@ -90,6 +92,7 @@ describe('agent archives', () => {
     fs.writeFileSync(path.join(codexDir, 'plugins', 'cached.json'), '{}');
 
     vi.resetModules();
+    await seedSessionSummaryIndex();
     const { GET } = await import('@/app/api/export/route');
     const response = await GET();
     const zip = await JSZip.loadAsync(await response.arrayBuffer());
@@ -112,7 +115,7 @@ describe('agent archives', () => {
     expect(meta).toMatchObject({
       exportVersion: 2,
       agents: ['codex'],
-      agentCounts: { codex: { sessionCount: 1 } },
+      agentCounts: { codex: { sessionCount: 2 } },
     });
 
     const standardizedMeta = JSON.parse(await zip.file('agent-data/standardized/export-meta.json')!.async('string'));
@@ -132,6 +135,7 @@ describe('agent archives', () => {
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
 
     vi.resetModules();
+    await seedSessionSummaryIndex();
     const { GET } = await import('@/app/api/export/route');
     const response = await GET();
     const zip = await JSZip.loadAsync(await response.arrayBuffer());
@@ -195,6 +199,7 @@ describe('agent archives', () => {
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
 
     vi.resetModules();
+    await seedSessionSummaryIndex();
     const { GET } = await import('@/app/api/export/route');
     const response = await GET(new Request('http://localhost/api/export?format=standardized'));
     const zip = await JSZip.loadAsync(await response.arrayBuffer());
@@ -224,6 +229,7 @@ describe('agent archives', () => {
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
 
     vi.resetModules();
+    await seedSessionSummaryIndex();
     const { GET } = await import('@/app/api/export/route');
     const response = await GET(new Request('http://localhost/api/export?format=raw'));
     const body = await response.json();
@@ -245,6 +251,7 @@ describe('agent archives', () => {
     process.env.AGENT_SCOPE_AGENTS = 'copilot';
 
     vi.resetModules();
+    await seedSessionSummaryIndex();
     const { GET } = await import('@/app/api/export/route');
     const response = await GET();
     const zip = await JSZip.loadAsync(await response.arrayBuffer());
@@ -280,6 +287,7 @@ describe('agent archives', () => {
     process.env.AGENT_SCOPE_AGENTS = 'cursor';
 
     vi.resetModules();
+    await seedSessionSummaryIndex();
     const { GET } = await import('@/app/api/export/route');
     const response = await GET();
     const zip = await JSZip.loadAsync(await response.arrayBuffer());

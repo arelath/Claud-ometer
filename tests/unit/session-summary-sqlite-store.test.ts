@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isSqliteAvailable, openDatabase, openWritableDatabase } from '@/lib/sqlite';
 import {
   clearSessionSummaryIndexCache,
+  commitSessionSummaryIndexSource,
   commitSessionSummaryIndex,
+  finalizeSessionSummaryIndexDiscovery,
   getSessionSummaryIndexPath,
   readSourceParseCheckpoints,
   readSessionSummaryIndexCache,
@@ -464,6 +466,32 @@ sqliteDescribe('SQLite session summary index store', () => {
     });
 
     expect(readSessionSummaryIndexCache().summaries.map(summary => summary.provider)).toEqual(['codex']);
+  });
+
+  it('defers missing-source deletion until discovery finalization', () => {
+    const firstSource = makeSource();
+    const secondSource = makeSource({ sourceFilePath: path.join(root, 'second.jsonl') });
+    commitSessionSummaryIndex({
+      touchedProviders: ['claude'],
+      discoveredSources: [firstSource, secondSource],
+      updatedSummaries: [
+        makeSummary(),
+        makeSummary({
+          nativeId: 'second',
+          routeId: 'claude:second',
+          sourceFilePath: secondSource.sourceFilePath,
+        }),
+      ],
+    });
+
+    commitSessionSummaryIndexSource({
+      source: firstSource,
+      summary: makeSummary({ updatedAt: '2026-05-08T10:00:02.000Z' }),
+    });
+    expect(readSessionSummaryIndexCache().summaries).toHaveLength(2);
+
+    finalizeSessionSummaryIndexDiscovery(['claude'], [firstSource]);
+    expect(readSessionSummaryIndexCache().summaries.map(summary => summary.nativeId)).toEqual(['session']);
   });
 
   it('filters session date ranges in the requested local time zone', () => {

@@ -7,11 +7,13 @@ import {
   clearSessionSummaryCache,
   getCachedSessionSummaries,
   getLastSessionIndexRefreshMetrics,
+  reconcileSessionSummaryIndex,
   resetSessionSummaryStoreForTests,
 } from '@/lib/agent-data/session-summary-store';
 import {
   commitSessionSummaryIndex,
   readSourceParseCheckpoints,
+  readSessionSummaryIndexCache,
 } from '@/lib/agent-data/session-summary-sqlite-store';
 import { sourceSummaryCacheKey } from '@/lib/agent-data/session-summary-cache';
 import { SESSION_SUMMARY_CACHE_VERSION, type CachedSessionSummary, type SessionSummarySource } from '@/lib/agent-data/session-summary';
@@ -177,6 +179,64 @@ describe('session summary store', () => {
       sourceCount: 1,
       fullBuildCount: 1,
     });
+  });
+
+  sqliteIt('publishes each source before parsing the next source', async () => {
+    const secondFilePath = path.join(root, 'zz-second.jsonl');
+    fs.writeFileSync(secondFilePath, 'two');
+    const stableDate = new Date('2026-05-08T10:00:00.000Z');
+    fs.utimesSync(filePath, stableDate, stableDate);
+    fs.utimesSync(secondFilePath, stableDate, stableDate);
+    const sources = [sourceFor(filePath), sourceFor(secondFilePath)];
+    const buildSessionSummary = vi.fn(async (source: SessionSummarySource) => {
+      if (source.sourceFilePath === secondFilePath) {
+        expect(readSessionSummaryIndexCache().summaries.map(summary => summary.sourceFilePath)).toContain(filePath);
+      }
+      return summaryFor(source);
+    });
+    const provider: AgentDataProvider = {
+      ...makeProvider().provider,
+      discoverSessionSources: vi.fn(async () => sources),
+      buildSessionSummary,
+    };
+
+    const result = await reconcileSessionSummaryIndex([provider]);
+
+    expect(buildSessionSummary).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ processedSources: 2, committedSources: 2, failedSources: 0 });
+    expect(readSessionSummaryIndexCache().summaries).toHaveLength(2);
+  });
+
+  sqliteIt('keeps failed manifests degraded and retries after backoff', async () => {
+    const stableDate = new Date('2026-05-08T10:00:00.000Z');
+    fs.utimesSync(filePath, stableDate, stableDate);
+    let nowMs = new Date('2026-05-08T12:00:00.000Z').getTime();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+    const buildSessionSummary = vi.fn(async () => {
+      throw new Error('transient parse failure');
+    });
+    const provider: AgentDataProvider = {
+      ...makeProvider().provider,
+      buildSessionSummary,
+    };
+
+    try {
+      await expect(reconcileSessionSummaryIndex([provider])).resolves.toMatchObject({
+        failedSources: 1,
+        lastError: 'transient parse failure',
+      });
+      await expect(reconcileSessionSummaryIndex([provider])).resolves.toMatchObject({
+        failedSources: 1,
+        lastError: 'transient parse failure',
+      });
+      expect(buildSessionSummary).toHaveBeenCalledTimes(1);
+
+      nowMs += 31_000;
+      await expect(reconcileSessionSummaryIndex([provider])).resolves.toMatchObject({ failedSources: 1 });
+      expect(buildSessionSummary).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('records refresh metrics for index builds', async () => {

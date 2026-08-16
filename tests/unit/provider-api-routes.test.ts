@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { codexFixtureSessionId, seedImportedData, toolPairFixtureSessionId } from '../shared/seed-imported-data';
+import { seedSessionSummaryIndex } from '../shared/seed-session-index';
 
 describe('provider API routes', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'provider-api-routes');
@@ -23,6 +24,7 @@ describe('provider API routes', () => {
     process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     process.env.AGENT_SCOPE_AGENTS = 'codex';
     vi.resetModules();
+    await seedSessionSummaryIndex();
   }
 
   beforeEach(async () => {
@@ -153,6 +155,29 @@ describe('provider API routes', () => {
       agentKind: 'codex',
       messages: expect.any(Array),
     });
+
+    const encodedRouteId = encodeURIComponent(routeId);
+    const encodedResponse = await GET(
+      new Request(`http://localhost/api/sessions/${encodedRouteId}/export`),
+      { params: Promise.resolve({ id: encodedRouteId }) },
+    );
+    const encodedDetail = await encodedResponse.json();
+
+    expect(encodedResponse.status).toBe(200);
+    expect(encodedDetail).toMatchObject({ id: routeId, agentKind: 'codex' });
+
+    for (const invalidId of [
+      'claude%3A..%2F..%2Ftarget',
+      'claude%3A..%5C..%5Ctarget',
+      'codex%3Ainvalid%ZZ',
+    ]) {
+      const invalidResponse = await GET(
+        new Request(`http://localhost/api/sessions/${invalidId}/export`),
+        { params: Promise.resolve({ id: invalidId }) },
+      );
+      expect(invalidResponse.status).toBe(400);
+      await expect(invalidResponse.json()).resolves.toEqual({ error: 'Invalid session id' });
+    }
   });
 
   it('exports a viewable metadata-only live session', async () => {
@@ -257,6 +282,7 @@ describe('provider API routes', () => {
     process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     process.env.AGENT_SCOPE_AGENTS = 'copilot';
     vi.resetModules();
+    await seedSessionSummaryIndex();
 
     const [{ POST: rebuildCache }, { GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
       import('@/app/api/cache/route'),
@@ -343,6 +369,7 @@ describe('provider API routes', () => {
     process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     process.env.AGENT_SCOPE_AGENTS = 'claude,codex';
     vi.resetModules();
+    await seedSessionSummaryIndex();
 
     const [{ POST: rebuildCache }, { GET: getProjects }, { GET: getSessions }, { GET: getSession }, { GET: getStats }] = await Promise.all([
       import('@/app/api/cache/route'),

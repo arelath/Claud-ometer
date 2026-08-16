@@ -4,11 +4,7 @@ import { getActiveProviders } from '@/lib/agent-data/registry';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import { resetAnalyticsMemo } from '@/lib/agent-data/analytics';
 import {
-  clearSessionSummaryCache,
-} from '@/lib/agent-data/session-summary-store';
-import {
   getQuickSessionIndexStatus,
-  getSessionIndexStatus,
   rebuildSessionIndex,
   resetSessionIndexer,
 } from '@/lib/agent-data/indexer';
@@ -22,25 +18,22 @@ function resetRuntimeCaches(providers: AgentDataProvider[]): void {
 }
 
 export const GET = withErrorHandler(async (request?: Request) => {
-  const searchParams = request ? new URL(request.url).searchParams : new URLSearchParams();
+  void request;
   const providers = getActiveProviders();
-  if (searchParams.get('quick') === '1') {
-    return NextResponse.json(await getSessionIndexStatus(providers));
-  }
-  return NextResponse.json(await getSessionIndexStatus(providers));
+  const status = getQuickSessionIndexStatus(providers);
+  return NextResponse.json(status, { headers: { ETag: `"${status.revision}"` } });
 }, 'Error reading cache status', 'Failed to read cache status');
 
 export const POST = withErrorHandler(async () => {
   const providers = getActiveProviders();
   resetRuntimeCaches(providers);
-  const summaries = await rebuildSessionIndex(providers);
-  const status = await getSessionIndexStatus(providers);
-  return NextResponse.json({ ...status, rebuilt: summaries.length });
+  const run = await rebuildSessionIndex(providers);
+  return NextResponse.json(run, { status: 202 });
 }, 'Error rebuilding cache', 'Failed to rebuild cache');
 
 export const DELETE = withErrorHandler(async () => {
   const providers = getActiveProviders();
-  clearSessionSummaryCache();
   resetRuntimeCaches(providers);
-  return NextResponse.json(getQuickSessionIndexStatus(providers));
+  const run = await rebuildSessionIndex(providers);
+  return NextResponse.json({ ...run, deprecated: true }, { status: 202 });
 }, 'Error clearing cache', 'Failed to clear cache');

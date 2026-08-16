@@ -8,6 +8,7 @@ const nextDir = path.join(rootDir, '.next');
 const standaloneDir = path.join(nextDir, 'standalone');
 const publicDir = path.join(rootDir, 'public');
 const staticDir = path.join(nextDir, 'static');
+const indexerDir = path.join(nextDir, 'indexer');
 
 function assertExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
@@ -25,8 +26,15 @@ function copyDirectory(source, destination) {
 assertExists(standaloneDir, 'Next standalone output');
 assertExists(path.join(standaloneDir, 'server.js'), 'Next standalone server');
 assertExists(staticDir, 'Next static assets');
+assertExists(path.join(indexerDir, 'indexer.mjs'), 'Session indexer sidecar');
+assertExists(path.join(indexerDir, 'summary-worker.mjs'), 'Session summary parser worker');
+assertExists(
+  path.join(standaloneDir, 'node_modules', 'tiktoken', 'lite', 'tiktoken_bg.wasm'),
+  'Session indexer tokenizer WASM dependency',
+);
 
 copyDirectory(publicDir, path.join(standaloneDir, 'public'));
 copyDirectory(staticDir, path.join(standaloneDir, '.next', 'static'));
+copyDirectory(indexerDir, path.join(standaloneDir, 'indexer'));
 
 console.log('Prepared .next/standalone for Electron packaging.');

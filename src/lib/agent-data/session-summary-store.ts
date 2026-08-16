@@ -8,9 +8,12 @@ import {
 } from './session-summary-cache';
 import {
   clearSessionSummaryIndexCache as clearPersistentSessionSummaryCache,
+  commitSessionSummaryIndexSource,
   commitSessionSummaryIndex,
+  finalizeSessionSummaryIndexDiscovery,
   getSessionSummaryIndexStatus as buildCacheStatus,
   readSessionSummaryIndexRefreshMetrics,
+  readSessionSummaryIndexSourceState,
   readSourceParseCheckpoints,
   readSessionSummaryIndexCache,
   writeSessionSummaryIndexRefreshMetrics,
@@ -32,6 +35,7 @@ import {
   type SummaryParsePoolMode,
 } from './session-summary-parse-pool';
 import type { AgentKind } from './types';
+import { SESSION_SOURCE_STABILITY_GRACE_MS } from './source-stability';
 
 interface MemoEntry {
   key: string;
@@ -60,7 +64,16 @@ export interface SessionIndexRefreshMetrics {
 
 const memo = new Map<string, MemoEntry>();
 const inflight = new Map<string, Promise<CachedSessionSummary[]>>();
-const DEFAULT_MAX_SUMMARY_BUILD_CONCURRENCY = 4;
+interface ProgressiveManifestState {
+  key: string;
+  result: ProgressiveSessionIndexResult;
+  failureCount: number;
+  nextReconcileAt: number;
+}
+
+const progressiveManifest = new Map<string, ProgressiveManifestState>();
+const progressiveInflight = new Map<string, Promise<ProgressiveSessionIndexResult>>();
+const DEFAULT_MAX_SUMMARY_BUILD_CONCURRENCY = 1;
 const SUMMARY_BUILD_CONCURRENCY_ENV = 'AGENT_SCOPE_SUMMARY_BUILD_CONCURRENCY';
 let lastRefreshMetrics: SessionIndexRefreshMetrics | undefined;
 
@@ -163,13 +176,18 @@ interface DiscoveryResult {
   discoveryMsByProvider: Record<string, number>;
 }
 
-async function discoverSourcesWithMetrics(providers: AgentDataProvider[]): Promise<DiscoveryResult> {
+async function discoverSourcesWithMetrics(
+  providers: AgentDataProvider[],
+  discoverProvider?: (provider: AgentDataProvider) => Promise<SessionSummarySource[]>,
+): Promise<DiscoveryResult> {
   const results: SessionSummarySource[][] = [];
   const discoveryMsByProvider: Record<string, number> = {};
   for (const provider of providers.filter(providerHasSummarySupport)) {
     await yieldToEventLoop();
     const started = Date.now();
-    results.push(await provider.discoverSessionSources!());
+    results.push(discoverProvider
+      ? await discoverProvider(provider)
+      : await provider.discoverSessionSources!());
     discoveryMsByProvider[provider.kind] = elapsedMs(started);
   }
   const sources = results.flat().sort((left, right) => {
@@ -430,6 +448,243 @@ async function buildSummaries(
   }
 }
 
+export interface ProgressiveSessionIndexProgress {
+  totalSources: number;
+  processedSources: number;
+  committedSources: number;
+  failedSources: number;
+  currentProvider?: AgentKind;
+  heapUsedBytes: number;
+  rssBytes: number;
+}
+
+export interface ProgressiveSessionIndexResult extends ProgressiveSessionIndexProgress {
+  validSources: number;
+  recentSources: number;
+  fullBuildSources: number;
+  incrementalBuildSources: number;
+  lastError?: string;
+}
+
+export interface ProgressiveSessionIndexOptions {
+  force?: boolean;
+  parsePool?: ReturnType<typeof createSummaryParsePool>;
+  discoverProvider?: (provider: AgentDataProvider) => Promise<SessionSummarySource[]>;
+  onProgress?: (progress: ProgressiveSessionIndexProgress) => void;
+}
+
+function memoryProgress(
+  totalSources: number,
+  processedSources: number,
+  committedSources: number,
+  failedSources: number,
+  currentProvider?: AgentKind,
+): ProgressiveSessionIndexProgress {
+  const memory = process.memoryUsage();
+  return {
+    totalSources,
+    processedSources,
+    committedSources,
+    failedSources,
+    currentProvider,
+    heapUsedBytes: memory.heapUsed,
+    rssBytes: memory.rss,
+  };
+}
+
+async function reconcileDiscoveredSources(
+  providers: AgentDataProvider[],
+  sources: SessionSummarySource[],
+  discoveryMsByProvider: Record<string, number>,
+  options: ProgressiveSessionIndexOptions,
+): Promise<ProgressiveSessionIndexResult> {
+  const nowMs = Date.now();
+  const providerByKind = new Map(providers.map(provider => [provider.kind, provider]));
+  const pool = options.parsePool || createSummaryParsePool(providers, { concurrency: 1 });
+  const ownsPool = !options.parsePool;
+  const metrics = startRefreshMetrics(providers, discoveryMsByProvider, 1, pool.mode);
+  metrics.sourceCount = sources.length;
+  lastRefreshMetrics = metrics;
+
+  let processedSources = 0;
+  let committedSources = 0;
+  let failedSources = 0;
+  let validSources = 0;
+  let lastError: string | undefined;
+
+  const publish = (currentProvider?: AgentKind) => {
+    options.onProgress?.(memoryProgress(
+      sources.length,
+      processedSources,
+      committedSources,
+      failedSources,
+      currentProvider,
+    ));
+  };
+
+  publish();
+  try {
+    for (const source of sources) {
+      const provider = providerByKind.get(source.provider);
+      const state = readSessionSummaryIndexSourceState(source);
+      const checkpoints = state.checkpoint
+        ? new Map([[sourceSummaryCacheKey(source), state.checkpoint]])
+        : new Map<string, SourceParseCheckpoint>();
+      const plan = createSessionRefreshPlan({
+        sources: [source],
+        cachedSummaries: state.summary ? [state.summary] : [],
+        touchedProviders: [source.provider],
+        checkpointsByKey: checkpoints,
+        incrementalSupport: getIncrementalSupport(providers),
+        force: options.force,
+        nowMs,
+      });
+
+      metrics.validCount += plan.valid.length;
+      metrics.recentCount += plan.recent.length;
+      metrics.fullBuildCount += plan.fullBuild.length;
+      metrics.incrementalBuildCount += plan.incrementalBuild.length;
+      validSources += plan.valid.length;
+      publish(source.provider);
+
+      if (plan.valid.length) {
+        processedSources += 1;
+        publish();
+        continue;
+      }
+
+      try {
+        let result: ParseSummaryResult | undefined;
+        if (plan.recent.length) {
+          [result] = await pool.run([{
+            provider: source.provider,
+            source,
+            mode: 'recent',
+          }]);
+        } else {
+          const mode = plan.incrementalBuild.length ? 'incremental' as const : 'full' as const;
+          const task: ParseSummaryTask = {
+            provider: source.provider,
+            source,
+            mode,
+            previousSummary: mode === 'incremental' ? state.summary : undefined,
+            checkpoint: mode === 'incremental' ? state.checkpoint : undefined,
+          };
+          [result] = await pool.run([task]);
+        }
+
+        if (!result?.summary || result.error) {
+          failedSources += 1;
+          metrics.failedBuildCount += 1;
+          lastError = result?.error || `Provider ${source.provider} returned no summary`;
+        } else {
+          const commitStarted = Date.now();
+          commitSessionSummaryIndexSource({
+            source,
+            summary: result.summary,
+            checkpoint: result.checkpoint,
+            deleteCheckpoint: result.mode !== 'incremental' && Boolean(state.checkpoint) && !result.checkpoint,
+          });
+          metrics.commitMs += elapsedMs(commitStarted);
+          metrics.sqliteRowsWritten += estimateRowsWritten([source], [result.summary], 0);
+          addProviderMs(metrics.parseMsByProvider, result.provider, parseResultMs(result));
+          committedSources += 1;
+        }
+      } finally {
+        provider?.resetCache?.();
+      }
+
+      processedSources += 1;
+      publish();
+    }
+
+    const finalizeStarted = Date.now();
+    finalizeSessionSummaryIndexDiscovery(providers.map(provider => provider.kind), sources);
+    metrics.commitMs += elapsedMs(finalizeStarted);
+    completeRefreshMetrics(metrics);
+  } catch (error) {
+    completeRefreshMetrics(metrics, error);
+    throw error;
+  } finally {
+    if (ownsPool) await pool.close();
+  }
+
+  return {
+    ...memoryProgress(sources.length, processedSources, committedSources, failedSources),
+    validSources,
+    recentSources: metrics.recentCount,
+    fullBuildSources: metrics.fullBuildCount,
+    incrementalBuildSources: metrics.incrementalBuildCount,
+    lastError,
+  };
+}
+
+/**
+ * Bounded-memory production reconciliation. It plans and publishes one source
+ * at a time and never returns or memoizes the complete summary corpus.
+ */
+export async function reconcileSessionSummaryIndex(
+  providers: AgentDataProvider[],
+  options: ProgressiveSessionIndexOptions = {},
+): Promise<ProgressiveSessionIndexResult> {
+  const supportedProviders = providers.filter(providerHasSummarySupport);
+  if (supportedProviders.length === 0) {
+    return { ...memoryProgress(0, 0, 0, 0), validSources: 0, recentSources: 0, fullBuildSources: 0, incrementalBuildSources: 0 };
+  }
+
+  const { sources, discoveryMsByProvider } = await discoverSourcesWithMetrics(
+    supportedProviders,
+    options.discoverProvider,
+  );
+  const key = manifestKey(supportedProviders, sources);
+  const memoKey = supportedProviders.map(provider => provider.kind).sort().join(',');
+  const priorManifest = progressiveManifest.get(memoKey);
+  if (
+    !options.force
+    && priorManifest?.key === key
+    && Date.now() < priorManifest.nextReconcileAt
+  ) {
+    return {
+      ...priorManifest.result,
+      ...memoryProgress(sources.length, sources.length, 0, 0),
+      failedSources: priorManifest.result.failedSources,
+      lastError: priorManifest.result.lastError,
+    };
+  }
+
+  const inflightKey = `${options.force ? 'force:' : ''}${key}`;
+  const current = progressiveInflight.get(inflightKey);
+  if (current) return current;
+
+  const running = reconcileDiscoveredSources(supportedProviders, sources, discoveryMsByProvider, options)
+    .then((result) => {
+      const priorFailureCount = priorManifest?.key === key ? priorManifest.failureCount : 0;
+      const failureCount = result.failedSources > 0 ? priorFailureCount + 1 : 0;
+      const failureDelayMs = result.failedSources > 0
+        ? Math.min(
+            (result.lastError?.includes('exited') ? 5 * 60_000 : 30_000) * (2 ** Math.max(0, failureCount - 1)),
+            30 * 60_000,
+          )
+        : Number.POSITIVE_INFINITY;
+      const recentPromotionTimes = sources
+        .map(source => source.sourceSignature.mtimeMs + SESSION_SOURCE_STABILITY_GRACE_MS)
+        .filter(promotionAt => promotionAt > Date.now());
+      const nextRecentPromotionAt = result.recentSources > 0 && recentPromotionTimes.length > 0
+        ? Math.min(...recentPromotionTimes)
+        : Number.POSITIVE_INFINITY;
+      progressiveManifest.set(memoKey, {
+        key,
+        result,
+        failureCount,
+        nextReconcileAt: Math.min(Date.now() + failureDelayMs, nextRecentPromotionAt),
+      });
+      return result;
+    })
+    .finally(() => progressiveInflight.delete(inflightKey));
+  progressiveInflight.set(inflightKey, running);
+  return running;
+}
+
 export async function getCachedSessionSummaries(providers: AgentDataProvider[]): Promise<CachedSessionSummary[]> {
   const supportedProviders = providers.filter(providerHasSummarySupport);
   if (supportedProviders.length === 0) return [];
@@ -482,6 +737,8 @@ export function clearSessionSummaryCache(): void {
 export function resetSessionSummaryStore(): void {
   memo.clear();
   inflight.clear();
+  progressiveManifest.clear();
+  progressiveInflight.clear();
 }
 
 export function getLastSessionIndexRefreshMetrics(): SessionIndexRefreshMetrics | undefined {

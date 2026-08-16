@@ -140,13 +140,15 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
     return info;
   }
 
+  // Discovery itself stays metadata-only; the regular lightweight reader API
+  // still enriches chat-only sessions with their persisted summary fields.
   const chatSummary = getCopilotChatSessionSummary(fileInfo.chatSessionFilePath);
   const modelUsage = buildModelUsage(chatSummary);
   const estimatedCosts = calculateCosts(modelUsage);
   const routeId = makeRouteId('copilot', getRouteNativeId(fileInfo));
   const projectRouteId = qualifyProjectId('copilot', fileInfo.nativeProjectId);
-  const timestamp = fileInfo.createdAt || new Date(fileInfo.sourceSignature.mtimeMs || 0).toISOString();
-  const updatedAt = fileInfo.updatedAt || timestamp;
+  const timestamp = chatSummary.createdAt || fileInfo.createdAt || new Date(fileInfo.sourceSignature.mtimeMs || 0).toISOString();
+  const updatedAt = chatSummary.updatedAt || fileInfo.updatedAt || timestamp;
   const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(timestamp).getTime());
   const info: SessionInfo = {
     id: routeId,
@@ -157,7 +159,7 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
     nativeProjectId: fileInfo.nativeProjectId,
     projectRouteId,
     projectName: fileInfo.projectName,
-    title: fileInfo.title,
+    title: chatSummary.title || fileInfo.title,
     sourceFilePath: fileInfo.filePath,
     sourceFilePaths: getRawSessionFilePaths(fileInfo),
     timestamp,
@@ -176,7 +178,7 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
     models: chatSummary.models,
     gitBranch: '',
     cwd: fileInfo.cwd,
-    version: fileInfo.version || '',
+    version: chatSummary.version || fileInfo.version || '',
     toolsUsed: {},
     compaction: {
       compactions: 0,
@@ -450,8 +452,10 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
   const modelUsage = buildModelUsage(chatSummary);
   const routeId = makeRouteId('copilot', getRouteNativeId(fileInfo));
   const projectRouteId = qualifyProjectId('copilot', fileInfo.nativeProjectId);
-  const timestamp = fileInfo.createdAt || new Date(source.sourceSignature.mtimeMs || 0).toISOString();
-  const updatedAt = fileInfo.updatedAt || timestamp;
+  const timestamp = chatSummary.createdAt
+    || fileInfo.createdAt
+    || new Date(source.sourceSignature.mtimeMs || 0).toISOString();
+  const updatedAt = chatSummary.updatedAt || fileInfo.updatedAt || timestamp;
 
   return {
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
@@ -466,10 +470,10 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
     sourceSignature: source.sourceSignature,
     createdAt: timestamp,
     updatedAt,
-    title: fileInfo.title,
+    title: chatSummary.title || fileInfo.title,
     cwd: fileInfo.cwd,
     gitBranch: '',
-    version: fileInfo.version || '',
+    version: chatSummary.version || fileInfo.version || '',
     model: chatSummary.model,
     models: chatSummary.models,
     messageCount: chatSummary.userMessageCount + chatSummary.assistantMessageCount,
@@ -493,6 +497,8 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
       compactionTimestamps: [],
     },
     searchTextPreview: normalizeSearchText([
+      chatSummary.title,
+      chatSummary.version,
       fileInfo.title,
       fileInfo.projectName,
       fileInfo.cwd,

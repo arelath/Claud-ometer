@@ -11,6 +11,8 @@ import { addCodexDataToArchive } from '@/lib/agent-data/providers/codex/export';
 import { addCopilotDataToArchive } from '@/lib/agent-data/providers/copilot/export';
 import { addCursorDataToArchive } from '@/lib/agent-data/providers/cursor/export';
 import { addStandardizedDataToArchive } from '@/lib/agent-data/standardized-export';
+import { getActiveProviders } from '@/lib/agent-data/registry';
+import { getQuickSessionIndexStatus } from '@/lib/agent-data/indexer';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,6 +40,11 @@ export const GET = withErrorHandler(async (request?: Request) => {
 
   if (availableAgents.length === 0) {
     apiError('No selected agent data found', 404);
+  }
+
+  const indexStatus = getQuickSessionIndexStatus(getActiveProviders());
+  if (indexStatus.initialBuild && indexStatus.summaryCount === 0) {
+    apiError('The session index is still building. Try the export again when indexing has begun publishing data.', 503);
   }
 
   const passthrough = new PassThrough();

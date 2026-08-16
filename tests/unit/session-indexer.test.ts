@@ -1,153 +1,97 @@
-import fs from 'fs';
-import path from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
-import {
-  ensureSessionIndexRefresh,
-  getIndexedSessionSummaries,
-  getQuickSessionIndexStatus,
-  getSessionIndexStatus,
-  resetSessionIndexerForTests,
-} from '@/lib/agent-data/indexer';
-import {
-  clearSessionSummaryCache,
-  resetSessionSummaryStoreForTests,
-} from '@/lib/agent-data/session-summary-store';
-import { resetLiveSessionsForTests } from '@/lib/claude-data/live-sessions';
-import { writeSessionSummaryCache } from '@/lib/agent-data/session-summary-cache';
-import { SESSION_SUMMARY_CACHE_VERSION, type CachedSessionSummary, type SessionSummarySource } from '@/lib/agent-data/session-summary';
 
-describe('session indexer', () => {
-  const root = path.join(process.cwd(), '.test-artifacts', 'session-indexer');
-  const filePath = path.join(root, 'session.jsonl');
+const mocks = vi.hoisted(() => ({
+  requestIndexerCommand: vi.fn(async () => ({ runId: 'run-1', state: 'queued' as const })),
+  readMetadata: vi.fn(),
+  readCache: vi.fn(),
+  readSignature: vi.fn(() => 'sqlite:7'),
+}));
 
-  function sourceFor(parserVersion: string): SessionSummarySource {
-    const stat = fs.statSync(filePath);
-    return {
-      provider: 'claude',
-      parserVersion,
-      sourceFilePath: filePath,
-      sourceSignature: { size: stat.size, mtimeMs: stat.mtimeMs },
-      nativeProjectId: 'project',
-      projectName: 'Project',
-    };
-  }
+vi.mock('@/lib/agent-data/indexer-client', () => ({ requestIndexerCommand: mocks.requestIndexerCommand }));
+vi.mock('@/lib/agent-data/session-summary-sqlite-store', () => ({
+  getSessionSummaryIndexPath: vi.fn(() => 'D:/cache/index.db'),
+  getSessionSummaryIndexReadSignature: mocks.readSignature,
+  readSessionSummaryIndexCacheForProviders: mocks.readCache,
+  readSessionSummaryIndexMetadata: mocks.readMetadata,
+}));
 
-  function summaryFor(source: SessionSummarySource): CachedSessionSummary {
-    return {
-      cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
-      parserVersion: source.parserVersion,
-      provider: source.provider,
-      nativeId: 'session',
-      routeId: 'claude:session',
-      nativeProjectId: 'project',
-      projectRouteId: 'claude:project',
-      projectName: 'Project',
-      sourceFilePath: source.sourceFilePath,
-      sourceSignature: source.sourceSignature,
-      createdAt: '2026-05-08T10:00:00.000Z',
-      updatedAt: '2026-05-08T10:00:01.000Z',
-      cwd: 'D:/repo',
-      gitBranch: '',
-      version: '',
-      model: 'unknown',
-      models: [],
-      messageCount: 0,
-      userMessageCount: 0,
-      assistantMessageCount: 0,
-      toolCallCount: 0,
-      tokenTotals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      modelUsage: {},
-      toolsUsed: {},
-      compaction: { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] },
-    };
-  }
+function provider(): AgentDataProvider {
+  return {
+    kind: 'claude',
+    parserVersion: 'claude-summary-v2',
+    getProjects: vi.fn(),
+    getSessions: vi.fn(),
+    getProjectSessions: vi.fn(),
+    getSessionDetail: vi.fn(),
+    searchSessions: vi.fn(),
+    getDashboardStats: vi.fn(),
+    discoverSessionSources: vi.fn(),
+    buildSessionSummary: vi.fn(),
+  };
+}
 
-  function makeProvider(parserVersion: string, buildSessionSummary: AgentDataProvider['buildSessionSummary']): AgentDataProvider {
-    return {
-      kind: 'claude',
-      parserVersion,
-      getProjects: vi.fn(),
-      getSessions: vi.fn(),
-      getProjectSessions: vi.fn(),
-      getSessionDetail: vi.fn(),
-      searchSessions: vi.fn(),
-      getDashboardStats: vi.fn(),
-      discoverSessionSources: vi.fn(async () => [sourceFor(parserVersion)]),
-      buildSessionSummary,
-    };
-  }
-
-  beforeEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
-    fs.mkdirSync(root, { recursive: true });
-    fs.writeFileSync(filePath, 'one');
-    process.env.AGENT_SCOPE_CACHE_DIR = root;
-    process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR = path.join(root, 'live-sessions');
-    fs.mkdirSync(process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR, { recursive: true });
-    resetLiveSessionsForTests();
-    resetSessionIndexerForTests();
-    resetSessionSummaryStoreForTests();
+describe('session indexer facade', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mocks.readMetadata.mockReturnValue({
+      exists: true,
+      generatedAt: '2026-08-16T10:00:00.000Z',
+      revision: 7,
+      summaryCount: 3,
+      sourceCount: 3,
+      providerVersions: [{ provider: 'claude', parserVersion: 'claude-summary-v2', count: 3 }],
+      runtime: {
+        state: 'ready',
+        queueDepth: 0,
+        activeSources: 0,
+        pendingSources: 0,
+        failedSources: 0,
+        initialBuild: false,
+      },
+    });
+    mocks.readCache.mockReturnValue({ cacheVersion: 4, generatedAt: '', summaries: [] });
+    const indexer = await import('@/lib/agent-data/indexer');
+    indexer.resetSessionIndexerForTests();
   });
 
-  afterEach(() => {
-    resetLiveSessionsForTests();
-    clearSessionSummaryCache();
-    fs.rmSync(root, { recursive: true, force: true });
-    delete process.env.AGENT_SCOPE_CACHE_DIR;
-    delete process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR;
+  it('reads constant-time metadata without provider discovery or raw parsing', async () => {
+    const candidate = provider();
+    const { getQuickSessionIndexStatus, getSessionIndexStatus } = await import('@/lib/agent-data/indexer');
+
+    expect(getQuickSessionIndexStatus([candidate])).toMatchObject({
+      status: 'fresh',
+      state: 'ready',
+      revision: 7,
+      summaryCount: 3,
+    });
+    await expect(getSessionIndexStatus([candidate])).resolves.toMatchObject({ revision: 7 });
+    expect(candidate.discoverSessionSources).not.toHaveBeenCalled();
+    expect(candidate.buildSessionSummary).not.toHaveBeenCalled();
+    expect(mocks.readCache).not.toHaveBeenCalled();
   });
 
-  it('returns stale cache immediately and refreshes only when requested', async () => {
-    writeSessionSummaryCache({
-      cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
-      generatedAt: '2026-05-08T10:00:00.000Z',
-      summaries: [summaryFor(sourceFor('parser-v1'))],
-    });
-    let resolveBuild!: (summary: CachedSessionSummary) => void;
-    const buildPromise = new Promise<CachedSessionSummary>(resolve => {
-      resolveBuild = resolve;
-    });
-    const buildSessionSummary = vi.fn(() => buildPromise);
-    const provider = makeProvider('parser-v2', buildSessionSummary);
+  it('coalesces reconciliation requests and sends rebuilds to the sidecar', async () => {
+    const candidate = provider();
+    const { ensureSessionIndexRefresh, rebuildSessionIndex } = await import('@/lib/agent-data/indexer');
 
-    const fastSummaries = getIndexedSessionSummaries([provider]);
+    ensureSessionIndexRefresh([candidate]);
+    ensureSessionIndexRefresh([candidate]);
+    await vi.waitFor(() => expect(mocks.requestIndexerCommand).toHaveBeenCalledTimes(1));
+    expect(mocks.requestIndexerCommand).toHaveBeenCalledWith('reconcile', ['claude']);
 
-    expect(fastSummaries).toHaveLength(1);
-    expect(fastSummaries[0].parserVersion).toBe('parser-v1');
-    expect(buildSessionSummary).not.toHaveBeenCalled();
-
-    ensureSessionIndexRefresh([provider]);
-    expect(buildSessionSummary).not.toHaveBeenCalled();
-    expect(getQuickSessionIndexStatus([provider])).toMatchObject({ status: 'refreshing', staleCount: 1 });
-
-    await vi.waitFor(() => expect(buildSessionSummary).toHaveBeenCalledTimes(1));
-    await expect(getSessionIndexStatus([provider])).resolves.toMatchObject({ status: 'refreshing', staleCount: 1 });
-
-    resolveBuild(summaryFor(sourceFor('parser-v2')));
-
-    await vi.waitFor(async () => {
-      await expect(getSessionIndexStatus([provider])).resolves.toMatchObject({ status: 'fresh', staleCount: 0 });
-    });
-    expect(getIndexedSessionSummaries([provider])[0].parserVersion).toBe('parser-v2');
+    await expect(rebuildSessionIndex([candidate])).resolves.toEqual({ runId: 'run-1', state: 'queued' });
+    expect(mocks.requestIndexerCommand).toHaveBeenLastCalledWith('rebuild', ['claude']);
   });
 
-  it('deduplicates refreshes and exposes refresh failures', async () => {
-    const error = new Error('parse failed');
-    const buildSessionSummary = vi.fn(async () => {
-      throw error;
-    });
-    const provider = makeProvider('parser-v1', buildSessionSummary);
+  it('checks the revision signature before hydrating summary payloads', async () => {
+    const candidate = provider();
+    const { getIndexedSessionSummaries } = await import('@/lib/agent-data/indexer');
 
-    ensureSessionIndexRefresh([provider]);
-    ensureSessionIndexRefresh([provider]);
+    getIndexedSessionSummaries([candidate]);
+    getIndexedSessionSummaries([candidate]);
 
-    await vi.waitFor(() => expect(buildSessionSummary).toHaveBeenCalledTimes(1));
-    await vi.waitFor(async () => {
-      await expect(getSessionIndexStatus([provider])).resolves.toMatchObject({
-        status: 'error',
-        refreshError: 'parse failed',
-      });
-    });
+    expect(mocks.readSignature).toHaveBeenCalledTimes(2);
+    expect(mocks.readCache).toHaveBeenCalledTimes(1);
   });
 });

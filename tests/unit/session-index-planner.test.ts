@@ -142,6 +142,31 @@ describe('session index planner', () => {
     expect(plan.fullBuild).toEqual([]);
   });
 
+  it('routes an actively changing source to incremental mode before recent-source fallback', () => {
+    const active = source('active', {
+      sourceSignature: { size: 20, mtimeMs: oldNow - 50 },
+    });
+    const previousSignature = { size: 10, mtimeMs: oldNow - 1_000 };
+    const previousSummary = summaryFor(active, { sourceSignature: previousSignature });
+    const checkpoint = checkpointFor(active, {
+      sourceSize: previousSignature.size,
+      sourceMtimeMs: previousSignature.mtimeMs,
+      lastCompleteOffset: previousSignature.size,
+    });
+
+    const plan = createSessionRefreshPlan({
+      sources: [active],
+      cachedSummaries: [previousSummary],
+      checkpointsByKey: new Map([[checkpoint.sourceKey, checkpoint]]),
+      incrementalSupport: { claude: { checkpointVersion: 1 } },
+      touchedProviders: ['claude'],
+      nowMs: oldNow,
+    });
+
+    expect(plan.incrementalBuild).toEqual([active]);
+    expect(plan.recent).toEqual([]);
+  });
+
   it('falls back to full builds when checkpoints are not eligible', () => {
     const appended = source('appended', {
       sourceSignature: { size: 20, mtimeMs: oldNow - 60 * 60 * 1000 },

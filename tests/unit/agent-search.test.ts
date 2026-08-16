@@ -2,17 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { codexFixtureSessionId, seedImportedData, toolPairFixtureSessionId } from '../shared/seed-imported-data';
+import { seedSessionSummaryIndex } from '../shared/seed-session-index';
 
 describe('agent search', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'agent-search');
   const importDir = path.join(root, 'import');
 
-  beforeEach(() => {
+  beforeEach(async () => {
     fs.rmSync(root, { recursive: true, force: true });
     seedImportedData(importDir);
     process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
     process.env.AGENT_SCOPE_AGENTS = 'claude,codex';
     vi.resetModules();
+    await seedSessionSummaryIndex();
   });
 
   afterEach(() => {

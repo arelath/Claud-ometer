@@ -1,14 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const provider = {
-  kind: 'claude',
-  parserVersion: 'parser-v1',
-  discoverSessionSources: vi.fn(),
-  buildSessionSummary: vi.fn(),
-  resetCache: vi.fn(),
-};
+const provider = { kind: 'claude', parserVersion: 'parser-v1', resetCache: vi.fn() };
 const status = {
-  cachePath: 'D:/cache/agent-session-summary-v1.json',
+  cachePath: 'D:/cache/agentscope-session-index-v1.db',
   exists: true,
   generatedAt: '2026-05-08T10:00:00.000Z',
   summaryCount: 1,
@@ -17,81 +11,51 @@ const status = {
   validCount: 1,
   staleCount: 0,
   missingCount: 0,
-};
-const clearedStatus = {
-  ...status,
-  exists: false,
-  summaryCount: 0,
-  validCount: 0,
-  status: 'empty',
+  status: 'fresh' as const,
+  state: 'ready' as const,
+  revision: 7,
+  queueDepth: 0,
+  activeSources: 0,
+  pendingSources: 0,
+  failedSources: 0,
+  initialBuild: false,
   unindexedCount: 0,
 };
 
-vi.mock('@/lib/agent-data/registry', () => ({
-  getActiveProviders: vi.fn(() => [provider]),
-}));
-
-vi.mock('@/lib/agent-data/session-summary-store', () => ({
-  clearSessionSummaryCache: vi.fn(),
-}));
-
+vi.mock('@/lib/agent-data/registry', () => ({ getActiveProviders: vi.fn(() => [provider]) }));
 vi.mock('@/lib/agent-data/indexer', () => ({
-  ensureSessionIndexRefresh: vi.fn(),
-  getQuickSessionIndexStatus: vi.fn(() => clearedStatus),
-  getSessionIndexStatus: vi.fn(async () => status),
-  rebuildSessionIndex: vi.fn(async () => [{ nativeId: 'session-1' }]),
+  getQuickSessionIndexStatus: vi.fn(() => status),
+  rebuildSessionIndex: vi.fn(async () => ({ runId: 'run-1', state: 'queued' })),
   resetSessionIndexer: vi.fn(),
 }));
-
-vi.mock('@/lib/agent-data/analytics', () => ({
-  resetAnalyticsMemo: vi.fn(),
-}));
+vi.mock('@/lib/agent-data/analytics', () => ({ resetAnalyticsMemo: vi.fn() }));
 
 describe('cache API route', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+  beforeEach(() => vi.clearAllMocks());
 
-  it('returns cache status', async () => {
+  it('returns constant-time metadata status with the revision ETag', async () => {
+    const indexer = await import('@/lib/agent-data/indexer');
     const { GET } = await import('@/app/api/cache/route');
+    const response = await GET(new Request('http://localhost/api/cache?quick=1'));
 
-    const body = await (await GET()).json();
-
-    expect(body).toMatchObject({ summaryCount: 1, validCount: 1 });
+    expect(response.headers.get('etag')).toBe('"7"');
+    await expect(response.json()).resolves.toMatchObject({ revision: 7, status: 'fresh' });
+    expect(indexer.getQuickSessionIndexStatus).toHaveBeenCalledWith([provider]);
   });
 
-  it('rebuilds and clears the cache', async () => {
-    const [{ POST, DELETE }, store, indexer, analytics] = await Promise.all([
+  it('schedules rebuilds without deleting published data or waiting for completion', async () => {
+    const [{ POST, DELETE }, indexer] = await Promise.all([
       import('@/app/api/cache/route'),
-      import('@/lib/agent-data/session-summary-store'),
       import('@/lib/agent-data/indexer'),
-      import('@/lib/agent-data/analytics'),
     ]);
 
-    const rebuild = await (await POST()).json();
-    const cleared = await (await DELETE()).json();
+    const rebuild = await POST();
+    const deprecatedClear = await DELETE();
 
-    expect(indexer.rebuildSessionIndex).toHaveBeenCalledWith([provider]);
-    expect(store.clearSessionSummaryCache).toHaveBeenCalled();
-    expect(indexer.resetSessionIndexer).toHaveBeenCalledTimes(2);
-    expect(analytics.resetAnalyticsMemo).toHaveBeenCalledTimes(2);
-    expect(provider.resetCache).toHaveBeenCalledTimes(2);
-    expect(rebuild).toMatchObject({ rebuilt: 1 });
-    expect(cleared).toMatchObject({ summaryCount: 0 });
-  });
-
-  it('quick status uses source-aware status without rebuilding inline', async () => {
-    const indexer = await import('@/lib/agent-data/indexer');
-    vi.mocked(indexer.getSessionIndexStatus)
-      .mockResolvedValueOnce({ ...clearedStatus, status: 'refreshing', staleCount: 1 });
-    const { GET } = await import('@/app/api/cache/route');
-
-    const body = await (await GET(new Request('http://localhost/api/cache?quick=1'))).json();
-
-    expect(indexer.getSessionIndexStatus).toHaveBeenCalledWith([provider]);
-    expect(indexer.getQuickSessionIndexStatus).not.toHaveBeenCalled();
-    expect(indexer.ensureSessionIndexRefresh).not.toHaveBeenCalled();
-    expect(indexer.rebuildSessionIndex).not.toHaveBeenCalled();
-    expect(body).toMatchObject({ status: 'refreshing', staleCount: 1 });
+    expect(rebuild.status).toBe(202);
+    expect(deprecatedClear.status).toBe(202);
+    await expect(rebuild.json()).resolves.toEqual({ runId: 'run-1', state: 'queued' });
+    await expect(deprecatedClear.json()).resolves.toMatchObject({ runId: 'run-1', deprecated: true });
+    expect(indexer.rebuildSessionIndex).toHaveBeenCalledTimes(2);
   });
 });

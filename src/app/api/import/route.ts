@@ -125,7 +125,9 @@ export const POST = withErrorHandler(async (request: Request) => {
     setSelectedAgents(agents);
     setDataSource('imported');
     resetRuntimeCaches();
-    await rebuildSessionIndex(getActiveProviders());
+    void rebuildSessionIndex(getActiveProviders()).catch(() => {
+      // Reconciliation resumes when a restarting sidecar becomes available.
+    });
 
   return NextResponse.json({
     success: true,

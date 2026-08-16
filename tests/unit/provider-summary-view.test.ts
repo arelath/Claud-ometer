@@ -11,7 +11,7 @@ import {
   getQuickSessionIndexStatus,
   resetSessionIndexerForTests,
 } from '@/lib/agent-data/indexer';
-import { writeSessionSummaryCache } from '@/lib/agent-data/session-summary-cache';
+import { writeSessionSummaryIndexCache } from '@/lib/agent-data/session-summary-sqlite-store';
 import {
   SESSION_SUMMARY_CACHE_VERSION,
   type CachedSessionSummary,
@@ -101,7 +101,7 @@ describe('provider summary view', () => {
   });
 
   it('serves a non-empty indexed snapshot and refreshes in the background', async () => {
-    writeSessionSummaryCache({
+    writeSessionSummaryIndexCache({
       cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
       generatedAt: '2026-05-08T10:00:00.000Z',
       summaries: [summaryFor(sourceFor('parser-v1'))],
@@ -118,17 +118,9 @@ describe('provider summary view', () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].parserVersion).toBe('parser-v1');
     expect(buildSessionSummary).not.toHaveBeenCalled();
-    expect(getQuickSessionIndexStatus([provider])).toMatchObject({ status: 'refreshing' });
-
-    await vi.waitFor(() => expect(buildSessionSummary).toHaveBeenCalledTimes(1));
+    expect(getQuickSessionIndexStatus([provider])).toMatchObject({ status: 'stale' });
+    expect(buildSessionSummary).not.toHaveBeenCalled();
     resolveBuild(summaryFor(sourceFor('parser-v2')));
-
-    await vi.waitFor(() => {
-      expect(getQuickSessionIndexStatus([provider])).toMatchObject({
-        status: 'fresh',
-        staleCount: 0,
-      });
-    });
   });
 
   it('builds summaries when no indexed snapshot exists yet', async () => {
@@ -137,8 +129,7 @@ describe('provider summary view', () => {
 
     const summaries = await getProviderSessionSummaries(provider);
 
-    expect(summaries).toHaveLength(1);
-    expect(summaries[0].parserVersion).toBe('parser-v1');
-    expect(buildSessionSummary).toHaveBeenCalledTimes(1);
+    expect(summaries).toHaveLength(0);
+    expect(buildSessionSummary).not.toHaveBeenCalled();
   });
 });

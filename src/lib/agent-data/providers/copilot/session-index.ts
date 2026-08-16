@@ -13,7 +13,7 @@ import {
   listCopilotTranscriptFiles,
   signatureToString,
 } from './io';
-import { getCopilotChatSessionSummary, isCopilotChatSessionFile } from './chat-session';
+import { isCopilotChatSessionFile } from './chat-session';
 
 export interface CopilotSessionFileInfo {
   filePath: string;
@@ -311,24 +311,16 @@ function readLegacySessionFileInfo(filePath: string): CopilotSessionFileInfo {
 function readSessionFileInfo(filePath: string, transcriptFilePath?: string, chatSessionFilePath?: string): CopilotSessionFileInfo {
   const workspaceDir = getWorkspaceDirFromSessionFile(filePath);
   const workspaceInfo = readWorkspaceInfo(workspaceDir);
-  const chatSummary = chatSessionFilePath ? getCopilotChatSessionSummary(chatSessionFilePath) : undefined;
 
   let nativeId = fallbackIdFromFilename(filePath);
   const metadata = transcriptFilePath
-    ? readTranscriptDiscoveryMetadata(transcriptFilePath, {
-        createdAt: chatSummary?.createdAt || '',
-        updatedAt: chatSummary?.updatedAt || '',
-        version: chatSummary?.version || '',
-        title: chatSummary?.title || '',
-      })
-    : emptyTranscriptDiscoveryMetadata({
-        createdAt: chatSummary?.createdAt || '',
-        updatedAt: chatSummary?.updatedAt || '',
-        version: chatSummary?.version || '',
-        title: chatSummary?.title || '',
-      });
+    ? readTranscriptDiscoveryMetadata(transcriptFilePath)
+    : emptyTranscriptDiscoveryMetadata();
 
-  nativeId = chatSummary?.nativeId || metadata.nativeId || nativeId;
+  // Chat-session JSONL can contain a complete multi-megabyte state object in a
+  // single record. Discovery must remain metadata-only; rich chat parsing is
+  // deferred to the isolated per-source summary worker.
+  nativeId = metadata.nativeId || nativeId;
   chatSessionFilePath ||= getChatSessionFilePath(workspaceInfo.workspaceDir, nativeId)
     || getChatSessionFilePath(workspaceInfo.workspaceDir, fallbackIdFromFilename(filePath));
   const signaturePaths = [

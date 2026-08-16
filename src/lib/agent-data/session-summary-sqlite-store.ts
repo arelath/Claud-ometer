@@ -48,6 +48,39 @@ interface SummaryPayloadRow extends Record<string, unknown> {
   payload_json: string;
 }
 
+export interface SessionSummaryIndexMetadata {
+  exists: boolean;
+  generatedAt: string;
+  revision: number;
+  summaryCount: number;
+  sourceCount: number;
+  providerVersions: Array<{ provider: AgentKind; parserVersion: string; count: number }>;
+  runtime?: SessionIndexerRuntimeStatus;
+}
+
+export interface SessionIndexerRuntimeStatus {
+  state: 'ready' | 'building' | 'degraded' | 'paused';
+  queueDepth: number;
+  activeSources: number;
+  pendingSources: number;
+  failedSources: number;
+  initialBuild: boolean;
+  totalSources?: number;
+  processedSources?: number;
+  committedSources?: number;
+  heapUsedBytes?: number;
+  rssBytes?: number;
+  currentProvider?: AgentKind;
+  lastCommittedAt?: string;
+  lastError?: string;
+  run?: {
+    id: string;
+    state: 'queued' | 'running' | 'completed' | 'failed';
+    startedAt?: string;
+    completedAt?: string;
+  };
+}
+
 interface CheckpointRow extends Record<string, unknown> {
   source_key: string;
   provider: AgentKind;
@@ -73,6 +106,18 @@ export interface SessionSummaryIndexCommit {
   updatedSummaries: CachedSessionSummary[];
   updatedCheckpoints?: SourceParseCheckpoint[];
   deletedCheckpointKeys?: string[];
+}
+
+export interface SessionSummaryIndexSourceState {
+  summary?: CachedSessionSummary;
+  checkpoint?: SourceParseCheckpoint;
+}
+
+export interface SessionSummaryIndexSourceCommit {
+  source: SessionSummarySource;
+  summary: CachedSessionSummary;
+  checkpoint?: SourceParseCheckpoint;
+  deleteCheckpoint?: boolean;
 }
 
 const SCHEMA_SQL = `
@@ -330,7 +375,7 @@ function openIndexDatabase(readOnly = false): SqliteDatabase | null {
   const dbPath = getSessionSummaryIndexPath();
   if (readOnly && !fs.existsSync(dbPath)) return null;
 
-  ensureDir(path.dirname(dbPath));
+  if (!readOnly) ensureDir(path.dirname(dbPath));
   const db = readOnly ? openDatabase(dbPath) : openWritableDatabase(dbPath);
   if (!readOnly) {
     db.exec('PRAGMA foreign_keys = ON');
@@ -338,8 +383,91 @@ function openIndexDatabase(readOnly = false): SqliteDatabase | null {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');
   }
-  initializeSchema(db);
+  if (!readOnly) initializeSchema(db);
   return db;
+}
+
+const INDEXER_RUNTIME_META_KEY = 'indexer_runtime_status_json';
+const INDEX_COUNTS_META_KEY = 'index_counts_json';
+
+interface PersistedIndexCounts {
+  summaries: Partial<Record<AgentKind, number>>;
+  sources: Partial<Record<AgentKind, number>>;
+  providerVersions: Array<{ provider: AgentKind; parserVersion: string; count: number }>;
+}
+
+function refreshIndexCounts(db: SqliteDatabase): void {
+  const summaryRows = db.query<{ provider: AgentKind; count: number }>(
+    'SELECT provider, COUNT(*) AS count FROM session_summaries GROUP BY provider',
+  );
+  const sourceRows = db.query<{ provider: AgentKind; count: number }>(
+    'SELECT provider, COUNT(*) AS count FROM sources GROUP BY provider',
+  );
+  const providerVersions = db.query<{ provider: AgentKind; parser_version: string; count: number }>(
+    'SELECT provider, parser_version, COUNT(*) AS count FROM session_summaries GROUP BY provider, parser_version',
+  ).map(row => ({ provider: row.provider, parserVersion: row.parser_version, count: numberValue(row.count) }));
+  setMeta(db, INDEX_COUNTS_META_KEY, JSON.stringify({
+    summaries: Object.fromEntries(summaryRows.map(row => [row.provider, numberValue(row.count)])),
+    sources: Object.fromEntries(sourceRows.map(row => [row.provider, numberValue(row.count)])),
+    providerVersions,
+  } satisfies PersistedIndexCounts));
+}
+
+export function readSessionSummaryIndexMetadata(providers?: AgentKind[]): SessionSummaryIndexMetadata {
+  const dbPath = getSessionSummaryIndexPath();
+  if (!isSqliteIndexEnabled() || !fs.existsSync(dbPath)) {
+    return { exists: false, generatedAt: '', revision: 0, summaryCount: 0, sourceCount: 0, providerVersions: [] };
+  }
+
+  let db: SqliteDatabase | null = null;
+  try {
+    db = openDatabase(dbPath);
+    const countsRaw = db.get<OptionalMetaRow>('SELECT value FROM cache_meta WHERE key = ?', [INDEX_COUNTS_META_KEY])?.value;
+    let counts: PersistedIndexCounts = { summaries: {}, sources: {}, providerVersions: [] };
+    try {
+      if (countsRaw) counts = JSON.parse(countsRaw) as PersistedIndexCounts;
+    } catch {
+      counts = { summaries: {}, sources: {}, providerVersions: [] };
+    }
+    const selectedProviders = providers?.length ? new Set(providers) : undefined;
+    const summaryCount = Object.entries(counts.summaries).reduce((total, [provider, count]) => (
+      total + (!selectedProviders || selectedProviders.has(provider as AgentKind) ? numberValue(count) : 0)
+    ), 0);
+    const sourceCount = Object.entries(counts.sources).reduce((total, [provider, count]) => (
+      total + (!selectedProviders || selectedProviders.has(provider as AgentKind) ? numberValue(count) : 0)
+    ), 0);
+    const providerVersions = counts.providerVersions.filter(item => !selectedProviders || selectedProviders.has(item.provider));
+    const runtimeRaw = db.get<OptionalMetaRow>('SELECT value FROM cache_meta WHERE key = ?', [INDEXER_RUNTIME_META_KEY])?.value;
+    let runtime: SessionIndexerRuntimeStatus | undefined;
+    try {
+      runtime = runtimeRaw ? JSON.parse(runtimeRaw) as SessionIndexerRuntimeStatus : undefined;
+    } catch {
+      runtime = undefined;
+    }
+    return {
+      exists: true,
+      generatedAt: db.get<OptionalMetaRow>('SELECT value FROM cache_meta WHERE key = ?', ['generated_at'])?.value || '',
+      revision: numberValue(db.get<OptionalMetaRow>('SELECT value FROM cache_meta WHERE key = ?', ['revision'])?.value),
+      summaryCount,
+      sourceCount,
+      providerVersions,
+      runtime,
+    };
+  } catch {
+    return { exists: true, generatedAt: '', revision: 0, summaryCount: 0, sourceCount: 0, providerVersions: [] };
+  } finally {
+    db?.close();
+  }
+}
+
+export function writeSessionIndexerRuntimeStatus(status: SessionIndexerRuntimeStatus): void {
+  const db = openIndexDatabase(false);
+  if (!db) return;
+  try {
+    setMeta(db, INDEXER_RUNTIME_META_KEY, JSON.stringify(status));
+  } finally {
+    db.close();
+  }
 }
 
 function parseSummaryRow(row: SummaryPayloadRow): CachedSessionSummary | null {
@@ -834,6 +962,7 @@ function importJsonCacheIfEmpty(db: SqliteDatabase): void {
     }
     setMeta(db, 'generated_at', jsonCache.generatedAt || now);
     bumpRevision(db);
+    refreshIndexCounts(db);
   });
 }
 
@@ -853,10 +982,9 @@ function readSqliteCache(providers?: AgentKind[]): SessionSummaryCacheFile {
 }
 
 export function querySessionSummaryIndex<T>(callback: (db: SqliteDatabase) => T): T | null {
-  const db = openIndexDatabase(false);
+  const db = openIndexDatabase(true);
   if (!db) return null;
   try {
-    importJsonCacheIfEmpty(db);
     return callback(db);
   } finally {
     db.close();
@@ -963,10 +1091,85 @@ function commitSqliteIndex({
       }
       setMeta(db, 'generated_at', now);
       bumpRevision(db);
+      refreshIndexCounts(db);
     });
   } finally {
     db.close();
   }
+}
+
+/**
+ * Read only the persisted state needed to plan one source. The progressive
+ * sidecar path deliberately avoids hydrating every payload_json row.
+ */
+export function readSessionSummaryIndexSourceState(
+  source: SessionSummarySource,
+): SessionSummaryIndexSourceState {
+  if (!isSqliteIndexEnabled()) return {};
+  const db = openIndexDatabase(true);
+  if (!db) return {};
+  try {
+    const sourceKey = sourceSummaryCacheKey(source);
+    const summaryRow = db.get<SummaryPayloadRow>(
+      'SELECT payload_json FROM session_summaries WHERE source_key = ?',
+      [sourceKey],
+    );
+    const checkpointRow = db.get<CheckpointRow>(
+      'SELECT * FROM source_parse_checkpoints WHERE source_key = ?',
+      [sourceKey],
+    );
+    return {
+      summary: summaryRow ? parseSummaryRow(summaryRow) || undefined : undefined,
+      checkpoint: checkpointRow ? checkpointFromRow(checkpointRow) : undefined,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** Publish one successfully parsed source without applying corpus deletions. */
+export function commitSessionSummaryIndexSource(commit: SessionSummaryIndexSourceCommit): void {
+  const db = openIndexDatabase(false);
+  if (!db) {
+    commitSqliteIndex({
+      touchedProviders: [],
+      discoveredSources: [commit.source],
+      updatedSummaries: [commit.summary],
+      updatedCheckpoints: commit.checkpoint ? [commit.checkpoint] : [],
+      deletedCheckpointKeys: commit.deleteCheckpoint ? [sourceSummaryCacheKey(commit.source)] : [],
+    });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  try {
+    db.transaction(() => {
+      upsertSource(db, commit.source, now);
+      upsertSummary(db, commit.summary, now);
+      if (commit.deleteCheckpoint) deleteCheckpoints(db, [sourceSummaryCacheKey(commit.source)]);
+      if (commit.checkpoint) upsertCheckpoint(db, commit.checkpoint);
+      setMeta(db, 'generated_at', now);
+      bumpRevision(db);
+      refreshIndexCounts(db);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Apply discovery metadata and missing-source deletion only after a complete
+ * provider scan has finished. An interrupted progressive run never calls this.
+ */
+export function finalizeSessionSummaryIndexDiscovery(
+  touchedProviders: AgentKind[],
+  discoveredSources: SessionSummarySource[],
+): void {
+  commitSqliteIndex({
+    touchedProviders,
+    discoveredSources,
+    updatedSummaries: [],
+  });
 }
 
 export function readSessionSummaryIndexCache(): SessionSummaryCacheFile {
@@ -980,22 +1183,19 @@ export function readSessionSummaryIndexCache(): SessionSummaryCacheFile {
 
 export function readSessionSummaryIndexCacheForProviders(providers: AgentKind[]): SessionSummaryCacheFile {
   if (providers.length === 0) return emptyCacheFile();
-  if (!isSqliteIndexEnabled()) {
-    const cache = readSessionSummaryCache();
-    return {
-      ...cache,
-      summaries: cache.summaries.filter(summary => providers.includes(summary.provider)),
-    };
-  }
-
+  if (!isSqliteIndexEnabled()) return emptyCacheFile();
+  const db = openIndexDatabase(true);
+  if (!db) return emptyCacheFile();
   try {
-    return readSqliteCache(providers);
-  } catch {
-    const cache = readSessionSummaryCache();
     return {
-      ...cache,
-      summaries: cache.summaries.filter(summary => providers.includes(summary.provider)),
+      cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+      generatedAt: getMeta(db, 'generated_at'),
+      summaries: readSummaries(db, providers),
     };
+  } catch {
+    return emptyCacheFile();
+  } finally {
+    db.close();
   }
 }
 
@@ -1113,6 +1313,7 @@ export function writeSessionSummaryIndexCache(cache: SessionSummaryCacheFile): v
       }
       setMeta(database, 'generated_at', cache.generatedAt || now);
       bumpRevision(database);
+      refreshIndexCounts(database);
     });
   } finally {
     database.close();

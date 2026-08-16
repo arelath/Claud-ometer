@@ -12,11 +12,24 @@ import { getSessionDetailWithDescendantsFromFile } from '@/lib/claude-data/reade
 
 export const dynamic = 'force-dynamic';
 
+function decodeSessionRouteId(id: string): string {
+  try {
+    const decodedId = decodeURIComponent(id);
+    if (/[\\/\u0000-\u001F\u007F]/.test(decodedId)) {
+      apiError('Invalid session id', 400);
+    }
+    return decodedId;
+  } catch {
+    apiError('Invalid session id', 400);
+  }
+}
+
 export const GET = withErrorHandler(async (
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> => {
-  const { id } = await params;
+  const { id: encodedId } = await params;
+  const id = decodeSessionRouteId(encodedId);
   const parsed = parseRouteId(id);
   const liveSession = !parsed.agentKind || parsed.agentKind === 'claude'
     ? getLiveSessionBySessionId(parsed.nativeId)

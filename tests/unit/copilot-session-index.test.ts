@@ -23,6 +23,10 @@ describe('Copilot session discovery', () => {
     return path.join(workspaceDir(), 'GitHub.copilot-chat', 'transcripts', `${id}.jsonl`);
   }
 
+  function chatSessionPath(id: string): string {
+    return path.join(workspaceDir(), 'chatSessions', `${id}.jsonl`);
+  }
+
   beforeEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(transcriptPath()), { recursive: true });
@@ -74,6 +78,32 @@ describe('Copilot session discovery', () => {
       producer: 'copilot-agent',
       version: '0.46.2',
       vscodeVersion: '1.99.0',
+      title: '',
+    });
+  });
+
+  it('does not parse complete chat-session state during discovery', async () => {
+    fs.rmSync(transcriptPath(), { force: true });
+    const chatSessionId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const filePath = chatSessionPath(chatSessionId);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({
+      kind: 0,
+      k: [],
+      v: {
+        requesterUsername: 'GitHub Copilot',
+        sessionId: chatSessionId,
+        requests: [{ message: { text: 'x'.repeat(2 * 1024 * 1024) } }],
+      },
+    }));
+    const sessionIndex = await loadModule();
+
+    const sessions = await sessionIndex.discoverCopilotSessionFiles();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      nativeId: chatSessionId,
+      chatSessionFilePath: filePath,
       title: '',
     });
   });

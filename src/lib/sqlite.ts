@@ -95,6 +95,7 @@ export function openDatabase(filePath: string, options: { readOnly?: boolean } =
   const statementCache = new Map<string, SqliteStatement>();
   try {
     db.exec?.('PRAGMA busy_timeout = 1000');
+    if (options.readOnly !== false) db.exec?.('PRAGMA query_only = ON');
   } catch {
     // Best effort for older node:sqlite builds.
   }

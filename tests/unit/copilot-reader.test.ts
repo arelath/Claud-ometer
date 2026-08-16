@@ -48,6 +48,11 @@ describe('Copilot reader', () => {
       totalOutputTokens: 80,
       totalCacheReadTokens: 250,
     });
+    expect(sessions.find(session => session.nativeId === 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')).toMatchObject({
+      title: 'Summarize the cache design proposal.',
+      version: '0.46.2',
+      timestamp: '2026-05-02T05:33:20.000Z',
+    });
   });
 
   it('discovers Copilot chat sessions even when no transcript sidecar exists', async () => {
@@ -462,5 +467,15 @@ describe('Copilot reader', () => {
       },
     });
     expect(summary.searchTextPreview).toContain('session detail page');
+  });
+
+  it('includes chat-only metadata in summary search text', async () => {
+    const reader = await loadReader();
+    const source = (await reader.discoverSessionSummarySources()).find(item => item.sourceFilePath.includes('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'));
+
+    const summary = await reader.buildSessionSummary(source!);
+
+    expect(summary.searchTextPreview).toContain('summarize the cache design proposal.');
+    expect(summary.searchTextPreview).toContain('0.46.2');
   });
 });

@@ -12,6 +12,7 @@ type FullSummaryBuilder = (source: SessionSummarySource) => Promise<ParseSummary
 
 export interface ParseTaskProviderOverride {
   buildSessionSummary?: AgentDataProvider['buildSessionSummary'];
+  buildLightweightSessionSummary?: AgentDataProvider['buildLightweightSessionSummary'];
   incrementalSessionSummary?: AgentDataProvider['incrementalSessionSummary'];
 }
 
@@ -28,6 +29,22 @@ function fullSummaryBuilderForProvider(provider: AgentKind): FullSummaryBuilder 
   if (provider === 'codex') return codexReader.buildSessionSummary;
   if (provider === 'copilot') return copilotReader.buildSessionSummary;
   return cursorReader.buildSessionSummary;
+}
+
+function lightweightSummaryBuilderForProvider(
+  provider: AgentKind,
+): AgentDataProvider['buildLightweightSessionSummary'] | undefined {
+  if (provider === 'codex') return codexReader.buildLightweightSessionSummary;
+  if (provider === 'copilot') return copilotReader.buildLightweightSessionSummary;
+  if (provider === 'cursor') return cursorReader.buildLightweightSessionSummary;
+  return undefined;
+}
+
+export function resetProviderSummaryResources(provider: AgentKind): void {
+  if (provider === 'claude') claudeReader.resetClaudeReaderCache();
+  else if (provider === 'codex') codexReader.resetCodexReaderCache();
+  else if (provider === 'copilot') copilotReader.resetCopilotReaderCache();
+  else cursorReader.resetCursorReaderCache();
 }
 
 export async function runParseSummaryTask(
@@ -47,6 +64,19 @@ export async function runParseSummaryTask(
   };
 
   try {
+    if (task.mode === 'recent') {
+      const buildLightweightSummary = options.provider?.buildLightweightSessionSummary
+        || lightweightSummaryBuilderForProvider(task.provider);
+      const summary = buildLightweightSummary
+        ? { ...buildLightweightSummary(task.source), isPartial: true }
+        : await (options.provider?.buildSessionSummary || fullSummaryBuilderForProvider(task.provider))(task.source);
+      return {
+        ...resultBase,
+        summary,
+        timings: { ...resultBase.timings, parseMs: elapsedMs(started) },
+      };
+    }
+
     if (task.mode === 'incremental') {
       const incremental = options.provider?.incrementalSessionSummary;
       if (!incremental) throw new Error(`Provider ${task.provider} does not support incremental summaries`);

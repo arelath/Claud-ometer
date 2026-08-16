@@ -100,6 +100,21 @@ describe('session summary parse pool', () => {
     });
   });
 
+  it('routes recent parse tasks through the lightweight provider builder', async () => {
+    const buildLightweightSessionSummary = vi.fn(() => summaryFor(source, { title: 'Active session' }));
+    const provider = makeProvider({ buildLightweightSessionSummary });
+    const pool = createSummaryParsePool([provider], { concurrency: 1 });
+
+    const [result] = await pool.run([{ provider: 'claude', source, mode: 'recent' }]);
+
+    expect(buildLightweightSessionSummary).toHaveBeenCalledWith(source);
+    expect(provider.buildSessionSummary).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      mode: 'recent',
+      summary: { title: 'Active session', isPartial: true },
+    });
+  });
+
   it('returns per-task errors instead of throwing', async () => {
     const provider = makeProvider({
       buildSessionSummary: vi.fn(async () => {

@@ -5,7 +5,7 @@ import { runParseSummaryTask, type ParseTaskProviderOverride } from './session-s
 import { sourceSummaryCacheKey } from './session-summary-cache';
 import type { AgentKind } from './types';
 
-export type SummaryParseMode = 'full' | 'incremental';
+export type SummaryParseMode = 'full' | 'incremental' | 'recent';
 export type SummaryParsePoolMode = 'inline' | 'worker';
 
 export interface ParseSummaryTask {
@@ -86,6 +86,7 @@ class InlineSummaryParsePool implements SummaryParsePool {
     this.size = Math.max(1, concurrency);
     this.providerByKind = new Map(providers.map(provider => [provider.kind, {
       buildSessionSummary: provider.buildSessionSummary,
+      buildLightweightSessionSummary: provider.buildLightweightSessionSummary,
       incrementalSessionSummary: provider.incrementalSessionSummary,
     }]));
   }

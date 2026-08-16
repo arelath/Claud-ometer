@@ -83,11 +83,6 @@ export function createSessionRefreshPlan({
   };
 
   for (const source of sources) {
-    if (isSessionSourceRecentlyModified(source, nowMs)) {
-      plan.recent.push(source);
-      continue;
-    }
-
     const cached = cachedByKey.get(sourceSummaryCacheKey(source));
     if (!force && cached && isSummaryValidForSource(cached, source)) {
       plan.valid.push(source);
@@ -96,6 +91,11 @@ export function createSessionRefreshPlan({
 
     if (!force && canIncrementallyBuild(source, cached, checkpointsByKey.get(sourceSummaryCacheKey(source)), incrementalSupport)) {
       plan.incrementalBuild.push(source);
+      continue;
+    }
+
+    if (isSessionSourceRecentlyModified(source, nowMs)) {
+      plan.recent.push(source);
       continue;
     }
 
