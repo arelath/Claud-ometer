@@ -255,6 +255,33 @@ describe('page client components', () => {
     expect(screen.getByTestId('lines-chart')).toHaveTextContent('lines 1');
   });
 
+  it('uses the selected pricing mode for cache savings', () => {
+    const cacheStats: DashboardStats = {
+      ...stats,
+      modelUsage: {
+        'gpt-5.5': {
+          ...stats.modelUsage['claude-opus-4'],
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 1_000_000,
+          cacheCreationInputTokens: 0,
+        },
+      },
+    };
+
+    renderWithProviders(<CostsClient initialStats={cacheStats} initialProjects={[project]} />);
+    const cacheSavingsCard = screen.getByText('Cache Savings').closest('[data-slot="card"]');
+
+    expect(cacheSavingsCard).toHaveTextContent('$0.04');
+    expect(cacheSavingsCard).toHaveTextContent('subscription estimate');
+    expect(screen.getByText('Estimated Savings')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'API Equivalent' }));
+
+    expect(cacheSavingsCard).toHaveTextContent('$4.50');
+    expect(cacheSavingsCard).toHaveTextContent('api equivalent estimate');
+  });
+
   it('renders projects as navigable cards', () => {
     renderWithProviders(<ProjectsClient initialProjects={[project]} />);
 

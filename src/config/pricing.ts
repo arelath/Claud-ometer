@@ -207,6 +207,23 @@ export function calculateCostAllModes(
   };
 }
 
+/**
+ * Estimate prompt-cache savings on the same basis as the selected cost mode.
+ * API mode reports the full published-rate difference. Discounted modes scale
+ * that difference with their cache-read assumption so it remains comparable
+ * with the estimated usage total shown alongside it.
+ */
+export function calculateCacheSavings(
+  model: string,
+  cacheReadTokens: number,
+  mode: CostMode = DEFAULT_COST_MODE,
+): number {
+  const pricing = getModelPricing(model);
+  if (!pricing || cacheReadTokens <= 0) return 0;
+  const apiSavingsPerMillion = Math.max(0, pricing.inputPerMillion - pricing.cacheReadPerMillion);
+  return (cacheReadTokens / 1_000_000) * apiSavingsPerMillion * COST_MODE_MULTIPLIERS[mode].cacheRead;
+}
+
 export function getModelPricing(model: string): ModelPricing | null {
   return getModelPricingEntry(model)?.pricing ?? null;
 }

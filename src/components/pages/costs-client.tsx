@@ -10,10 +10,10 @@ import { CostChart } from '@/components/charts/cost-chart';
 import { LinesChangedOverTime } from '@/components/charts/lines-changed-over-time';
 import { formatCost, formatNumber, formatTokens } from '@/lib/format';
 import {
+  calculateCacheSavings,
   getModelCostDisplayName,
   getModelCostGroupKey,
   getModelColor,
-  getModelPricing,
   getPricingReferenceEntries,
   LITELLM_PRICING_SOURCE,
 } from '@/config/pricing';
@@ -64,15 +64,10 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
     totalOutputTokens += usage.outputTokens;
   });
 
-  // Estimated savings: if cache reads were full-price input tokens instead
+  // Estimated savings on the same pricing basis as the selected usage total.
   let cacheSavings = 0;
   Object.entries(stats.modelUsage).forEach(([model, usage]) => {
-    const pricing = getModelPricing(model);
-    if (pricing) {
-      const fullPriceCost = (usage.cacheReadInputTokens / 1_000_000) * pricing.inputPerMillion;
-      const cachePriceCost = (usage.cacheReadInputTokens / 1_000_000) * pricing.cacheReadPerMillion;
-      cacheSavings += fullPriceCost - cachePriceCost;
-    }
+    cacheSavings += calculateCacheSavings(model, usage.cacheReadInputTokens, costMode);
   });
 
   const totalCost = pickCost(stats.estimatedCosts, stats.estimatedCost);
@@ -171,7 +166,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
         <StatCard
           title="Cache Savings"
           value={formatCost(cacheSavings)}
-          subtitle="saved via prompt caching"
+          subtitle={`${modeLabel.name.toLowerCase()} estimate`}
           icon={Zap}
         />
         <StatCard
@@ -292,7 +287,7 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
                 </div>
                 <Separator />
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground font-medium">API-Rate Savings</span>
+                  <span className="text-muted-foreground font-medium">Estimated Savings</span>
                   <span className="font-bold text-green-600">{formatCost(cacheSavings)}</span>
                 </div>
               </div>

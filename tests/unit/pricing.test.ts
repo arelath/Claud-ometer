@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  calculateCacheSavings,
   calculateCost,
   calculateCostAllModes,
   DEFAULT_COST_MODE,
@@ -24,6 +25,13 @@ describe('pricing helpers', () => {
     expect(costs.conservative).toBe(30.9625);
     expect(costs.subscription).toBe(30.505);
     expect(calculateCost('claude-opus-4-7', 1_000_000, 1_000_000, 1_000_000, 1_000_000)).toBe(costs[DEFAULT_COST_MODE]);
+  });
+
+  it('keeps cache savings on the selected cost-mode basis', () => {
+    expect(calculateCacheSavings('gpt-5.5', 1_000_000, 'api')).toBe(4.5);
+    expect(calculateCacheSavings('gpt-5.5', 1_000_000, 'conservative')).toBe(0.225);
+    expect(calculateCacheSavings('gpt-5.5', 1_000_000, 'subscription')).toBe(0.045);
+    expect(calculateCacheSavings('mystery-model', 1_000_000, 'api')).toBe(0);
   });
 
   it('falls back to matching model families for dated or variant model names', () => {
