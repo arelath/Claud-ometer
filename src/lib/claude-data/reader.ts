@@ -11,6 +11,7 @@ import type {
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
   SessionMessageImageDisplay,
+  SessionSubagentDisplay,
   SessionPromptTokenBreakdown,
   SessionToolCallDisplay,
   DashboardStats,
@@ -447,11 +448,11 @@ async function parseSessionFile(filePath: string, projectId: string, projectName
   return value;
 }
 
-export async function getSessionDetailFromFile(filePath: string, projectId: string, projectName: string): Promise<SessionDetail> {
-  const sessionInfo = await parseSessionFile(filePath, projectId, projectName);
-  const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
-  const sourceFilePaths = aggregateFilePaths.length > 0 ? aggregateFilePaths : [filePath];
-  const sessionId = sessionInfo.id;
+async function parseSessionMessagesFromFile(
+  filePath: string,
+  sessionId: string,
+  subagent?: SessionSubagentDisplay,
+): Promise<SessionMessageDisplay[]> {
   const messages: SessionMessageDisplay[] = [];
   const contextTotals = zeroPromptTokenTotals();
   let pendingAssistantTotals = zeroPromptTokenTotals();
@@ -636,7 +637,60 @@ export async function getSessionDetailFromFile(filePath: string, projectId: stri
     }
   });
 
+  return subagent ? messages.map(message => ({ ...message, subagent })) : messages;
+}
+
+export async function getSessionDetailFromFile(filePath: string, projectId: string, projectName: string): Promise<SessionDetail> {
+  const sessionInfo = await parseSessionFile(filePath, projectId, projectName);
+  const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
+  const sourceFilePaths = aggregateFilePaths.length > 0 ? aggregateFilePaths : [filePath];
+  const messages = await parseSessionMessagesFromFile(filePath, sessionInfo.id);
   return { ...sessionInfo, sourceFilePath: filePath, sourceFilePaths, messages };
+}
+
+function claudeSubagentDisplay(rootFilePath: string, childFilePath: string, rootId: string): SessionSubagentDisplay {
+  const relativePath = path.relative(path.dirname(rootFilePath), childFilePath).replace(/\\/g, '/');
+  const segments = relativePath.split('/');
+  const depth = Math.max(1, segments.filter(segment => segment === 'subagents').length);
+  const parentBoundary = segments.lastIndexOf('subagents');
+  const parentId = parentBoundary > 0
+    ? segments[parentBoundary - 1].replace(/\.jsonl$/i, '')
+    : rootId;
+  return {
+    id: path.basename(childFilePath, '.jsonl'),
+    parentId,
+    path: relativePath,
+    depth,
+  };
+}
+
+export async function getSessionDetailWithDescendantsFromFile(
+  filePath: string,
+  projectId: string,
+  projectName: string,
+): Promise<SessionDetail> {
+  const detail = await getSessionDetailFromFile(filePath, projectId, projectName);
+  const childFilePaths = getSessionAggregateFilePaths(filePath).slice(1);
+  if (childFilePaths.length === 0) return detail;
+
+  const messageGroups = await Promise.all(childFilePaths.map(async childFilePath => ({
+    messages: await parseSessionMessagesFromFile(
+      childFilePath,
+      path.basename(childFilePath, '.jsonl'),
+      claudeSubagentDisplay(filePath, childFilePath, detail.nativeId || detail.id),
+    ),
+  })));
+  const messages = [detail.messages, ...messageGroups.map(group => group.messages)]
+    .flat()
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => {
+      const leftTime = new Date(left.message.timestamp).getTime();
+      const rightTime = new Date(right.message.timestamp).getTime();
+      if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+      return left.index - right.index;
+    })
+    .map(item => item.message);
+  return { ...detail, messages };
 }
 
 export async function getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
@@ -652,6 +706,24 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
 
     const { name: projectName } = getProjectNameFromDir(projectPath, entry);
     return getSessionDetailFromFile(filePath, entry, projectName);
+  }
+
+  return null;
+}
+
+export async function getSessionDetailWithDescendants(sessionId: string): Promise<SessionDetail | null> {
+  if (!fs.existsSync(getProjectsDir())) return null;
+  const projectEntries = fs.readdirSync(getProjectsDir());
+
+  for (const entry of projectEntries) {
+    const projectPath = path.join(getProjectsDir(), entry);
+    if (!fs.statSync(projectPath).isDirectory()) continue;
+
+    const filePath = path.join(projectPath, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) continue;
+
+    const { name: projectName } = getProjectNameFromDir(projectPath, entry);
+    return getSessionDetailWithDescendantsFromFile(filePath, entry, projectName);
   }
 
   return null;

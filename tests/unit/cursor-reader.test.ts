@@ -126,6 +126,71 @@ describe('Cursor reader', () => {
     expect(detail?.messages[3].usage?.output_tokens).toBeGreaterThan(0);
   });
 
+  it('includes only nested subagent transcripts in descendant-aware details', async () => {
+    const childId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const grandchildId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const nestedDir = path.join(
+      cursorDir,
+      'projects',
+      projectId,
+      'agent-transcripts',
+      sessionId,
+      'subagents',
+      childId,
+      'subagents',
+    );
+    fs.mkdirSync(nestedDir, { recursive: true });
+    fs.writeFileSync(path.join(nestedDir, `${grandchildId}.jsonl`), [
+      JSON.stringify({ role: 'user', message: { content: 'Nested Cursor assignment.' } }),
+      JSON.stringify({ role: 'assistant', message: { content: 'Nested Cursor result.' } }),
+    ].join('\n'));
+    const reader = await loadReader();
+
+    const detail = await reader.getSessionDetailWithDescendants(`cursor:${projectId}:${sessionId}`);
+
+    expect(detail).toMatchObject({
+      id: `cursor:${projectId}:${sessionId}`,
+      messageCount: 8,
+      userMessageCount: 4,
+      assistantMessageCount: 4,
+    });
+    expect(detail?.sourceFilePaths).toHaveLength(3);
+    expect(detail?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        content: 'This subagent transcript should not appear as a top-level session.',
+        subagent: expect.objectContaining({
+          id: childId,
+          parentId: sessionId,
+          depth: 1,
+        }),
+      }),
+      expect.objectContaining({
+        content: 'Nested Cursor result.',
+        subagent: expect.objectContaining({
+          id: grandchildId,
+          parentId: childId,
+          depth: 2,
+        }),
+      }),
+    ]));
+
+    const childDetail = await reader.getSessionDetailWithDescendants(
+      `cursor:${projectId}:${childId}`,
+    );
+    expect(childDetail?.messages).toHaveLength(4);
+    expect(childDetail?.messages.some(message => message.content.includes('Add a compact Cursor fixture'))).toBe(false);
+    expect(childDetail?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        content: 'Nested Cursor result.',
+        subagent: expect.objectContaining({
+          id: grandchildId,
+          parentId: childId,
+          depth: 1,
+        }),
+      }),
+    ]));
+  });
+
   it('builds summaries with Cursor agent token estimates', async () => {
     const reader = await loadReader();
     const source = (await reader.discoverSessionSummarySources())
@@ -163,6 +228,7 @@ describe('Cursor reader', () => {
     const reader = await loadReader();
 
     const detail = await reader.getSessionDetail(`cursor:${projectId}:chat:${chatId}`);
+    const exportDetail = await reader.getSessionDetailWithDescendants(`cursor:${projectId}:chat:${chatId}`);
 
     expect(detail).toMatchObject({
       id: `cursor:${projectId}:chat:${chatId}`,
@@ -179,5 +245,7 @@ describe('Cursor reader', () => {
     expect(detail?.totalInputTokens).toBeGreaterThan(0);
     expect(detail?.totalOutputTokens).toBeGreaterThan(0);
     expect(detail?.toolsUsed).toMatchObject({ 'cursor:edit': 1, 'lang:typescript': 1 });
+    expect(exportDetail?.sourceFilePath).toBe(detail?.sourceFilePath);
+    expect(exportDetail?.sourceFilePaths).toEqual(detail?.sourceFilePaths);
   });
 });

@@ -38,6 +38,8 @@ describe('provider API routes', () => {
     delete process.env.AGENT_SCOPE_CLAUDE_DIR;
     delete process.env.AGENT_SCOPE_IMPORT_DIR;
     delete process.env.AGENT_SCOPE_AGENTS;
+    delete process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR;
+    delete process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR;
     vi.resetModules();
   });
 
@@ -130,6 +132,118 @@ describe('provider API routes', () => {
     expect(filteredSessions).toMatchObject({ sessions: [], total: 0 });
     expect(matchingStats).toMatchObject({ totalSessions: 1, projectCount: 1 });
     expect(matchingSessions).toMatchObject({ total: 1 });
+  });
+
+  it('downloads one standardized session detail as JSON', async () => {
+    const { GET } = await import('@/app/api/sessions/[id]/export/route');
+    const routeId = `codex:${codexFixtureSessionId}`;
+
+    const response = await GET(
+      new Request(`http://localhost/api/sessions/${routeId}/export`),
+      { params: Promise.resolve({ id: routeId }) },
+    );
+    const detail = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toContain('application/json');
+    expect(response.headers.get('Content-Disposition')).toMatch(/agentscope-session-.*\.json/);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(detail).toMatchObject({
+      id: routeId,
+      agentKind: 'codex',
+      messages: expect.any(Array),
+    });
+  });
+
+  it('exports a viewable metadata-only live session', async () => {
+    const liveSessionId = '00000000-0000-4000-8000-000000000099';
+    const liveSessionsDir = path.join(root, 'live-sessions');
+    const liveProjectsDir = path.join(root, 'live-projects');
+    fs.mkdirSync(liveSessionsDir, { recursive: true });
+    fs.mkdirSync(liveProjectsDir, { recursive: true });
+    fs.writeFileSync(path.join(liveSessionsDir, 'metadata-only.json'), JSON.stringify({
+      sessionId: liveSessionId,
+      cwd: 'D:\\dev\\research\\LiveOnly',
+      startedAt: Date.parse('2026-05-12T18:03:00.000Z'),
+      updatedAt: Date.parse('2026-05-12T18:03:01.000Z'),
+      status: 'idle',
+    }));
+    process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR = liveSessionsDir;
+    process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR = liveProjectsDir;
+    vi.resetModules();
+    const { GET } = await import('@/app/api/sessions/[id]/export/route');
+    const routeId = `claude:${liveSessionId}`;
+
+    const response = await GET(
+      new Request(`http://localhost/api/sessions/${routeId}/export`),
+      { params: Promise.resolve({ id: routeId }) },
+    );
+    const detail = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(detail).toMatchObject({
+      id: liveSessionId,
+      routeId,
+      agentKind: 'claude',
+      isLive: true,
+      messages: [],
+      sourceFilePaths: [path.join(liveSessionsDir, 'metadata-only.json')],
+    });
+  });
+
+  it('prefers the viewed live transcript over an imported session with the same id', async () => {
+    const sessionId = '00000000-0000-4000-8000-000000000100';
+    const importedProjectDir = path.join(importDir, 'claude-data', 'projects', 'imported-project');
+    const liveSessionsDir = path.join(root, 'live-sessions');
+    const liveProjectsDir = path.join(root, 'live-projects');
+    const liveProjectDir = path.join(liveProjectsDir, 'live-project');
+    const message = (content: string) => JSON.stringify({
+      type: 'assistant',
+      sessionId,
+      timestamp: '2026-05-12T18:03:02.000Z',
+      message: {
+        id: content,
+        role: 'assistant',
+        model: 'claude-sonnet-4-5-20250929',
+        usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: content }],
+      },
+    });
+    fs.mkdirSync(importedProjectDir, { recursive: true });
+    fs.mkdirSync(liveSessionsDir, { recursive: true });
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.writeFileSync(path.join(importedProjectDir, `${sessionId}.jsonl`), message('Imported stale result.'));
+    fs.writeFileSync(path.join(importDir, 'meta.json'), JSON.stringify({ importedAt: '2026-05-12T18:00:00.000Z' }));
+    fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
+    fs.writeFileSync(path.join(liveProjectDir, `${sessionId}.jsonl`), message('Live current result.'));
+    fs.writeFileSync(path.join(liveSessionsDir, 'same-id.json'), JSON.stringify({
+      sessionId,
+      cwd: 'D:\\dev\\research\\LiveProject',
+      startedAt: Date.parse('2026-05-12T18:03:00.000Z'),
+      updatedAt: Date.parse('2026-05-12T18:03:02.000Z'),
+      status: 'idle',
+    }));
+    process.env.AGENT_SCOPE_LIVE_SESSIONS_DIR = liveSessionsDir;
+    process.env.AGENT_SCOPE_LIVE_PROJECTS_DIR = liveProjectsDir;
+    vi.resetModules();
+    const { GET } = await import('@/app/api/sessions/[id]/export/route');
+    const routeId = `claude:${sessionId}`;
+
+    const response = await GET(
+      new Request(`http://localhost/api/sessions/${routeId}/export`),
+      { params: Promise.resolve({ id: routeId }) },
+    );
+    const detail = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(detail).toMatchObject({ routeId, isLive: true });
+    expect(detail.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'Live current result.' }),
+    ]));
+    expect(detail.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'Imported stale result.' }),
+    ]));
   });
 
   it('returns Copilot projects, sessions, details, and stats through provider routes', async () => {

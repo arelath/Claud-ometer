@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionDetail, SessionMessageDisplay } from '@/lib/claude-data/types';
 import type { TranscriptItem } from '@/lib/session-transcript';
@@ -24,6 +24,9 @@ const detailState = vi.hoisted(() => ({
   scrollElementIntoConversation: vi.fn(),
   scrollToConversationBottom: vi.fn(),
 }));
+const fetchMock = vi.hoisted(() => vi.fn());
+const createObjectUrlMock = vi.hoisted(() => vi.fn(() => 'blob:session-export'));
+const revokeObjectUrlMock = vi.hoisted(() => vi.fn());
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
@@ -241,6 +244,12 @@ describe('session detail page', () => {
     detailState.setToolFilter.mockReset();
     detailState.setSelectedDiffPath.mockReset();
     detailState.setArtifactViewer.mockReset();
+    fetchMock.mockReset();
+    createObjectUrlMock.mockClear();
+    revokeObjectUrlMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrlMock });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrlMock });
     SessionDetailPage = (await import('@/app/sessions/[id]/page')).default;
   });
 
@@ -293,5 +302,43 @@ describe('session detail page', () => {
     expect(screen.getByText('Working')).toBeInTheDocument();
     expect(screen.getByTestId('changes-view')).toHaveTextContent('changes src/app.ts');
     expect(screen.getByTestId('send-box')).toHaveTextContent('send session-1');
+  });
+
+  it('downloads the standardized JSON for the viewed session', async () => {
+    detailState.session = session();
+    fetchMock.mockResolvedValue(new Response('{"id":"session-1"}', {
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Disposition': 'attachment; filename="agentscope-session-session-1.json"',
+      },
+    }));
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Export standardized session JSON' }));
+
+    await screen.findByText('Session JSON exported.');
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/session-1/export');
+    expect(createObjectUrlMock).toHaveBeenCalledOnce();
+    expect(revokeObjectUrlMock).toHaveBeenCalledWith('blob:session-export');
+    expect(clickSpy).toHaveBeenCalledOnce();
+    clickSpy.mockRestore();
+  });
+
+  it('reports export failures without starting a download', async () => {
+    detailState.session = session();
+    fetchMock.mockResolvedValue(new Response('{"error":"Session export unavailable"}', {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    renderPage();
+    const exportButton = await screen.findByRole('button', { name: 'Export standardized session JSON' });
+    fireEvent.click(exportButton);
+
+    await screen.findByRole('alert');
+    expect(screen.getByRole('alert')).toHaveTextContent('Session export unavailable');
+    expect(createObjectUrlMock).not.toHaveBeenCalled();
+    expect(exportButton).toBeEnabled();
   });
 });

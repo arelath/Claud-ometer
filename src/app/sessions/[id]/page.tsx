@@ -11,6 +11,7 @@ import {
   Clock,
   Coins,
   Copy,
+  Download,
   FileText,
   GitBranch,
   MessageSquare,
@@ -172,6 +173,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const { data: sourceInfo } = useDataSourceInfo();
   const { pickCost } = useCostMode();
   const [copiedRawSessionPath, setCopiedRawSessionPath] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportFeedback, setExportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const messages = useMemo(() => session?.messages || [], [session]);
   const rawSessionPaths = useMemo(() => getRawSessionPaths(session || summary), [session, summary]);
   const handleCopyRawSessionPath = useCallback((filePath: string) => {
@@ -182,6 +185,37 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       }, 1200);
     });
   }, []);
+  const handleExportSession = useCallback(async () => {
+    setIsExporting(true);
+    setExportFeedback(null);
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/export`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error || 'Failed to export session');
+      }
+
+      const contentDisposition = response.headers.get('Content-Disposition') || '';
+      const filename = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1]
+        || `agentscope-session-${id.replace(/[^A-Za-z0-9._-]+/g, '-')}.json`;
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setExportFeedback({ tone: 'success', message: 'Session JSON exported.' });
+    } catch (error) {
+      setExportFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Failed to export session',
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  }, [id]);
   const hasTranscript = Boolean(session?.messages);
   const isLive = Boolean(session?.isLive);
   const liveRevision = session?.isLive
@@ -316,6 +350,16 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   {sourceInfo?.active === 'live' && !isLive && (!displaySession.agentKind || displaySession.agentKind === 'claude') && (
                     <ResumeSessionButton sessionId={displaySession.id} showLabel />
                   )}
+                  <button
+                    type="button"
+                    onClick={handleExportSession}
+                    disabled={isExporting}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label="Export standardized session JSON"
+                  >
+                    <Download className={`h-3.5 w-3.5 ${isExporting ? 'animate-pulse' : ''}`} />
+                    {isExporting ? 'Exporting...' : 'Export JSON'}
+                  </button>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-mono">{(displaySession.nativeId || displaySession.id).slice(0, 8)}</span>
@@ -330,6 +374,16 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 </div>
               </div>
             </div>
+
+            {exportFeedback && (
+              <p
+                className={`text-xs ${exportFeedback.tone === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}
+                role={exportFeedback.tone === 'error' ? 'alert' : 'status'}
+                aria-live="polite"
+              >
+                {exportFeedback.message}
+              </p>
+            )}
 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:flex lg:shrink-0 lg:justify-end">
               <Card className="min-w-[86px] border-primary/30 bg-primary/5 shadow-sm">

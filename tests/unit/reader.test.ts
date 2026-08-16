@@ -496,7 +496,13 @@ describe('reader imported-data fixtures', () => {
     vi.resetModules();
 
     try {
-      const { getProjects, getSessions, getDashboardStats } = await import('@/lib/claude-data/reader');
+      const {
+        getProjects,
+        getSessions,
+        getDashboardStats,
+        getSessionDetail,
+        getSessionDetailWithDescendants,
+      } = await import('@/lib/claude-data/reader');
       const { calculateCostAllModes } = await import('@/config/pricing');
 
       const sessions = await getSessions(10, 0);
@@ -504,6 +510,8 @@ describe('reader imported-data fixtures', () => {
       const projects = await getProjects();
       const project = projects.find((candidate) => candidate.id === projectId);
       const dashboard = await getDashboardStats();
+      const rootDetail = await getSessionDetail(sessionId);
+      const exportDetail = await getSessionDetailWithDescendants(sessionId);
 
       const opusCosts = calculateCostAllModes('claude-opus-4-7', 100, 50, 30, 40);
       const haikuCosts = calculateCostAllModes('claude-haiku-4-5-20251001', 7, 3, 2, 11);
@@ -525,6 +533,74 @@ describe('reader imported-data fixtures', () => {
 
       expect(dashboard.totalTokens).toBe(253);
       expect(Object.keys(dashboard.modelUsage)).toEqual(expect.arrayContaining(['claude-opus-4-7', 'claude-haiku-4-5-20251001', '<synthetic>']));
+      expect(rootDetail?.messages.some(message => message.content === 'Subagent result.')).toBe(false);
+      expect(exportDetail?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          content: 'Subagent result.',
+          subagent: expect.objectContaining({
+            id: 'agent-haiku',
+            parentId: sessionId,
+            depth: 1,
+          }),
+        }),
+      ]));
+      expect(exportDetail?.sourceFilePaths).toHaveLength(2);
+      expect(exportDetail?.totalInputTokens).toBe(session?.totalInputTokens);
+    } finally {
+      process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
+      fs.rmSync(importDir, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
+
+  it('preserves immediate parent identity for nested Claude subagents', async () => {
+    const importDir = path.join(process.cwd(), '.test-artifacts', 'reader-nested-subagent-import');
+    const previousImportDir = process.env.AGENT_SCOPE_IMPORT_DIR;
+    const rootId = '00000000-0000-4000-8000-000000000010';
+    const childId = 'child-agent';
+    const grandchildId = 'grandchild-agent';
+    const projectId = 'nested-subagent-project';
+    const projectDir = path.join(importDir, 'claude-data', 'projects', projectId);
+    const subagentDir = path.join(projectDir, rootId, 'subagents');
+    const nestedDir = path.join(subagentDir, childId, 'subagents');
+
+    fs.rmSync(importDir, { recursive: true, force: true });
+    fs.mkdirSync(nestedDir, { recursive: true });
+    const line = (content: string, timestamp: string) => JSON.stringify({
+      type: 'assistant',
+      sessionId: rootId,
+      timestamp,
+      message: {
+        id: content,
+        role: 'assistant',
+        model: 'claude-haiku-4-5-20251001',
+        usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: content }],
+      },
+    });
+    fs.writeFileSync(path.join(projectDir, `${rootId}.jsonl`), line('Root result.', '2026-05-03T12:00:00.000Z'));
+    fs.writeFileSync(path.join(subagentDir, `${childId}.jsonl`), line('Child result.', '2026-05-03T12:00:01.000Z'));
+    fs.writeFileSync(path.join(nestedDir, `${grandchildId}.jsonl`), line('Grandchild result.', '2026-05-03T12:00:02.000Z'));
+    fs.writeFileSync(path.join(importDir, 'meta.json'), JSON.stringify({ importedAt: '2026-05-03T00:00:00.000Z' }));
+    fs.writeFileSync(path.join(importDir, '.use-imported'), '1');
+    process.env.AGENT_SCOPE_IMPORT_DIR = importDir;
+    vi.resetModules();
+
+    try {
+      const { getSessionDetailWithDescendants } = await import('@/lib/claude-data/reader');
+      const detail = await getSessionDetailWithDescendants(rootId);
+
+      expect(detail?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          content: 'Child result.',
+          subagent: expect.objectContaining({ id: childId, parentId: rootId, depth: 1 }),
+        }),
+        expect.objectContaining({
+          content: 'Grandchild result.',
+          subagent: expect.objectContaining({ id: grandchildId, parentId: childId, depth: 2 }),
+        }),
+      ]));
     } finally {
       process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
       fs.rmSync(importDir, { recursive: true, force: true });

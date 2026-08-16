@@ -1,7 +1,7 @@
 import os from 'os';
 import { AGENT_ARCHIVE_ROOT, toZipPath } from './archive';
 import type { AgentDataProvider } from './provider';
-import { getProvider } from './registry';
+import { getProvider, resolveSessionProvider } from './registry';
 import type { AgentKind } from './types';
 import type { ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
 
@@ -66,6 +66,12 @@ function safeArchiveFileName(value: string): string {
   ));
 }
 
+export function standardizedSessionFileName(session: SessionDetail): string {
+  const id = session.nativeId || session.id || 'session';
+  const safeId = id.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'session';
+  return `agentscope-session-${safeId}.json`;
+}
+
 function withProjectAgentKind(project: ProjectInfo, agentKind: AgentKind): ProjectInfo {
   return { ...project, agentKind: project.agentKind || agentKind };
 }
@@ -91,6 +97,16 @@ async function readProviderData(provider: AgentDataProvider): Promise<{
     projects: projects.map(project => withProjectAgentKind(project, provider.kind)),
     sessions: sessions.map(session => withSessionAgentKind(session, provider.kind)),
   };
+}
+
+export async function getStandardizedSessionDetail(routeOrNativeId: string): Promise<SessionDetail | null> {
+  const provider = resolveSessionProvider(routeOrNativeId);
+  if (!provider) return null;
+
+  const detail = provider.getSessionDetailWithDescendants
+    ? await provider.getSessionDetailWithDescendants(routeOrNativeId)
+    : await provider.getSessionDetail(routeOrNativeId);
+  return detail ? withSessionDetailAgentKind(detail, provider.kind) : null;
 }
 
 export async function addStandardizedDataToArchive(

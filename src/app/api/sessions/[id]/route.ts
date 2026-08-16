@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server';
 import path from 'path';
 import { getSessionDetailFromFile } from '@/lib/claude-data/reader';
 import { getLiveSessionBySessionId, getLiveTranscriptRevision } from '@/lib/claude-data/live-sessions';
-import { zeroCosts } from '@/lib/claude-data/cost-utils';
 import type { LiveSessionInfo, SessionDetail } from '@/lib/claude-data/types';
 import { apiError, withErrorHandler } from '@/lib/api-route';
-import { makeRouteId, parseRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
+import { parseRouteId } from '@/lib/agent-data/route-id';
 import { resolveSessionProvider } from '@/lib/agent-data/registry';
+import { attachLiveMetadata, buildLiveSessionFallbackDetail } from '@/lib/claude-data/live-session-detail';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,36 +50,7 @@ async function getSessionDetailForRequest(id: string, liveSession: LiveSessionIn
   const historical = provider ? await provider.getSessionDetail(id) : null;
   if (historical || !liveSession) return historical;
 
-  return {
-    id: liveSession.sessionId,
-    projectId: liveSession.projectName,
-    projectName: liveSession.projectName,
-    timestamp: liveSession.startedAt,
-    duration: Math.max(0, Date.now() - new Date(liveSession.startedAt).getTime()),
-    messageCount: 0,
-    userMessageCount: 0,
-    assistantMessageCount: 0,
-    toolCallCount: 0,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
-    totalCacheReadTokens: 0,
-    totalCacheWriteTokens: 0,
-    estimatedCost: 0,
-    estimatedCosts: zeroCosts(),
-    model: 'unknown',
-    models: [],
-    gitBranch: '',
-    cwd: liveSession.cwd,
-    version: liveSession.version || '',
-    toolsUsed: {},
-    compaction: {
-      compactions: 0,
-      microcompactions: 0,
-      totalTokensSaved: 0,
-      compactionTimestamps: [],
-    },
-    messages: [],
-  };
+  return buildLiveSessionFallbackDetail(liveSession);
 }
 
 async function getCachedLiveSessionDetail(liveSession: LiveSessionInfo): Promise<SessionDetail> {
@@ -126,34 +97,4 @@ function trimLiveDetailCache(): void {
   for (const [filePath] of entries.slice(0, liveDetailCache.size - LIVE_DETAIL_CACHE_LIMIT)) {
     liveDetailCache.delete(filePath);
   }
-}
-
-function attachLiveMetadata(session: SessionDetail, liveSession: LiveSessionInfo): SessionDetail {
-  const nativeProjectId = session.nativeProjectId || parseRouteId(session.projectId).nativeId;
-  const sourceFilePaths = [
-    ...(session.sourceFilePaths?.length ? session.sourceFilePaths : [session.sourceFilePath]),
-    liveSession.transcriptFilePath,
-    liveSession.metadataFilePath,
-  ].filter((filePath): filePath is string => Boolean(filePath));
-
-  return {
-    ...session,
-    agentKind: 'claude',
-    nativeId: liveSession.sessionId,
-    routeId: makeRouteId('claude', liveSession.sessionId),
-    nativeProjectId,
-    projectRouteId: qualifyProjectId('claude', nativeProjectId),
-    isLive: true,
-    liveStatus: liveSession.status,
-    liveStatusReason: liveSession.statusReason,
-    liveBusySinceAt: liveSession.busySinceAt,
-    liveBusySinceAtMs: liveSession.busySinceAtMs,
-    liveActiveToolName: liveSession.activeToolName,
-    liveCachePaused: liveSession.cachePaused,
-    liveMetadataRevision: liveSession.revision,
-    liveTranscriptRevision: session.liveTranscriptRevision || getLiveTranscriptRevision(liveSession.sessionId) || liveSession.transcriptRevision,
-    liveMetadataFilePath: liveSession.metadataFilePath,
-    liveTranscriptFilePath: liveSession.transcriptFilePath,
-    sourceFilePaths: Array.from(new Set(sourceFilePaths)),
-  };
 }

@@ -24,6 +24,7 @@ export interface AgentDataProvider {
   getSessions(limit?: number, offset?: number): Promise<SessionInfo[]>;
   getProjectSessions(projectId: string): Promise<SessionInfo[]>;
   getSessionDetail(routeOrNativeId: string): Promise<SessionDetail | null>;
+  getSessionDetailWithDescendants?(routeOrNativeId: string): Promise<SessionDetail | null>;
   searchSessions(query: string, limit?: number): Promise<SessionInfo[]>;
   getDashboardStats(): Promise<DashboardStats>;
   discoverSessionSources?(): Promise<SessionSummarySource[]>;

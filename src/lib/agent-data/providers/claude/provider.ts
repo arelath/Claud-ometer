@@ -99,6 +99,10 @@ export const claudeProvider: AgentDataProvider = {
     const session = await reader.getSessionDetail(nativeId(routeOrNativeId));
     return session ? withSessionDetailIdentity(session) : null;
   },
+  async getSessionDetailWithDescendants(routeOrNativeId) {
+    const session = await reader.getSessionDetailWithDescendants(nativeId(routeOrNativeId));
+    return session ? withSessionDetailIdentity(session) : null;
+  },
   async searchSessions(query, limit) {
     if (hasSummarySupport()) {
       if (!query.trim()) return summariesToSessions(await getProviderSessionSummaries(claudeProvider)).slice(0, limit || 50);

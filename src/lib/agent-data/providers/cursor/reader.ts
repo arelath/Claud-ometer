@@ -1,6 +1,14 @@
-import type { DashboardStats, ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
+import path from 'path';
+import { DEFAULT_COST_MODE } from '@/config/pricing';
+import type {
+  DashboardStats,
+  ProjectInfo,
+  SessionDetail,
+  SessionInfo,
+  SessionSubagentDisplay,
+} from '@/lib/claude-data/types';
 import { zeroChangeTotals } from '@/lib/claude-data/change-utils';
-import { zeroCosts } from '@/lib/claude-data/cost-utils';
+import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
 import { AgentDataCache } from '@/lib/agent-data/cache';
 import { makeRouteId, parseRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
 import {
@@ -158,6 +166,123 @@ export async function getSessionDetail(routeOrNativeId: string): Promise<Session
     ...detail,
     sourceFilePaths: getRawSessionFilePaths(fileInfo),
   };
+}
+
+function isPathInside(parentPath: string, candidatePath: string): boolean {
+  const relative = path.relative(parentPath, candidatePath);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function cursorSessionDirectory(filePath: string): string {
+  const parentDir = path.dirname(filePath);
+  if (path.basename(parentDir).toLowerCase() !== 'subagents') return parentDir;
+  return path.join(parentDir, path.basename(filePath, path.extname(filePath)));
+}
+
+function cursorSubagentDisplay(
+  rootFileInfo: Extract<CursorSessionFileInfo, { sourceKind: 'agent' }>,
+  childFileInfo: Extract<CursorSessionFileInfo, { sourceKind: 'agent' }>,
+): SessionSubagentDisplay {
+  const sessionDir = cursorSessionDirectory(rootFileInfo.filePath);
+  const relativePath = path.relative(sessionDir, childFileInfo.filePath).replace(/\\/g, '/');
+  const segments = relativePath.split('/');
+  const depth = Math.max(1, segments.filter(segment => segment === 'subagents').length);
+  const parentBoundary = segments.lastIndexOf('subagents');
+  const parentId = parentBoundary > 0
+    ? segments[parentBoundary - 1].replace(/\.(?:jsonl|txt)$/i, '')
+    : rootFileInfo.nativeId;
+  return {
+    id: childFileInfo.nativeId,
+    parentId,
+    path: relativePath,
+    depth,
+  };
+}
+
+function mergeCursorSessionDetails(
+  rootFileInfo: Extract<CursorSessionFileInfo, { sourceKind: 'agent' }>,
+  members: Array<{ fileInfo: Extract<CursorSessionFileInfo, { sourceKind: 'agent' }>; parsed: CursorParsedSession }>,
+): SessionDetail {
+  const root = members[0].parsed.detail;
+  const messages = members.flatMap(({ fileInfo, parsed }, memberIndex) => {
+    const subagent = memberIndex === 0 ? undefined : cursorSubagentDisplay(rootFileInfo, fileInfo);
+    return parsed.detail.messages.map((message, messageIndex) => ({
+      message: subagent ? { ...message, subagent } : message,
+      memberIndex,
+      messageIndex,
+    }));
+  }).sort((left, right) => {
+    const leftTime = new Date(left.message.timestamp).getTime();
+    const rightTime = new Date(right.message.timestamp).getTime();
+    if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+    return left.memberIndex - right.memberIndex || left.messageIndex - right.messageIndex;
+  }).map(item => item.message);
+
+  const toolsUsed: Record<string, number> = {};
+  let estimatedCosts = zeroCosts();
+  let updatedAtMs = new Date(root.timestamp).getTime() + root.duration;
+  for (const { parsed } of members) {
+    estimatedCosts = addCosts(estimatedCosts, parsed.info.estimatedCosts);
+    const memberUpdatedAtMs = new Date(parsed.info.timestamp).getTime() + parsed.info.duration;
+    if (!Number.isNaN(memberUpdatedAtMs)) updatedAtMs = Math.max(updatedAtMs, memberUpdatedAtMs);
+    for (const [tool, count] of Object.entries(parsed.info.toolsUsed)) {
+      toolsUsed[tool] = (toolsUsed[tool] || 0) + count;
+    }
+  }
+
+  return {
+    ...root,
+    sourceFilePath: rootFileInfo.filePath,
+    sourceFilePaths: members.map(member => member.fileInfo.filePath),
+    duration: Math.max(0, updatedAtMs - new Date(root.timestamp).getTime()),
+    messageCount: members.reduce((sum, member) => sum + member.parsed.info.messageCount, 0),
+    userMessageCount: members.reduce((sum, member) => sum + member.parsed.info.userMessageCount, 0),
+    assistantMessageCount: members.reduce((sum, member) => sum + member.parsed.info.assistantMessageCount, 0),
+    toolCallCount: members.reduce((sum, member) => sum + member.parsed.info.toolCallCount, 0),
+    totalInputTokens: members.reduce((sum, member) => sum + member.parsed.info.totalInputTokens, 0),
+    totalOutputTokens: members.reduce((sum, member) => sum + member.parsed.info.totalOutputTokens, 0),
+    totalCacheReadTokens: members.reduce((sum, member) => sum + member.parsed.info.totalCacheReadTokens, 0),
+    totalCacheWriteTokens: members.reduce((sum, member) => sum + member.parsed.info.totalCacheWriteTokens, 0),
+    estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
+    estimatedCosts,
+    models: Array.from(new Set(members.flatMap(member => member.parsed.info.models))),
+    toolsUsed,
+    compaction: {
+      compactions: members.reduce((sum, member) => sum + member.parsed.info.compaction.compactions, 0),
+      microcompactions: members.reduce((sum, member) => sum + member.parsed.info.compaction.microcompactions, 0),
+      totalTokensSaved: members.reduce((sum, member) => sum + member.parsed.info.compaction.totalTokensSaved, 0),
+      compactionTimestamps: members.flatMap(member => member.parsed.info.compaction.compactionTimestamps).sort(),
+    },
+    messages,
+  };
+}
+
+export async function getSessionDetailWithDescendants(routeOrNativeId: string): Promise<SessionDetail | null> {
+  const nativeId = routeNativeId(routeOrNativeId);
+  const files = await discoverCursorSessionFiles();
+  const fileInfo = files.find(session => (
+    session.routeNativeId === nativeId
+    || session.nativeId === nativeId
+    || makeRouteId('cursor', session.routeNativeId) === routeOrNativeId
+  ));
+  if (!fileInfo) return null;
+  if (fileInfo.sourceKind === 'chat') {
+    const detail = (await parseDiscoveredSession(fileInfo)).detail;
+    return { ...detail, sourceFilePaths: getRawSessionFilePaths(fileInfo) };
+  }
+
+  const descendantRoot = path.join(cursorSessionDirectory(fileInfo.filePath), 'subagents');
+  const descendants = files
+    .filter((candidate): candidate is Extract<CursorSessionFileInfo, { sourceKind: 'agent' }> => (
+      candidate.sourceKind === 'agent' && isPathInside(descendantRoot, candidate.filePath)
+    ))
+    .sort((left, right) => left.filePath.localeCompare(right.filePath));
+  const members = [fileInfo, ...descendants];
+  const parsedMembers = await Promise.all(members.map(async member => ({
+    fileInfo: member,
+    parsed: await parseDiscoveredSession(member),
+  })));
+  return mergeCursorSessionDetails(fileInfo, parsedMembers);
 }
 
 export async function searchSessions(query: string, limit = 50): Promise<SessionInfo[]> {

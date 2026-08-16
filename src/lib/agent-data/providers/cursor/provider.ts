@@ -29,6 +29,7 @@ export const cursorProvider: AgentDataProvider = {
       .filter(summary => summary.nativeProjectId === nativeProjectId || summary.projectRouteId === projectId));
   },
   getSessionDetail: reader.getSessionDetail,
+  getSessionDetailWithDescendants: reader.getSessionDetailWithDescendants,
   async searchSessions(query, limit) {
     if (!query.trim()) return summariesToSessions(await getProviderSessionSummaries(cursorProvider)).slice(0, limit || 50);
     const lowerQuery = query.toLowerCase();
