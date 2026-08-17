@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
 import { apiError, withErrorHandler } from '@/lib/api-route';
-import { getIndexedSessionSummaries } from '@/lib/agent-data/indexer';
+import { getSessionSummarySql } from '@/lib/agent-data/analytics-sql';
 import { parseRouteId } from '@/lib/agent-data/route-id';
 import { resolveSessionProvider } from '@/lib/agent-data/registry';
-import { summaryToSessionInfo } from '@/lib/agent-data/session-summary';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,12 +15,9 @@ export const GET = withErrorHandler(async (
   const provider = resolveSessionProvider(id);
   if (!provider) apiError('Session not found', 404);
 
-  const summary = getIndexedSessionSummaries([provider]).find(item => (
-    item.routeId === id
-    || item.nativeId === parsed.nativeId
-    || (item.provider === 'claude' && item.nativeId === id)
-  ));
+  const summary = getSessionSummarySql([provider], id)
+    ?? (parsed.nativeId !== id ? getSessionSummarySql([provider], parsed.nativeId) : null);
 
   if (!summary) apiError('Session not found', 404);
-  return NextResponse.json(summaryToSessionInfo(summary));
+  return NextResponse.json(summary);
 }, 'Error fetching session summary', 'Failed to fetch session summary');

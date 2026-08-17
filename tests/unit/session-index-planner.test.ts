@@ -167,6 +167,23 @@ describe('session index planner', () => {
     expect(plan.recent).toEqual([]);
   });
 
+  it('routes active contract-provider bootstrap work to full indexing instead of lightweight recent mode', () => {
+    const active = source('active-bootstrap', {
+      sourceSignature: { size: 20, mtimeMs: oldNow - 50 },
+    });
+
+    const plan = createSessionRefreshPlan({
+      sources: [active],
+      cachedSummaries: [],
+      incrementalSupport: { claude: { checkpointVersion: 1, buildRecentAsFull: true } },
+      touchedProviders: ['claude'],
+      nowMs: oldNow,
+    });
+
+    expect(plan.fullBuild).toEqual([active]);
+    expect(plan.recent).toEqual([]);
+  });
+
   it('falls back to full builds when checkpoints are not eligible', () => {
     const appended = source('appended', {
       sourceSignature: { size: 20, mtimeMs: oldNow - 60 * 60 * 1000 },

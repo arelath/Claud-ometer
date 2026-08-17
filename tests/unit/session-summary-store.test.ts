@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isSqliteAvailable } from '@/lib/sqlite';
+import { isSqliteAvailable, openDatabase } from '@/lib/sqlite';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import {
   clearSessionSummaryCache,
+  boundedIncrementalPreviousSummary,
   getCachedSessionSummaries,
   getLastSessionIndexRefreshMetrics,
   reconcileSessionSummaryIndex,
@@ -12,17 +13,53 @@ import {
 } from '@/lib/agent-data/session-summary-store';
 import {
   commitSessionSummaryIndex,
+  getSessionSummaryIndexPath,
+  readSessionSummaryIndexSourceState,
   readSourceParseCheckpoints,
   readSessionSummaryIndexCache,
 } from '@/lib/agent-data/session-summary-sqlite-store';
 import { sourceSummaryCacheKey } from '@/lib/agent-data/session-summary-cache';
 import { SESSION_SUMMARY_CACHE_VERSION, type CachedSessionSummary, type SessionSummarySource } from '@/lib/agent-data/session-summary';
 import type { SourceParseCheckpoint } from '@/lib/agent-data/session-parse-checkpoint';
+import { SessionSummaryDeferredError } from '@/lib/agent-data/session-summary-deferred';
 
 describe('session summary store', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'session-summary-store');
   const filePath = path.join(root, 'session.jsonl');
   const sqliteIt = isSqliteAvailable() ? it : it.skip;
+
+  it('bounds the previous summary sent to incremental workers independently of event history', () => {
+    const source = {
+      provider: 'claude' as const,
+      parserVersion: 'parser-v1',
+      sourceFilePath: 'session.jsonl',
+      sourceSignature: { size: 10, mtimeMs: 20 },
+      nativeProjectId: 'project',
+      projectName: 'Project',
+    };
+    const baseline = summaryFor(source);
+    const withHistory = {
+      ...baseline,
+      usageEvents: Array.from({ length: 10_000 }, () => ({
+        timestamp: baseline.updatedAt,
+        messageCount: 1,
+        userMessageCount: 1,
+        assistantMessageCount: 0,
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        estimatedCosts: { api: 0, conservative: 0, subscription: 0 },
+      })),
+    } satisfies CachedSessionSummary;
+
+    const bounded = boundedIncrementalPreviousSummary(withHistory);
+
+    expect(bounded.usageEvents).toBeUndefined();
+    expect(bounded.changeEvents).toBeUndefined();
+    expect(JSON.stringify(bounded).length).toBeLessThan(2_000);
+  });
 
   function sourceFor(file: string, parserVersion = 'parser-v1'): SessionSummarySource {
     const stat = fs.statSync(file);
@@ -207,6 +244,53 @@ describe('session summary store', () => {
     expect(readSessionSummaryIndexCache().summaries).toHaveLength(2);
   });
 
+  sqliteIt('isolates a source publication failure and continues the provider', async () => {
+    const secondFilePath = path.join(root, 'zz-second.jsonl');
+    fs.writeFileSync(secondFilePath, 'two');
+    const stableDate = new Date('2026-05-08T10:00:00.000Z');
+    fs.utimesSync(filePath, stableDate, stableDate);
+    fs.utimesSync(secondFilePath, stableDate, stableDate);
+    const sources = [sourceFor(filePath), sourceFor(secondFilePath)];
+    const provider: AgentDataProvider = {
+      ...makeProvider().provider,
+      discoverSessionSources: vi.fn(async () => sources),
+      buildSessionSummary: vi.fn(async source => ({
+        ...summaryFor(source),
+        routeId: 'claude:duplicate-route',
+      })),
+    };
+
+    const result = await reconcileSessionSummaryIndex([provider]);
+
+    expect(result).toMatchObject({ processedSources: 2, committedSources: 1, failedSources: 1 });
+    expect(readSessionSummaryIndexCache().summaries).toHaveLength(1);
+    const db = openDatabase(getSessionSummaryIndexPath());
+    try {
+      expect(db.get<{ count: number }>("SELECT COUNT(*) AS count FROM source_sessions WHERE job_state = 'failed'")?.count).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  sqliteIt('completes durable provider state when a manifest is memoized', async () => {
+    const stableDate = new Date('2026-05-08T10:00:00.000Z');
+    fs.utimesSync(filePath, stableDate, stableDate);
+    const { provider } = makeProvider();
+    await reconcileSessionSummaryIndex([provider]);
+
+    await reconcileSessionSummaryIndex([provider]);
+
+    const db = openDatabase(getSessionSummaryIndexPath());
+    try {
+      expect(db.get<{ state: string }>(
+        'SELECT state FROM provider_reconciliations WHERE provider = ?',
+        ['claude'],
+      )?.state).toBe('complete');
+    } finally {
+      db.close();
+    }
+  });
+
   sqliteIt('keeps failed manifests degraded and retries after backoff', async () => {
     const stableDate = new Date('2026-05-08T10:00:00.000Z');
     fs.utimesSync(filePath, stableDate, stableDate);
@@ -225,6 +309,7 @@ describe('session summary store', () => {
         failedSources: 1,
         lastError: 'transient parse failure',
       });
+      resetSessionSummaryStoreForTests();
       await expect(reconcileSessionSummaryIndex([provider])).resolves.toMatchObject({
         failedSources: 1,
         lastError: 'transient parse failure',
@@ -234,6 +319,51 @@ describe('session summary store', () => {
       nowMs += 31_000;
       await expect(reconcileSessionSummaryIndex([provider])).resolves.toMatchObject({ failedSources: 1 });
       expect(buildSessionSummary).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  sqliteIt('keeps an unterminated active bootstrap pending without retry backoff', async () => {
+    let complete = false;
+    let nowMs = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+    const buildSessionSummaryWithCheckpoint = vi.fn(async (source: SessionSummarySource) => {
+      if (!complete) throw new SessionSummaryDeferredError('unterminated JSONL record');
+      return { summary: summaryFor(source), checkpoint: checkpointFor(source) };
+    });
+    const provider: AgentDataProvider = {
+      ...makeProvider().provider,
+      discoverSessionSources: vi.fn(async () => [sourceFor(filePath)]),
+      buildSessionSummaryWithCheckpoint,
+      incrementalSessionSummary: {
+        checkpointVersion: 1,
+        buildRecentAsFull: true,
+        buildSessionSummary: vi.fn(),
+      },
+    };
+
+    try {
+      const initialSource = sourceFor(filePath);
+      const result = await reconcileSessionSummaryIndex([provider]);
+      const state = readSessionSummaryIndexSourceState(initialSource);
+
+      expect(buildSessionSummaryWithCheckpoint).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ processedSources: 1, committedSources: 0, failedSources: 0, deferredSources: 1 });
+      expect(result.lastError).toBeUndefined();
+      expect(state).toMatchObject({ jobState: 'pending' });
+      expect(state.retryAfter).toBeUndefined();
+      expect(state.lastError).toBeUndefined();
+
+      fs.appendFileSync(filePath, '\n');
+      complete = true;
+      nowMs += 1_001;
+      await expect(reconcileSessionSummaryIndex([provider])).resolves.toMatchObject({
+        committedSources: 1,
+        failedSources: 0,
+        deferredSources: 0,
+      });
+      expect(buildSessionSummaryWithCheckpoint).toHaveBeenCalledTimes(2);
     } finally {
       nowSpy.mockRestore();
     }

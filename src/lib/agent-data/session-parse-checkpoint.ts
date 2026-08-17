@@ -18,6 +18,7 @@ export interface SourceParseCheckpoint {
 export interface IncrementalSessionSummarySupport {
   checkpointVersion: number;
   supportsPartialPromotion?: boolean;
+  buildRecentAsFull?: boolean;
 }
 
 export type IncrementalSessionSummarySupportByProvider = Partial<Record<AgentKind, IncrementalSessionSummarySupport>>;

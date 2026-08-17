@@ -49,6 +49,12 @@ import {
 import { buildEventBlock, buildThinkingBlock, buildToolCallDisplay, buildToolResultBlock } from './tool-parser';
 import { computeLocalHourCounts, computeSupplementalStats, resetStatsAggregatorCache } from './stats-aggregator';
 import { extractClaudeImages } from '@/lib/session-images';
+import {
+  CLAUDE_INCREMENTAL_CHECKPOINT_VERSION,
+  buildClaudeSummaryCheckpoint,
+  tryBuildIncrementalClaudeSummary,
+} from './incremental-summary';
+import type { IncrementalSessionSummaryResult } from '@/lib/agent-data/provider';
 
 interface SessionFileCacheEntry {
   signature: string;
@@ -56,7 +62,8 @@ interface SessionFileCacheEntry {
 }
 
 const sessionInfoCache = new Map<string, SessionFileCacheEntry>();
-export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v2';
+export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v3';
+export { CLAUDE_INCREMENTAL_CHECKPOINT_VERSION };
 
 type ParsedSessionInfo = SessionInfo & {
   modelUsage?: Record<string, ModelUsage & { estimatedCost: number; estimatedCosts: CostEstimates }>;
@@ -957,6 +964,25 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
     compaction: info.compaction,
     searchTextPreview,
   };
+}
+
+export async function buildSessionSummaryWithCheckpoint(
+  source: SessionSummarySource,
+): Promise<IncrementalSessionSummaryResult> {
+  const summary = await buildSessionSummary(source);
+  return {
+    summary,
+    checkpoint: buildClaudeSummaryCheckpoint(source),
+  };
+}
+
+export async function buildIncrementalSessionSummary(
+  source: SessionSummarySource,
+  previousSummary: CachedSessionSummary,
+  checkpoint: import('@/lib/agent-data/session-parse-checkpoint').SourceParseCheckpoint,
+): Promise<IncrementalSessionSummaryResult> {
+  return tryBuildIncrementalClaudeSummary(source, previousSummary, checkpoint)
+    || buildSessionSummaryWithCheckpoint(source);
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {

@@ -18,10 +18,13 @@ function resetRuntimeCaches(providers: AgentDataProvider[]): void {
 }
 
 export const GET = withErrorHandler(async (request?: Request) => {
-  void request;
   const providers = getActiveProviders();
   const status = getQuickSessionIndexStatus(providers);
-  return NextResponse.json(status, { headers: { ETag: `"${status.revision}"` } });
+  const etag = `W/"${status.revision}-${status.statusRevision}"`;
+  if (request?.headers.get('if-none-match') === etag) {
+    return new NextResponse(null, { status: 304, headers: { ETag: etag } });
+  }
+  return NextResponse.json(status, { headers: { ETag: etag } });
 }, 'Error reading cache status', 'Failed to read cache status');
 
 export const POST = withErrorHandler(async () => {

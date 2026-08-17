@@ -5,6 +5,7 @@ import * as reader from '@/lib/claude-data/reader';
 import { getLiveSessions } from '@/lib/claude-data/live-sessions';
 import { getProviderSessionSummaries } from '@/lib/agent-data/provider-summary-view';
 import { summariesToDashboardStats, summariesToProjects, summariesToSessions, type CachedSessionSummary } from '@/lib/agent-data/session-summary';
+import { CLAUDE_INCREMENTAL_CHECKPOINT_VERSION } from '@/lib/claude-data/incremental-summary';
 
 function nativeId(id: string): string {
   return parseRouteId(id).nativeId;
@@ -124,6 +125,12 @@ export const claudeProvider: AgentDataProvider = {
   },
   discoverSessionSources: 'discoverSessionSummarySources' in reader ? reader.discoverSessionSummarySources : undefined,
   buildSessionSummary: 'buildSessionSummary' in reader ? reader.buildSessionSummary : undefined,
+  buildSessionSummaryWithCheckpoint: 'buildSessionSummaryWithCheckpoint' in reader ? reader.buildSessionSummaryWithCheckpoint : undefined,
+  incrementalSessionSummary: 'buildIncrementalSessionSummary' in reader ? {
+    checkpointVersion: CLAUDE_INCREMENTAL_CHECKPOINT_VERSION,
+    buildRecentAsFull: true,
+    buildSessionSummary: reader.buildIncrementalSessionSummary,
+  } : undefined,
   resetCache: 'resetClaudeReaderCache' in reader ? reader.resetClaudeReaderCache : undefined,
   getLiveSessions() {
     return getLiveSessions().map(withLiveSessionIdentity);

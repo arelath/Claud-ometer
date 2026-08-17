@@ -10,6 +10,7 @@ import {
 } from './session-summary-sqlite-store';
 import type { SessionSummaryCacheStatus } from './session-summary-cache';
 import type { CachedSessionSummary } from './session-summary';
+import type { AgentKind } from './types';
 
 export type SessionIndexState = 'fresh' | 'stale' | 'refreshing' | 'empty' | 'error';
 
@@ -17,12 +18,19 @@ export interface SessionIndexStatus extends SessionSummaryCacheStatus {
   status: SessionIndexState;
   state: 'ready' | 'building' | 'degraded' | 'paused';
   revision: number;
+  statusRevision: number;
   lastCommittedAt?: string;
   queueDepth: number;
   activeSources: number;
   pendingSources: number;
   failedSources: number;
   initialBuild: boolean;
+  totalSources?: number;
+  processedSources?: number;
+  committedSources?: number;
+  currentProvider?: AgentKind;
+  heapUsedBytes?: number;
+  rssBytes?: number;
   run?: { id: string; state: 'queued' | 'running' | 'completed' | 'failed'; startedAt?: string; completedAt?: string };
   unindexedCount: number;
   refreshStartedAt?: string;
@@ -111,7 +119,7 @@ export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): Sess
   const state = runtime?.state || (metadata.summaryCount > 0 ? 'ready' : 'building');
   const status: SessionIndexState = state === 'degraded'
     ? 'error'
-    : state === 'building'
+    : state === 'building' && metadata.summaryCount === 0
       ? 'refreshing'
       : metadata.summaryCount === 0 && kinds.length > 0
         ? 'empty'
@@ -132,12 +140,19 @@ export function getQuickSessionIndexStatus(providers: AgentDataProvider[]): Sess
     status,
     state,
     revision: metadata.revision,
+    statusRevision: metadata.statusRevision || 0,
     lastCommittedAt: runtime?.lastCommittedAt,
     queueDepth: runtime?.queueDepth || 0,
     activeSources: runtime?.activeSources || 0,
     pendingSources: runtime?.pendingSources || 0,
     failedSources: runtime?.failedSources || 0,
     initialBuild: runtime?.initialBuild ?? metadata.summaryCount === 0,
+    totalSources: runtime?.totalSources,
+    processedSources: runtime?.processedSources,
+    committedSources: runtime?.committedSources,
+    currentProvider: runtime?.currentProvider,
+    heapUsedBytes: runtime?.heapUsedBytes,
+    rssBytes: runtime?.rssBytes,
     run: runtime?.run,
     unindexedCount: Math.max(runtime?.pendingSources || 0, 0),
     refreshStartedAt: runtime?.run?.startedAt,

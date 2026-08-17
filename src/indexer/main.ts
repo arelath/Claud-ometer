@@ -8,7 +8,9 @@ import {
 } from '@/lib/agent-data/session-summary-store';
 import { ProcessSummaryParsePool } from '@/lib/agent-data/session-summary-process-pool';
 import {
-  getSessionSummaryIndexPath,
+  closeSessionSummaryIndexWriter,
+  getLegacySessionSummaryIndexPath,
+  initializeSessionSummaryIndexWriter,
   writeSessionIndexerRuntimeStatus,
   type SessionIndexerRuntimeStatus,
 } from '@/lib/agent-data/session-summary-sqlite-store';
@@ -152,7 +154,7 @@ async function drain(): Promise<void> {
   await running;
 }
 
-const lockPath = `${getSessionSummaryIndexPath()}.indexer.lock`;
+const lockPath = `${getLegacySessionSummaryIndexPath()}.indexer.lock`;
 fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 try {
   fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { flag: 'wx' });
@@ -168,6 +170,8 @@ try {
   fs.rmSync(lockPath, { force: true });
   fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { flag: 'wx' });
 }
+
+initializeSessionSummaryIndexWriter();
 
 const controlServer = await startIndexerControlServer(requiredEndpoint, token, async (request: IndexerRequest) => {
   switch (request.command) {
@@ -202,6 +206,7 @@ async function shutdown(): Promise<void> {
   await parsePool.close().catch(() => undefined);
   await running?.catch(() => undefined);
   await controlServer.close().catch(() => undefined);
+  closeSessionSummaryIndexWriter();
   if (process.platform !== 'win32') fs.rmSync(requiredEndpoint, { force: true });
   fs.rmSync(lockPath, { force: true });
 }

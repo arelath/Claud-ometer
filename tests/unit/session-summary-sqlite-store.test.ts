@@ -4,12 +4,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isSqliteAvailable, openDatabase, openWritableDatabase } from '@/lib/sqlite';
 import {
   clearSessionSummaryIndexCache,
+  closeSessionSummaryIndexWriter,
   commitSessionSummaryIndexSource,
   commitSessionSummaryIndex,
   finalizeSessionSummaryIndexDiscovery,
+  getLegacySessionSummaryIndexPath,
   getSessionSummaryIndexPath,
+  initializeSessionSummaryIndexWriter,
+  readSessionSummaryIndexMetadata,
   readSourceParseCheckpoints,
   readSessionSummaryIndexCache,
+  writeSessionIndexerRuntimeStatus,
 } from '@/lib/agent-data/session-summary-sqlite-store';
 import { getSessionsSql } from '@/lib/agent-data/analytics-sql';
 import { sourceSummaryCacheKey, writeSessionSummaryCache } from '@/lib/agent-data/session-summary-cache';
@@ -138,6 +143,7 @@ sqliteDescribe('SQLite session summary index store', () => {
   });
 
   afterEach(() => {
+    closeSessionSummaryIndexWriter();
     clearSessionSummaryIndexCache();
     fs.rmSync(root, { recursive: true, force: true });
     delete process.env.AGENT_SCOPE_CACHE_DIR;
@@ -422,13 +428,19 @@ sqliteDescribe('SQLite session summary index store', () => {
     expect(readSourceParseCheckpoints([source]).has(sourceKey)).toBe(false);
   });
 
-  it('warms the SQLite index from the legacy JSON cache', () => {
+  it('imports the legacy JSON cache only during writer initialization', () => {
     writeSessionSummaryCache({
       cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
       generatedAt: '2026-05-08T10:00:00.000Z',
       summaries: [makeSummary()],
     });
 
+    const fallback = readSessionSummaryIndexCache();
+
+    expect(fallback.summaries).toHaveLength(1);
+    expect(fs.existsSync(getSessionSummaryIndexPath())).toBe(false);
+
+    initializeSessionSummaryIndexWriter();
     const cache = readSessionSummaryIndexCache();
 
     expect(cache.generatedAt).toBe('2026-05-08T10:00:00.000Z');
@@ -492,6 +504,303 @@ sqliteDescribe('SQLite session summary index store', () => {
 
     finalizeSessionSummaryIndexDiscovery(['claude'], [firstSource]);
     expect(readSessionSummaryIndexCache().summaries.map(summary => summary.nativeId)).toEqual(['session']);
+  });
+
+  it('migrates a v1 index side by side without modifying the legacy database', () => {
+    const legacyPath = getLegacySessionSummaryIndexPath();
+    commitSessionSummaryIndexSource({ source: makeSource(), summary: makeSummary() });
+    const seed = openWritableDatabase(getSessionSummaryIndexPath());
+    seed.run("UPDATE cache_meta SET value = '37' WHERE key = 'revision'");
+    seed.run("UPDATE cache_meta SET value = '2026-05-08T10:00:00.000Z' WHERE key = 'generated_at'");
+    seed.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    seed.close();
+    fs.copyFileSync(getSessionSummaryIndexPath(), legacyPath);
+    clearSessionSummaryIndexCache();
+    const before = fs.readFileSync(legacyPath);
+
+    initializeSessionSummaryIndexWriter();
+
+    expect(readSessionSummaryIndexCache().summaries.map(summary => summary.nativeId)).toEqual(['session']);
+    expect(readSessionSummaryIndexMetadata().revision).toBe(37);
+    expect(fs.readFileSync(legacyPath)).toEqual(before);
+    const v2 = openDatabase(getSessionSummaryIndexPath());
+    try {
+      expect(v2.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(2);
+      expect(v2.get<{ migration_source: string }>('SELECT migration_source FROM index_status WHERE singleton = 1')?.migration_source).toBe('v1-sqlite');
+      expect(v2.get<{ published_generation: number }>('SELECT published_generation FROM source_sessions')?.published_generation).toBe(1);
+    } finally {
+      v2.close();
+    }
+
+    closeSessionSummaryIndexWriter();
+    const corruptV2 = openWritableDatabase(getSessionSummaryIndexPath());
+    corruptV2.exec('DROP TABLE summary_tools');
+    corruptV2.close();
+    expect(readSessionSummaryIndexCache().summaries.map(summary => summary.nativeId)).toEqual(['session']);
+  });
+
+  it('upgrades an existing v2 status table with durable run timestamps', () => {
+    const seed = openWritableDatabase(getSessionSummaryIndexPath());
+    seed.exec(`
+      CREATE TABLE cache_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE index_status (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        schema_version INTEGER NOT NULL,
+        committed_revision INTEGER NOT NULL DEFAULT 0,
+        status_revision INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL DEFAULT 'building',
+        initial_build INTEGER NOT NULL DEFAULT 1,
+        queue_depth INTEGER NOT NULL DEFAULT 0,
+        active_source_key TEXT,
+        active_sources INTEGER NOT NULL DEFAULT 0,
+        discovered_sources INTEGER NOT NULL DEFAULT 0,
+        indexed_sources INTEGER NOT NULL DEFAULT 0,
+        pending_sources INTEGER NOT NULL DEFAULT 0,
+        failed_sources INTEGER NOT NULL DEFAULT 0,
+        current_run_id TEXT,
+        current_run_state TEXT,
+        total_sources INTEGER NOT NULL DEFAULT 0,
+        processed_sources INTEGER NOT NULL DEFAULT 0,
+        committed_sources INTEGER NOT NULL DEFAULT 0,
+        current_provider TEXT,
+        heap_used_bytes INTEGER,
+        rss_bytes INTEGER,
+        last_reconciled_at TEXT,
+        last_committed_at TEXT,
+        last_error TEXT,
+        migration_source TEXT,
+        migration_completed_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    seed.run("INSERT INTO cache_meta (key, value) VALUES ('schema_version', '2')");
+    seed.run("INSERT INTO cache_meta (key, value) VALUES ('summary_cache_version', ?)", [String(SESSION_SUMMARY_CACHE_VERSION)]);
+    seed.run("INSERT INTO cache_meta (key, value) VALUES ('revision', '0')");
+    seed.run(
+      `INSERT INTO index_status (
+        singleton, schema_version, migration_source, migration_completed_at, updated_at
+      ) VALUES (1, 2, 'json', ?, ?)`,
+      ['2026-05-08T10:00:00.000Z', '2026-05-08T10:00:00.000Z'],
+    );
+    seed.exec('PRAGMA user_version = 2');
+    seed.close();
+
+    initializeSessionSummaryIndexWriter();
+    writeSessionIndexerRuntimeStatus({
+      state: 'building',
+      queueDepth: 1,
+      activeSources: 0,
+      pendingSources: 1,
+      failedSources: 0,
+      initialBuild: false,
+      run: {
+        id: 'run-upgrade',
+        state: 'running',
+        startedAt: '2026-05-08T10:00:01.000Z',
+        completedAt: '2026-05-08T10:00:02.000Z',
+      },
+    });
+
+    const db = openDatabase(getSessionSummaryIndexPath());
+    try {
+      const columns = db.query<{ name: string }>('PRAGMA table_info(index_status)').map(column => column.name);
+      expect(columns).toContain('current_run_started_at');
+      expect(columns).toContain('current_run_completed_at');
+      expect(db.get<{
+        current_run_started_at: string;
+        current_run_completed_at: string;
+      }>('SELECT current_run_started_at, current_run_completed_at FROM index_status WHERE singleton = 1')).toEqual({
+        current_run_started_at: '2026-05-08T10:00:01.000Z',
+        current_run_completed_at: '2026-05-08T10:00:02.000Z',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not resurrect legacy data after an authoritative v2 index becomes empty', () => {
+    writeSessionSummaryCache({
+      cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
+      generatedAt: '2026-05-08T10:00:00.000Z',
+      summaries: [makeSummary()],
+    });
+    initializeSessionSummaryIndexWriter();
+    finalizeSessionSummaryIndexDiscovery(['claude'], []);
+    const emptyRevision = readSessionSummaryIndexMetadata().revision;
+    expect(readSessionSummaryIndexCache().summaries).toHaveLength(0);
+
+    closeSessionSummaryIndexWriter();
+    initializeSessionSummaryIndexWriter();
+
+    expect(readSessionSummaryIndexCache().summaries).toHaveLength(0);
+    expect(readSessionSummaryIndexMetadata().revision).toBe(emptyRevision);
+  });
+
+  it('keeps the previous publication when route ownership rejects a new source', () => {
+    const firstSource = makeSource();
+    commitSessionSummaryIndexSource({ source: firstSource, summary: makeSummary() });
+    const revision = getRevision();
+    const conflictingSource = makeSource({ sourceFilePath: path.join(root, 'conflict.jsonl') });
+
+    expect(() => commitSessionSummaryIndexSource({
+      source: conflictingSource,
+      summary: makeSummary({
+        nativeId: 'conflict',
+        sourceFilePath: conflictingSource.sourceFilePath,
+        routeId: 'claude:session',
+      }),
+    })).toThrow();
+
+    expect(getRevision()).toBe(revision);
+    expect(readSessionSummaryIndexCache().summaries.map(summary => summary.nativeId)).toEqual(['session']);
+    const db = openDatabase(getSessionSummaryIndexPath());
+    try {
+      expect(db.get<{ count: number }>("SELECT COUNT(*) AS count FROM source_generations WHERE state = 'staging'")?.count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('separates status progress revisions from committed data revisions', () => {
+    commitSessionSummaryIndexSource({ source: makeSource(), summary: makeSummary() });
+    const before = readSessionSummaryIndexMetadata();
+
+    writeSessionIndexerRuntimeStatus({
+      state: 'building',
+      queueDepth: 1,
+      activeSources: 0,
+      pendingSources: 1,
+      failedSources: 0,
+      initialBuild: false,
+    });
+
+    const after = readSessionSummaryIndexMetadata();
+    expect(after.revision).toBe(before.revision);
+    expect(after.statusRevision).toBeGreaterThan(before.statusRevision || 0);
+    const db = openWritableDatabase(getSessionSummaryIndexPath());
+    try {
+      db.run(
+        "UPDATE cache_meta SET value = ? WHERE key = 'indexer_runtime_status_json'",
+        [JSON.stringify({ state: 'degraded', queueDepth: 99 })],
+      );
+    } finally {
+      db.close();
+    }
+    expect(readSessionSummaryIndexMetadata().runtime).toMatchObject({
+      state: 'building',
+      queueDepth: 1,
+      pendingSources: 1,
+    });
+  });
+
+  it('does not bump the committed revision for a no-op reconciliation', () => {
+    const source = makeSource();
+    commitSessionSummaryIndexSource({ source, summary: makeSummary() });
+    const before = getRevision();
+
+    finalizeSessionSummaryIndexDiscovery(['claude'], [source]);
+
+    expect(getRevision()).toBe(before);
+  });
+
+  it('commits cursor and stable delta events atomically and replays the batch as a no-op', () => {
+    const initialSource = makeSource();
+    const initialCheckpoint = makeCheckpoint(initialSource, {
+      lastCompleteOffset: 10,
+      componentStateJson: JSON.stringify({
+        version: 1,
+        components: [{
+          componentKey: 'root',
+          filePath: initialSource.sourceFilePath,
+          size: 10,
+          mtimeMs: 20,
+          completeOffset: 10,
+          boundaryHash: 'before',
+        }],
+      }),
+    });
+    commitSessionSummaryIndexSource({
+      source: initialSource,
+      summary: makeSummary(),
+      checkpoint: initialCheckpoint,
+    });
+    const nextSource = makeSource({ sourceSignature: { size: 20, mtimeMs: 30 } });
+    const nextCheckpoint = makeCheckpoint(nextSource, {
+      sourceSize: 20,
+      sourceMtimeMs: 30,
+      lastCompleteOffset: 20,
+      recordCount: 3,
+      componentStateJson: JSON.stringify({
+        version: 1,
+        components: [{
+          componentKey: 'root',
+          filePath: nextSource.sourceFilePath,
+          size: 20,
+          mtimeMs: 30,
+          completeOffset: 20,
+          boundaryHash: 'after',
+        }],
+      }),
+    });
+    const deltaCommit = {
+      source: nextSource,
+      summary: makeSummary({
+        sourceSignature: nextSource.sourceSignature,
+        updatedAt: '2026-05-08T10:00:03.000Z',
+        messageCount: 3,
+        userMessageCount: 2,
+        usageEvents: [],
+        changeEvents: [],
+      }),
+      checkpoint: nextCheckpoint,
+      mutations: {
+        usageEvents: [{
+          componentKey: 'root',
+          recordIdentity: '10',
+          eventOrdinal: 0,
+          event: {
+            timestamp: '2026-05-08T10:00:03.000Z',
+            role: 'user' as const,
+            model: 'test-model',
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolCallCount: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningOutputTokens: 0,
+            estimatedCosts: { api: 0, conservative: 0, subscription: 0 },
+          },
+        }],
+        changeEvents: [],
+      },
+    };
+
+    commitSessionSummaryIndexSource(deltaCommit);
+    const revision = getRevision();
+    commitSessionSummaryIndexSource(deltaCommit);
+    expect(() => commitSessionSummaryIndexSource({
+      ...deltaCommit,
+      summary: { ...deltaCommit.summary, messageCount: deltaCommit.summary.messageCount + 1 },
+    })).toThrow('Conflicting replay');
+
+    expect(getRevision()).toBe(revision);
+    const db = openDatabase(getSessionSummaryIndexPath());
+    try {
+      expect(db.get<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM usage_events WHERE component_key = 'root' AND record_identity = '10'",
+      )?.count).toBe(1);
+      expect(db.get<{ complete_offset: number; boundary_hash: string }>(
+        "SELECT complete_offset, boundary_hash FROM source_components WHERE component_key = 'root'",
+      )).toEqual({ complete_offset: 20, boundary_hash: 'after' });
+      expect(db.get<{ last_complete_offset: number }>(
+        'SELECT last_complete_offset FROM source_parse_checkpoints',
+      )?.last_complete_offset).toBe(20);
+    } finally {
+      db.close();
+    }
   });
 
   it('filters session date ranges in the requested local time zone', () => {

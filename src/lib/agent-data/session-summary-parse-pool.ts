@@ -1,4 +1,4 @@
-import type { AgentDataProvider } from './provider';
+import type { AgentDataProvider, IncrementalIndexMutations } from './provider';
 import type { CachedSessionSummary, SessionSummarySource } from './session-summary';
 import type { SourceParseCheckpoint } from './session-parse-checkpoint';
 import { runParseSummaryTask, type ParseTaskProviderOverride } from './session-summary-task-runner';
@@ -22,11 +22,13 @@ export interface ParseSummaryResult {
   mode: SummaryParseMode;
   summary?: CachedSessionSummary;
   checkpoint?: SourceParseCheckpoint;
+  mutations?: IncrementalIndexMutations;
   timings: {
     readMs: number;
     parseMs: number;
     summarizeMs: number;
   };
+  deferred?: string;
   error?: string;
 }
 
@@ -86,6 +88,7 @@ class InlineSummaryParsePool implements SummaryParsePool {
     this.size = Math.max(1, concurrency);
     this.providerByKind = new Map(providers.map(provider => [provider.kind, {
       buildSessionSummary: provider.buildSessionSummary,
+      buildSessionSummaryWithCheckpoint: provider.buildSessionSummaryWithCheckpoint,
       buildLightweightSessionSummary: provider.buildLightweightSessionSummary,
       incrementalSessionSummary: provider.incrementalSessionSummary,
     }]));

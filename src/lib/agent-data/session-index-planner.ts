@@ -94,6 +94,11 @@ export function createSessionRefreshPlan({
       continue;
     }
 
+    if (incrementalSupport[source.provider]?.buildRecentAsFull && isSessionSourceRecentlyModified(source, nowMs)) {
+      plan.fullBuild.push(source);
+      continue;
+    }
+
     if (isSessionSourceRecentlyModified(source, nowMs)) {
       plan.recent.push(source);
       continue;

@@ -7,11 +7,13 @@ import * as claudeReader from '@/lib/claude-data/reader';
 import * as codexReader from './providers/codex/reader';
 import * as copilotReader from './providers/copilot/reader';
 import * as cursorReader from './providers/cursor/reader';
+import { SessionSummaryDeferredError } from './session-summary-deferred';
 
 type FullSummaryBuilder = (source: SessionSummarySource) => Promise<ParseSummaryResult['summary']>;
 
 export interface ParseTaskProviderOverride {
   buildSessionSummary?: AgentDataProvider['buildSessionSummary'];
+  buildSessionSummaryWithCheckpoint?: AgentDataProvider['buildSessionSummaryWithCheckpoint'];
   buildLightweightSessionSummary?: AgentDataProvider['buildLightweightSessionSummary'];
   incrementalSessionSummary?: AgentDataProvider['incrementalSessionSummary'];
 }
@@ -38,6 +40,26 @@ function lightweightSummaryBuilderForProvider(
   if (provider === 'copilot') return copilotReader.buildLightweightSessionSummary;
   if (provider === 'cursor') return cursorReader.buildLightweightSessionSummary;
   return undefined;
+}
+
+function checkpointSummaryBuilderForProvider(
+  provider: AgentKind,
+  parserVersion: string,
+): AgentDataProvider['buildSessionSummaryWithCheckpoint'] | undefined {
+  return provider === 'claude' && parserVersion === claudeReader.CLAUDE_SESSION_SUMMARY_PARSER_VERSION
+    ? claudeReader.buildSessionSummaryWithCheckpoint
+    : undefined;
+}
+
+function incrementalSummaryBuilderForProvider(
+  provider: AgentKind,
+  parserVersion: string,
+): AgentDataProvider['incrementalSessionSummary'] | undefined {
+  return provider === 'claude' && parserVersion === claudeReader.CLAUDE_SESSION_SUMMARY_PARSER_VERSION ? {
+    checkpointVersion: claudeReader.CLAUDE_INCREMENTAL_CHECKPOINT_VERSION,
+    buildRecentAsFull: true,
+    buildSessionSummary: claudeReader.buildIncrementalSessionSummary,
+  } : undefined;
 }
 
 export function resetProviderSummaryResources(provider: AgentKind): void {
@@ -78,7 +100,9 @@ export async function runParseSummaryTask(
     }
 
     if (task.mode === 'incremental') {
-      const incremental = options.provider?.incrementalSessionSummary;
+      const incremental = options.provider
+        ? options.provider.incrementalSessionSummary
+        : incrementalSummaryBuilderForProvider(task.provider, task.source.parserVersion);
       if (!incremental) throw new Error(`Provider ${task.provider} does not support incremental summaries`);
       if (!task.previousSummary) throw new Error(`Missing previous summary for ${task.provider} incremental parse`);
       if (!task.checkpoint) throw new Error(`Missing checkpoint for ${task.provider} incremental parse`);
@@ -91,10 +115,23 @@ export async function runParseSummaryTask(
         ...resultBase,
         summary: parsed.summary,
         checkpoint: parsed.checkpoint,
+        mutations: parsed.mutations,
         timings: { ...resultBase.timings, parseMs: elapsedMs(started) },
       };
     }
 
+    const buildWithCheckpoint = options.provider
+      ? options.provider.buildSessionSummaryWithCheckpoint
+      : checkpointSummaryBuilderForProvider(task.provider, task.source.parserVersion);
+    if (buildWithCheckpoint) {
+      const parsed = await buildWithCheckpoint(task.source);
+      return {
+        ...resultBase,
+        summary: parsed.summary,
+        checkpoint: parsed.checkpoint,
+        timings: { ...resultBase.timings, parseMs: elapsedMs(started) },
+      };
+    }
     const buildFullSummary = options.provider?.buildSessionSummary || fullSummaryBuilderForProvider(task.provider);
     return {
       ...resultBase,
@@ -102,6 +139,13 @@ export async function runParseSummaryTask(
       timings: { ...resultBase.timings, parseMs: elapsedMs(started) },
     };
   } catch (error) {
+    if (error instanceof SessionSummaryDeferredError) {
+      return {
+        ...resultBase,
+        timings: { ...resultBase.timings, parseMs: elapsedMs(started) },
+        deferred: error.message,
+      };
+    }
     return {
       ...resultBase,
       timings: { ...resultBase.timings, parseMs: elapsedMs(started) },
