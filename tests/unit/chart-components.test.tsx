@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { CostModeProvider } from '@/lib/cost-mode-context';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -11,7 +11,15 @@ import { UsageOverTime } from '@/components/charts/usage-over-time';
 import { LinesChangedOverTime } from '@/components/charts/lines-changed-over-time';
 import type { DailyModelTokens } from '@/lib/claude-data/types';
 
-vi.mock('recharts', () => {
+vi.mock('recharts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('recharts')>();
+  type MockTooltipContentProps = {
+    active: boolean;
+    contentStyle?: React.CSSProperties;
+    label: string;
+    payload: Array<{ color: string; name: string; value: number }>;
+  };
+
   const Chart = ({ children, data }: { children?: React.ReactNode; data?: unknown[] }) => (
     <div data-testid="mock-chart" data-count={data?.length ?? 0}>{children}</div>
   );
@@ -25,6 +33,25 @@ vi.mock('recharts', () => {
       {children}
     </div>
   );
+  const MockTooltip = ({ content, contentStyle }: {
+    content?: React.ReactElement | ((props: MockTooltipContentProps) => React.ReactNode);
+    contentStyle?: React.CSSProperties;
+  }) => (
+    <div data-testid="mock-tooltip">
+      {typeof content === 'function'
+        ? content({
+            active: true,
+            contentStyle,
+            label: 'May 7',
+            payload: [
+              { color: '#111111', name: 'Opus 4', value: 0 },
+              { color: '#222222', name: 'Sonnet 4', value: 0.2 },
+              { color: '#333333', name: 'Haiku 4', value: 0.1 },
+            ],
+          })
+        : content}
+    </div>
+  );
 
   return {
     Area: Primitive,
@@ -33,12 +60,13 @@ vi.mock('recharts', () => {
     BarChart: Chart,
     CartesianGrid: Primitive,
     Cell: Primitive,
+    DefaultTooltipContent: actual.DefaultTooltipContent,
     Legend: Primitive,
     Pie: Primitive,
     PieChart: Chart,
     ReferenceLine: Primitive,
     ResponsiveContainer: ({ children }: { children?: React.ReactNode }) => <div data-testid="responsive">{children}</div>,
-    Tooltip: Primitive,
+    Tooltip: MockTooltip,
     XAxis: Primitive,
     YAxis: Primitive,
   };
@@ -119,6 +147,12 @@ describe('chart components', () => {
     expect(areaKeys).toContain('Sonnet 4');
     expect(areaKeys).not.toContain('unknown');
     expect(areaKeys).not.toContain('Synthetic');
+
+    const tooltip = within(screen.getByTestId('mock-tooltip'));
+    expect(tooltip.getByText('Sonnet 4').closest('li')).toHaveTextContent('Sonnet 4 : $0.20');
+    expect(tooltip.getByText('Haiku 4').closest('li')).toHaveTextContent('Haiku 4 : $0.10');
+    expect(tooltip.queryByText('Opus 4')).not.toBeInTheDocument();
+    expect(tooltip.queryByText('$0.00')).not.toBeInTheDocument();
   });
 
   it('renders lines changed over time', () => {

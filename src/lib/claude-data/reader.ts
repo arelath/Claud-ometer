@@ -62,7 +62,7 @@ interface SessionFileCacheEntry {
 }
 
 const sessionInfoCache = new Map<string, SessionFileCacheEntry>();
-export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v3';
+export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v4';
 export { CLAUDE_INCREMENTAL_CHECKPOINT_VERSION };
 
 type ParsedSessionInfo = SessionInfo & {

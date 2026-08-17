@@ -20,7 +20,7 @@ export const sessionMessageSchema = z.object({
   attachment: looseRecord.optional(),
   compactMetadata: looseRecord.optional(),
   microcompactMetadata: looseRecord.optional(),
-  toolUseResult: looseRecord.optional(),
+  toolUseResult: z.unknown().optional(),
   sourceToolAssistantUUID: z.string().optional(),
 }).catchall(z.unknown());
 

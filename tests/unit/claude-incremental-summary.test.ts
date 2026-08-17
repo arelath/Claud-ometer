@@ -5,8 +5,12 @@ import {
   buildClaudeSummaryCheckpoint,
   tryBuildIncrementalClaudeSummary,
 } from '@/lib/claude-data/incremental-summary';
+import {
+  buildSessionSummaryWithCheckpoint,
+  CLAUDE_SESSION_SUMMARY_PARSER_VERSION,
+} from '@/lib/claude-data/reader';
 import type { CachedSessionSummary, SessionSummarySource } from '@/lib/agent-data/session-summary';
-import { SESSION_SUMMARY_CACHE_VERSION } from '@/lib/agent-data/session-summary';
+import { calculateSummaryCosts, SESSION_SUMMARY_CACHE_VERSION } from '@/lib/agent-data/session-summary';
 
 describe('Claude incremental summary reducer', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'claude-incremental-summary');
@@ -33,7 +37,7 @@ describe('Claude incremental summary reducer', () => {
   function source(): SessionSummarySource {
     return {
       provider: 'claude',
-      parserVersion: 'claude-summary-v3',
+      parserVersion: CLAUDE_SESSION_SUMMARY_PARSER_VERSION,
       sourceFilePath: filePath,
       sourceSignature: signature(),
       nativeProjectId: 'project',
@@ -110,6 +114,7 @@ describe('Claude incremental summary reducer', () => {
     fs.appendFileSync(filePath, [
       line({
         type: 'assistant', uuid: 'a1-record-2', timestamp: '2026-05-08T10:00:02.000Z',
+        toolUseResult: [],
         message: {
           id: 'a1', role: 'assistant', model: 'claude-sonnet-4-5',
           content: [{ type: 'text', text: 'done' }, { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }],
@@ -118,6 +123,7 @@ describe('Claude incremental summary reducer', () => {
       }),
       line({
         type: 'user', uuid: 'u2', timestamp: '2026-05-08T10:00:03.000Z',
+        toolUseResult: 'plain tool output',
         message: { role: 'user', content: 'thanks' },
       }),
     ].join(''));
@@ -142,6 +148,47 @@ describe('Claude incremental summary reducer', () => {
       recordIdentity: String(oldOffset),
       event: { inputTokens: 2, outputTokens: 2, toolCallCount: 1 },
     });
+    expect(result!.mutations!.usageEvents[0].event.estimatedCosts.api).toBeGreaterThan(0);
+  });
+
+  it('preserves usage and tool data from array-valued tool-result records in a full build', async () => {
+    fs.appendFileSync(filePath, line({
+      type: 'assistant', uuid: 'a2-record', timestamp: '2026-05-08T10:00:02.000Z',
+      toolUseResult: [],
+      message: {
+        id: 'a2', role: 'assistant', model: 'claude-sonnet-4-5',
+        content: [{ type: 'tool_use', id: 'tool-2', name: 'Read', input: {} }],
+        usage: { input_tokens: 5, output_tokens: 1 },
+      },
+    }));
+
+    const result = await buildSessionSummaryWithCheckpoint(source());
+
+    expect(result.checkpoint.recordCount).toBe(3);
+    expect(result.summary.tokenTotals).toMatchObject({ input: 15, output: 3 });
+    expect(result.summary.toolCallCount).toBe(1);
+    expect(result.summary.toolsUsed).toMatchObject({ Read: 1 });
+    expect(calculateSummaryCosts(result.summary).api).toBeGreaterThan(0);
+  });
+
+  it.each([null, true, 42])('accepts JSON scalar tool results while checkpointing: %j', toolUseResult => {
+    fs.appendFileSync(filePath, line({
+      type: 'user', uuid: 'u2', timestamp: '2026-05-08T10:00:02.000Z',
+      toolUseResult,
+      message: { role: 'user', content: 'done' },
+    }));
+
+    expect(buildClaudeSummaryCheckpoint(source()).recordCount).toBe(3);
+  });
+
+  it('keeps strict validation for unrelated named fields', () => {
+    fs.appendFileSync(filePath, line({
+      type: 42, uuid: 'u2', timestamp: '2026-05-08T10:00:02.000Z',
+      toolUseResult: [],
+      message: { role: 'user', content: 'done' },
+    }));
+
+    expect(() => buildClaudeSummaryCheckpoint(source())).toThrow('expected string');
   });
 
   it('keeps a partial trailing record behind the committed cursor', () => {

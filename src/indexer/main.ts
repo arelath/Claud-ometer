@@ -199,18 +199,39 @@ const reconcileTimer = setInterval(() => {
 }, reconcileIntervalMs);
 reconcileTimer.unref();
 
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  clearInterval(reconcileTimer);
-  await parsePool.close().catch(() => undefined);
-  await running?.catch(() => undefined);
-  await controlServer.close().catch(() => undefined);
-  closeSessionSummaryIndexWriter();
-  if (process.platform !== 'win32') fs.rmSync(requiredEndpoint, { force: true });
-  fs.rmSync(lockPath, { force: true });
+let shutdownPromise: Promise<void> | undefined;
+
+function removeOwnedLock(): void {
+  try {
+    const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: number };
+    if (lock.pid === process.pid) fs.rmSync(lockPath, { force: true });
+  } catch {
+    // Missing, malformed, or foreign locks must not be removed by this process.
+  }
 }
 
-process.once('SIGINT', () => void shutdown().finally(() => process.exit(0)));
-process.once('SIGTERM', () => void shutdown().finally(() => process.exit(0)));
+function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  shutdownPromise = (async () => {
+    clearInterval(reconcileTimer);
+    await parsePool.close().catch(() => undefined);
+    await running?.catch(() => undefined);
+    await controlServer.close().catch(() => undefined);
+    closeSessionSummaryIndexWriter();
+    if (process.platform !== 'win32') fs.rmSync(requiredEndpoint, { force: true });
+    removeOwnedLock();
+  })();
+  return shutdownPromise;
+}
+
+function shutdownAndExit(): void {
+  void shutdown().finally(() => process.exit(0));
+}
+
+process.once('message', message => {
+  if ((message as { type?: string } | null)?.type === 'shutdown') shutdownAndExit();
+});
+process.once('SIGINT', shutdownAndExit);
+process.once('SIGTERM', shutdownAndExit);
 schedule(undefined, false);

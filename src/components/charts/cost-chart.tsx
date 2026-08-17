@@ -3,7 +3,9 @@
 import { useMemo } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  DefaultTooltipContent,
 } from 'recharts';
+import type { TooltipContentProps } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { AnalyticsTimeBucket, BucketGranularity, DailyModelTokens } from '@/lib/claude-data/types';
 import { getModelCostDisplayName, getModelCostGroupKey, getModelColor } from '@/config/pricing';
@@ -20,6 +22,19 @@ interface ModelCostGroup {
   key: string;
   name: string;
   color: string;
+}
+
+function CostTooltipContent({ active, payload, ...props }: TooltipContentProps<number, string>) {
+  const nonZeroPayload = payload.filter(entry => Number(entry.value) !== 0);
+  if (!active || nonZeroPayload.length === 0) return null;
+
+  return (
+    <DefaultTooltipContent
+      {...props}
+      payload={nonZeroPayload}
+      formatter={(value, name) => [`$${Number(value).toFixed(2)}`, name ?? '']}
+    />
+  );
 }
 
 export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps) {
@@ -105,13 +120,13 @@ export function CostChart({ data, buckets, granularity = 'day' }: CostChartProps
                 tickFormatter={(v) => `$${v}`}
               />
               <Tooltip
+                content={CostTooltipContent}
                 contentStyle={{
                   backgroundColor: 'var(--card)',
                   border: '1px solid var(--border)',
                   borderRadius: '8px',
                   fontSize: '12px',
                 }}
-                formatter={(value) => [`$${Number(value).toFixed(2)}`, '']}
               />
               <Legend
                 wrapperStyle={{ fontSize: '11px' }}

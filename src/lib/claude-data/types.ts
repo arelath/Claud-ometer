@@ -121,7 +121,7 @@ export interface SessionMessage {
   microcompactMetadata?: MicrocompactMetadata;
   isCompactSummary?: boolean;
   attachment?: Record<string, unknown>;
-  toolUseResult?: Record<string, unknown>;
+  toolUseResult?: unknown;
   snapshot?: Record<string, unknown>;
   content?: string;
   lastPrompt?: string;
