@@ -21,7 +21,7 @@ import { buildChangeEvents, buildUsageEvents } from '@/lib/agent-data/event-metr
 
 const parsedCache = new AgentDataCache<CopilotParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const COPILOT_SESSION_SUMMARY_PARSER_VERSION = 'copilot-summary-v6';
+export const COPILOT_SESSION_SUMMARY_PARSER_VERSION = 'copilot-summary-v8';
 
 async function parseDiscoveredSession(fileInfo: CopilotSessionFileInfo): Promise<CopilotParsedSession> {
   const cached = parsedCache.get({ provider: 'copilot', filePath: fileInfo.filePath, signature: fileInfo.sourceSignature, scope: 'detail' });

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { startSupervisor } from '../../scripts/run-supervised.mjs';
+import { buildSqliteChildEnvironment, startSupervisor } from '../../scripts/run-supervised.mjs';
 
 class FakeChild extends EventEmitter {
   static nextPid = 10_000;
@@ -81,7 +81,7 @@ function harness({ ignoreGracefulIndexer = false } = {}) {
       return watcher;
     }),
   };
-  const spawnProcess = vi.fn((_command: string, args: string[]) => {
+  const spawnProcess = vi.fn((_command: string, args: string[], _options?: { env?: Record<string, string> }) => {
     const kind = args.some(argument => argument.endsWith('indexer.mjs')) ? 'indexer' as const : 'next' as const;
     const child = new FakeChild(kind, events, activeIndexers, ignoreGracefulIndexer && kind === 'indexer');
     children.push(child);
@@ -107,6 +107,83 @@ function harness({ ignoreGracefulIndexer = false } = {}) {
 }
 
 describe('supervised indexer lifecycle', () => {
+  it('enables SQLite for every supervised child on flagged Node 22 releases', async () => {
+    const test = harness();
+    const environment: NodeJS.ProcessEnv = { AGENT_SCOPE_CACHE_DIR: test.cacheDir, NODE_ENV: 'test', NODE_OPTIONS: '--trace-warnings' };
+    const supervisor = await startSupervisor({
+      mode: 'dev',
+      cwd: test.cwd,
+      environment,
+      nodeVersion: '22.11.0',
+      spawnProcess: test.spawnProcess as never,
+      waitUntilReady: test.waitUntilReady,
+      loadIndexerBuilder: (async () => test.builder) as never,
+      exitProcess: vi.fn() as unknown as (code: number) => never,
+    });
+
+    expect(environment.NODE_OPTIONS).toBe('--trace-warnings');
+    expect(test.spawnProcess).toHaveBeenCalledTimes(2);
+    const childEnvironments = test.spawnProcess.mock.calls.map(call => call[2]?.env);
+    expect(childEnvironments[0]).toBe(childEnvironments[1]);
+    expect(childEnvironments[0]?.NODE_OPTIONS).toBe('--trace-warnings --experimental-sqlite');
+    await supervisor.stop();
+  });
+
+  it('classifies SQLite Node boundaries and preserves unflagged environments', () => {
+    expect(() => buildSqliteChildEnvironment({}, '22.4.99')).toThrow('Node 22.5.0 or newer');
+    expect(() => buildSqliteChildEnvironment({}, 'not-a-version')).toThrow('Unable to determine');
+    expect(buildSqliteChildEnvironment({}, '22.5.0').NODE_OPTIONS).toBe('--experimental-sqlite');
+    expect(buildSqliteChildEnvironment({}, '22.12.99').NODE_OPTIONS).toBe('--experimental-sqlite');
+
+    const environment = { NODE_OPTIONS: '--trace-warnings', CUSTOM: 'unchanged' };
+    expect(buildSqliteChildEnvironment(environment, '22.13.0')).toEqual(environment);
+    expect(buildSqliteChildEnvironment(environment, '24.0.0')).toEqual(environment);
+    expect(buildSqliteChildEnvironment(environment, '22.13.0')).not.toBe(environment);
+  });
+
+  it('deduplicates the SQLite flag and rejects an explicit disable flag', () => {
+    expect(buildSqliteChildEnvironment(
+      { NODE_OPTIONS: '--trace-warnings --experimental-sqlite --experimental-sqlite' },
+      '22.11.0',
+    ).NODE_OPTIONS?.match(/--experimental-sqlite/g)).toHaveLength(1);
+    expect(buildSqliteChildEnvironment(
+      { NODE_OPTIONS: '--experimental-sqlite-extra' },
+      '22.11.0',
+    ).NODE_OPTIONS).toBe('--experimental-sqlite-extra --experimental-sqlite');
+    expect(() => buildSqliteChildEnvironment(
+      { NODE_OPTIONS: '--no-experimental-sqlite' },
+      '22.11.0',
+    )).toThrow('conflicts with required SQLite support');
+    expect(() => buildSqliteChildEnvironment(
+      { NODE_OPTIONS: '--no-experimental-sqlite' },
+      '22.13.0',
+    )).toThrow('conflicts with required SQLite support');
+    expect(() => buildSqliteChildEnvironment(
+      { NODE_OPTIONS: '--no-experimental-sqlite' },
+      '24.0.0',
+    )).toThrow('conflicts with required SQLite support');
+  });
+
+  it('rejects a stable-Node SQLite disable flag before starting supervised work', async () => {
+    const test = harness();
+    const loadIndexerBuilder = vi.fn(async () => test.builder);
+
+    await expect(startSupervisor({
+      mode: 'dev',
+      cwd: test.cwd,
+      environment: { AGENT_SCOPE_CACHE_DIR: test.cacheDir, NODE_ENV: 'test', NODE_OPTIONS: '--no-experimental-sqlite' },
+      nodeVersion: '22.13.0',
+      spawnProcess: test.spawnProcess as never,
+      waitUntilReady: test.waitUntilReady,
+      loadIndexerBuilder: loadIndexerBuilder as never,
+      exitProcess: vi.fn() as unknown as (code: number) => never,
+    })).rejects.toThrow('conflicts with required SQLite support');
+
+    expect(loadIndexerBuilder).not.toHaveBeenCalled();
+    expect(test.builder.watchIndexerBuilds).not.toHaveBeenCalled();
+    expect(test.spawnProcess).not.toHaveBeenCalled();
+  });
+
   it('deploys successful dev generations serially without overlapping indexers', async () => {
     const test = harness();
     const supervisor = await startSupervisor({

@@ -272,6 +272,52 @@ function getApplyPatchInput(payload: Record<string, unknown>): string | undefine
   return undefined;
 }
 
+function getEmbeddedApplyPatchInputs(payload: Record<string, unknown>): string[] {
+  const source = typeof payload.input === 'string'
+    ? payload.input
+    : typeof payload.arguments === 'string'
+      ? payload.arguments
+      : '';
+  if (!source || !source.includes('tools.apply_patch')) return [];
+
+  const patches: string[] = [];
+  const assignmentPattern = /\b(?:const|let|var)\s+patch\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g;
+  for (const match of source.matchAll(assignmentPattern)) {
+    const literal = match[1];
+    try {
+      const decoded = literal.startsWith('"')
+        ? JSON.parse(literal)
+        : literal.slice(1, -1).replace(/\\([\\'"nrt])/g, (_match, escaped: string) => ({
+          '\\': '\\',
+          "'": "'",
+          '"': '"',
+          n: '\n',
+          r: '\r',
+          t: '\t',
+        }[escaped] || escaped));
+      if (typeof decoded === 'string' && decoded.includes('*** Begin Patch') && source.includes('tools.apply_patch(patch')) {
+        patches.push(decoded);
+      }
+    } catch {
+      // The enclosing exec call remains visible even when an embedded source literal is malformed.
+    }
+  }
+  return patches;
+}
+
+function resultHasScriptError(result?: CodexToolResult): boolean {
+  if (!result) return false;
+  if (result.payload.success === false) return true;
+  const exitCode = result.payload.exit_code ?? result.payload.exitCode;
+  if (typeof exitCode === 'number' && exitCode !== 0) return true;
+
+  const output = result.payload.output;
+  const outputText = Array.isArray(output)
+    ? output.map(item => asRecord(item)?.text).filter((text): text is string => typeof text === 'string').join('\n')
+    : typeof output === 'string' ? output : '';
+  return /^Script error(?:\s|:)/m.test(outputText);
+}
+
 function getPatchArtifactsFromInput(payload: Record<string, unknown>): Array<{ path: string; artifact: SessionArtifactDisplay }> {
   const input = getApplyPatchInput(payload);
   if (!input) return [];
@@ -331,7 +377,7 @@ function buildPatchTools(payload: Record<string, unknown>, result?: CodexToolRes
   const baseDetails = compactDetails([
     detail('tool_use_id', callId, 'tool use id'),
     detail('input', payload.input, 'input'),
-    detail('status', result ? (result.payload.success === false ? 'failed' : 'success') : 'pending', 'status'),
+    detail('status', result ? (resultHasScriptError(result) ? 'failed' : 'success') : 'pending', 'status'),
   ]);
 
   if (fallbackArtifacts.length === 0) {
@@ -351,7 +397,7 @@ function buildPatchTools(payload: Record<string, unknown>, result?: CodexToolRes
       detail('tool_use_id', callId, 'tool use id'),
       detail('file_path', path, 'file path'),
       detail('input', payload.input, 'input'),
-      detail('status', result ? (result.payload.success === false ? 'failed' : 'success') : 'pending', 'status'),
+      detail('status', result ? (resultHasScriptError(result) ? 'failed' : 'success') : 'pending', 'status'),
     ]),
     artifact,
   }));
@@ -386,6 +432,17 @@ export function buildCodexToolCalls(payload: Record<string, unknown>, results: M
   const result = results.get(getCallId(payload));
   if (name === 'shell_command') return [buildShellTool(payload, result)];
   if (name === 'apply_patch') return buildPatchTools(payload, result);
+  if (name === 'exec') {
+    const embeddedPatches = getEmbeddedApplyPatchInputs(payload);
+    if (embeddedPatches.length > 0 && !resultHasScriptError(result)) {
+      return embeddedPatches.flatMap((patch, index) => buildPatchTools({
+        type: 'custom_tool_call',
+        name: 'apply_patch',
+        call_id: `${getCallId(payload)}:embedded-patch:${index + 1}`,
+        input: patch,
+      }, result));
+    }
+  }
   return [buildGenericTool(payload, result)];
 }
 

@@ -27,6 +27,25 @@ let loadError: string | null = null;
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
+export function formatSqliteLoadError(nodeVersion: string, cause: string): string {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(nodeVersion);
+  const version = match ? match.slice(1).map(Number) : null;
+  const before = (target: [number, number, number]) => {
+    if (!version) return false;
+    return version[0] < target[0]
+      || (version[0] === target[0] && version[1] < target[1])
+      || (version[0] === target[0] && version[1] === target[1] && version[2] < target[2]);
+  };
+
+  if (before([22, 5, 0])) {
+    return `Built-in SQLite requires Node 22.5.0 or newer. Current Node: ${nodeVersion}. (${cause})`;
+  }
+  if (before([22, 13, 0])) {
+    return `Node ${nodeVersion} requires --experimental-sqlite. Start AgentScope with npm run dev or npm start. (${cause})`;
+  }
+  return `Unable to load built-in SQLite on Node ${nodeVersion}. (${cause})`;
+}
+
 function runtimeRequire(moduleName: string): unknown {
   // Keep this as an indirect require. Turbopack rewrites createRequire('node:sqlite')
   // to an unsupported external stub in dev, which makes the app fall back to JSON.
@@ -71,7 +90,7 @@ function loadDriver(): boolean {
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    loadError = `SQLite support needs Node 22+ with node:sqlite. Current Node: ${process.version}. (${message})`;
+    loadError = formatSqliteLoadError(process.version, message);
     return false;
   } finally {
     process.nextTick(restoreEmit);

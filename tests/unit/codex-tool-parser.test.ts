@@ -185,6 +185,64 @@ describe('Codex tool parser', () => {
     ]);
   });
 
+  it('extracts successful apply_patch calls nested inside an exec cell', () => {
+    const calls = buildCodexToolCalls({
+      type: 'custom_tool_call',
+      name: 'exec',
+      call_id: 'exec-embedded-patch',
+      input: [
+        'const patch = "*** Begin Patch\\n*** Update File: src/embedded.ts\\n@@\\n-old\\n+new\\n*** End Patch";',
+        'text(await tools.apply_patch(patch));',
+      ].join('\\n'),
+    }, collectCodexToolResults([{
+      timestamp: '2026-08-24T15:00:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-embedded-patch',
+        output: [
+          { type: 'input_text', text: 'Script completed\\nOutput:' },
+          { type: 'input_text', text: '{}' },
+        ],
+      },
+    }]));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      name: 'apply_patch',
+      summary: 'src/embedded.ts',
+      artifact: {
+        kind: 'diff',
+        oldText: 'old',
+        newText: 'new',
+      },
+    });
+  });
+
+  it('does not report an embedded patch that the exec cell rejected', () => {
+    const calls = buildCodexToolCalls({
+      type: 'custom_tool_call',
+      name: 'exec',
+      call_id: 'exec-failed-embedded-patch',
+      input: [
+        'const patch = "*** Begin Patch\\n*** Update File: src/embedded.ts\\n@@\\n-old\\n+new\\n*** End Patch";',
+        'text(await tools.apply_patch(patch));',
+      ].join('\\n'),
+    }, collectCodexToolResults([{
+      timestamp: '2026-08-24T15:00:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-failed-embedded-patch',
+        output: [{ type: 'input_text', text: 'Script error:\\napply_patch verification failed' }],
+      },
+    }]));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ name: 'exec', summary: 'exec' });
+    expect(calls[0].artifact).toBeUndefined();
+  });
+
   it('leaves missing results as pending generic tool calls', () => {
     const calls = buildCodexToolCalls({
       type: 'function_call',

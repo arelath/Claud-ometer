@@ -29,6 +29,14 @@ export interface CopilotRequestUsage {
   maxOutputTokens?: number;
 }
 
+export interface CopilotSubagentInvocation {
+  invocationId: string;
+  requestIndex: number;
+  parentInvocationId?: string;
+  agentName?: string;
+  model?: string;
+}
+
 export interface CopilotChatSessionSummary {
   nativeId?: string;
   title?: string;
@@ -43,6 +51,7 @@ export interface CopilotChatSessionSummary {
   usage: CopilotUsageTotals;
   modelUsage: Record<string, CopilotModelUsage>;
   requests: CopilotRequestUsage[];
+  subagents: CopilotSubagentInvocation[];
   messages: SessionMessageDisplay[];
   searchTextPreview: string;
 }
@@ -74,6 +83,7 @@ interface ChatSessionParseState {
   toolResultMessages: Map<number, SessionMessageDisplay[]>;
   requestUsage: Map<number, CopilotUsageTotals>;
   completionTokenFallback: Map<number, number>;
+  subagents: Map<string, CopilotSubagentInvocation>;
   modelDetails: Map<string, ModelDetails>;
   inputImages: SessionMessageImageDisplay[];
 }
@@ -125,6 +135,11 @@ function normalizeCopilotModelId(value: string | undefined): string | undefined 
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return trimmed.toLowerCase().startsWith('copilot/') ? trimmed.slice('copilot/'.length) : trimmed;
+}
+
+function normalizeSubagentModel(value: string | undefined): string | undefined {
+  const trimmed = value?.trim().replace(/^copilot\//i, '');
+  return trimmed ? trimmed.toLowerCase().replace(/\s+/g, '-') : undefined;
 }
 
 function zeroUsage(): CopilotUsageTotals {
@@ -468,6 +483,33 @@ function collectUsageObjects(value: unknown, totals = zeroUsage()): CopilotUsage
   return totals;
 }
 
+function recordSubagentInvocations(state: ChatSessionParseState, requestIndex: number, value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) recordSubagentInvocations(state, requestIndex, item);
+    return;
+  }
+
+  const record = asRecord(value);
+  if (!record) return;
+
+  if (getOptionalString(record, 'toolId') === 'runSubagent') {
+    const invocationId = getOptionalString(record, 'toolCallId');
+    if (invocationId) {
+      const existing = state.subagents.get(invocationId);
+      const toolSpecificData = asRecord(record.toolSpecificData);
+      state.subagents.set(invocationId, {
+        invocationId,
+        requestIndex,
+        parentInvocationId: getOptionalString(record, 'subAgentInvocationId') || existing?.parentInvocationId,
+        agentName: getOptionalString(toolSpecificData, 'agentName') || existing?.agentName,
+        model: normalizeSubagentModel(getOptionalString(toolSpecificData, 'modelName')) || existing?.model,
+      });
+    }
+  }
+
+  for (const child of Object.values(record)) recordSubagentInvocations(state, requestIndex, child);
+}
+
 function recordRequestObject(state: ChatSessionParseState, index: number, value: unknown): void {
   const record = asRecord(value);
   if (!record) return;
@@ -502,6 +544,7 @@ function recordRequestObject(state: ChatSessionParseState, index: number, value:
 
   const response = collectResponseText(record.response);
   if (response) state.responseMessages.set(index, response);
+  recordSubagentInvocations(state, index, record.response);
 
   const toolResultMessages = buildToolResultImageMessages(record.result, timestamp);
   if (toolResultMessages.length > 0) state.toolResultMessages.set(index, toolResultMessages);
@@ -573,6 +616,7 @@ function applyPatch(state: ChatSessionParseState, record: VscodeChatSessionRecor
   if (keyPath[2] === 'response') {
     const response = collectResponseText(record.v);
     if (response) state.responseMessages.set(requestIndex, response);
+    recordSubagentInvocations(state, requestIndex, record.v);
     return;
   }
 
@@ -697,6 +741,7 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
     ...Object.keys(modelUsage),
     ...Array.from(state.requestModels.values()),
     state.selectedModel,
+    ...Array.from(state.subagents.values()).map(subagent => subagent.model),
   ].filter((model): model is string => Boolean(model && model !== 'unknown'))));
 
   return {
@@ -713,6 +758,7 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
     usage,
     modelUsage,
     requests,
+    subagents: Array.from(state.subagents.values()),
     messages,
     searchTextPreview: Array.from(new Set([
       state.title,
@@ -723,6 +769,7 @@ function buildSummary(state: ChatSessionParseState): CopilotChatSessionSummary {
         messages.flatMap(message => message.blocks?.map(block => block.summary) || []),
       ),
       ...models,
+      ...Array.from(state.subagents.values()).map(subagent => subagent.agentName),
     ].filter((value): value is string => Boolean(value?.trim()))))
       .join('\n')
       .toLowerCase()
@@ -740,6 +787,7 @@ function parseCopilotChatSessionFile(filePath: string): CopilotChatSessionSummar
     toolResultMessages: new Map(),
     requestUsage: new Map(),
     completionTokenFallback: new Map(),
+    subagents: new Map(),
     modelDetails: new Map(),
     inputImages: [],
   };
@@ -765,6 +813,7 @@ export function getCopilotChatSessionSummary(filePath: string | undefined): Copi
       usage: zeroUsage(),
       modelUsage: {},
       requests: [],
+      subagents: [],
       messages: [],
       searchTextPreview: '',
     };

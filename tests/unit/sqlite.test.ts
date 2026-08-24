@@ -2,10 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isSqliteAvailable, openWritableDatabase } from '@/lib/sqlite';
+import { formatSqliteLoadError, isSqliteAvailable, openWritableDatabase } from '@/lib/sqlite';
 
 const requireForSqlite = createRequire(import.meta.url);
 const sqliteDescribe = isSqliteAvailable() ? describe : describe.skip;
+
+describe('SQLite runtime guidance', () => {
+  it('distinguishes unsupported, flagged, and unflagged Node releases', () => {
+    expect(formatSqliteLoadError('v22.4.0', 'missing')).toContain('Node 22.5.0 or newer');
+    expect(formatSqliteLoadError('v22.11.0', 'missing')).toContain('requires --experimental-sqlite');
+    expect(formatSqliteLoadError('v22.13.0', 'missing')).toBe('Unable to load built-in SQLite on Node v22.13.0. (missing)');
+    expect(formatSqliteLoadError('v24.0.0', 'missing')).toBe('Unable to load built-in SQLite on Node v24.0.0. (missing)');
+  });
+});
 
 sqliteDescribe('SQLite wrapper', () => {
   const root = path.join(process.cwd(), '.test-artifacts', 'sqlite-wrapper');

@@ -10,6 +10,81 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const INDEXER_STOP_TIMEOUT_MS = 30_000;
 const INDEXER_KILL_TIMEOUT_MS = 5_000;
+const SQLITE_FLAG = '--experimental-sqlite';
+const SQLITE_DISABLE_FLAG = '--no-experimental-sqlite';
+
+function parseNodeVersion(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+  if (!match) throw new Error(`Unable to determine Node SQLite support from version "${version}".`);
+  return match.slice(1).map(Number);
+}
+
+function compareVersion(left, right) {
+  for (let index = 0; index < 3; index++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+function tokenizeNodeOptions(value) {
+  const tokens = [];
+  let index = 0;
+  while (index < value.length) {
+    while (index < value.length && /\s/.test(value[index])) index++;
+    if (index >= value.length) break;
+    const start = index;
+    let token = '';
+    let quote = '';
+    while (index < value.length) {
+      const character = value[index];
+      if (quote) {
+        if (character === quote) quote = '';
+        else token += character;
+        index++;
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+        index++;
+        continue;
+      }
+      if (/\s/.test(character)) break;
+      token += character;
+      index++;
+    }
+    tokens.push({ start, end: index, value: token });
+  }
+  return tokens;
+}
+
+export function buildSqliteChildEnvironment(environment, nodeVersion = process.versions.node) {
+  const parsedVersion = parseNodeVersion(nodeVersion);
+  if (compareVersion(parsedVersion, [22, 5, 0]) < 0) {
+    throw new Error(`AgentScope requires Node 22.5.0 or newer for built-in SQLite. Current Node: v${nodeVersion.replace(/^v/, '')}.`);
+  }
+
+  const childEnvironment = { ...environment };
+  const nodeOptions = childEnvironment.NODE_OPTIONS || '';
+  const tokens = tokenizeNodeOptions(nodeOptions);
+  if (tokens.some(token => token.value === SQLITE_DISABLE_FLAG)) {
+    throw new Error(`${SQLITE_DISABLE_FLAG} conflicts with required SQLite support on Node v${nodeVersion.replace(/^v/, '')}.`);
+  }
+  if (compareVersion(parsedVersion, [22, 13, 0]) >= 0) return childEnvironment;
+
+  const sqliteTokens = tokens.filter(token => token.value === SQLITE_FLAG);
+  if (sqliteTokens.length === 0) {
+    childEnvironment.NODE_OPTIONS = `${nodeOptions}${nodeOptions && !/\s$/.test(nodeOptions) ? ' ' : ''}${SQLITE_FLAG}`;
+  } else if (sqliteTokens.length > 1) {
+    let normalized = '';
+    let cursor = 0;
+    for (const duplicate of sqliteTokens.slice(1)) {
+      normalized += nodeOptions.slice(cursor, duplicate.start);
+      cursor = duplicate.end;
+    }
+    childEnvironment.NODE_OPTIONS = normalized + nodeOptions.slice(cursor);
+  }
+  return childEnvironment;
+}
 
 function deferred() {
   let resolve;
@@ -65,14 +140,16 @@ export async function startSupervisor({
   logger = console,
   stopTimeoutMs = INDEXER_STOP_TIMEOUT_MS,
   killTimeoutMs = INDEXER_KILL_TIMEOUT_MS,
+  nodeVersion = process.versions.node,
 } = {}) {
+  const childEnvironment = buildSqliteChildEnvironment(environment, nodeVersion);
   const nonce = crypto.randomBytes(12).toString('hex');
   const endpoint = platform === 'win32'
     ? `\\\\.\\pipe\\agentscope-indexer-${process.pid}-${nonce}`
     : path.join(os.tmpdir(), `agentscope-indexer-${process.pid}-${nonce}.sock`);
   const token = crypto.randomBytes(32).toString('hex');
   const env = {
-    ...environment,
+    ...childEnvironment,
     AGENT_SCOPE_INDEXER_ENDPOINT: endpoint,
     AGENT_SCOPE_INDEXER_TOKEN: token,
   };

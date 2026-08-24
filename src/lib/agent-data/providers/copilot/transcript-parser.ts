@@ -21,6 +21,7 @@ import {
   getCopilotChatSessionSummary,
   type CopilotChatSessionSummary,
   type CopilotRequestUsage,
+  type CopilotSubagentInvocation,
   type CopilotUsageTotals,
 } from './chat-session';
 
@@ -518,6 +519,23 @@ function chooseCopilotModels(chatSummary: CopilotChatSessionSummary, primaryMode
   ].filter(model => model && model !== 'unknown')));
 }
 
+function resolveCopilotSubagentDepth(
+  invocation: CopilotSubagentInvocation,
+  invocations: Map<string, CopilotSubagentInvocation>,
+): number {
+  let depth = 1;
+  let parentInvocationId = invocation.parentInvocationId;
+  const seen = new Set([invocation.invocationId]);
+  while (parentInvocationId && !seen.has(parentInvocationId)) {
+    const parent = invocations.get(parentInvocationId);
+    if (!parent) break;
+    seen.add(parentInvocationId);
+    depth++;
+    parentInvocationId = parent.parentInvocationId;
+  }
+  return depth;
+}
+
 function estimateTranscriptUsage(content: string, reasoningText: string, userContent: string, explicitOutputTokens?: number): CopilotUsageTotals {
   const outputTokens = explicitOutputTokens && explicitOutputTokens > 0
     ? Math.max(0, explicitOutputTokens)
@@ -792,6 +810,144 @@ interface LegacyCopilotParseResult {
   searchableText: string;
 }
 
+interface LegacyShutdownUsageSnapshot {
+  currentModel?: string;
+  usage: CopilotUsageTotals;
+  modelUsage: Record<string, CachedModelUsage>;
+}
+
+function readLegacyTokenDetail(
+  tokenDetails: Record<string, unknown>,
+  key: string,
+  required: boolean,
+): number | null {
+  const detail = asRecord(tokenDetails[key]);
+  if (!detail) return required ? null : 0;
+  const value = detail.tokenCount;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function readLegacyReasoningTokens(usage: Record<string, unknown> | null): number | null {
+  if (!usage || usage.reasoningTokens == null) return 0;
+  const value = usage.reasoningTokens;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function parseLegacyTokenDetails(value: unknown): CopilotUsageTotals | null {
+  const tokenDetails = asRecord(value);
+  if (!tokenDetails) return null;
+
+  const inputTokens = readLegacyTokenDetail(tokenDetails, 'input', true);
+  const outputTokens = readLegacyTokenDetail(tokenDetails, 'output', true);
+  const cacheReadInputTokens = readLegacyTokenDetail(tokenDetails, 'cache_read', false);
+  const cacheCreationInputTokens = readLegacyTokenDetail(tokenDetails, 'cache_write', false);
+  if (
+    inputTokens == null
+    || outputTokens == null
+    || cacheReadInputTokens == null
+    || cacheCreationInputTokens == null
+  ) return null;
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    reasoningOutputTokens: 0,
+  };
+}
+
+function parseLegacyShutdownUsage(data: Record<string, unknown>): LegacyShutdownUsageSnapshot | null {
+  const usage = parseLegacyTokenDetails(data.tokenDetails);
+  const metrics = asRecord(data.modelMetrics);
+  if (!usage || !metrics || Object.keys(metrics).length === 0) return null;
+
+  const modelUsage = Object.create(null) as Record<string, CachedModelUsage>;
+  for (const [rawModel, rawMetrics] of Object.entries(metrics)) {
+    const model = normalizeCopilotModelId(rawModel);
+    const metric = asRecord(rawMetrics);
+    const metricUsage = metric ? parseLegacyTokenDetails(metric.tokenDetails) : null;
+    const reasoningOutputTokens = readLegacyReasoningTokens(metric ? asRecord(metric.usage) : null);
+    if (
+      !model
+      || model === 'prototype'
+      || Object.hasOwn(Object.prototype, model)
+      || !metricUsage
+      || reasoningOutputTokens == null
+    ) return null;
+
+    metricUsage.reasoningOutputTokens = reasoningOutputTokens;
+    addModelUsage(modelUsage, model, metricUsage);
+  }
+
+  const summedUsage = Object.values(modelUsage).reduce((total, item) => {
+    addCopilotUsage(total, {
+      inputTokens: item.inputTokens,
+      outputTokens: item.outputTokens,
+      cacheReadInputTokens: item.cacheReadInputTokens,
+      cacheCreationInputTokens: item.cacheCreationInputTokens,
+      reasoningOutputTokens: item.reasoningOutputTokens || 0,
+    });
+    return total;
+  }, zeroCopilotUsage());
+  if (
+    summedUsage.inputTokens !== usage.inputTokens
+    || summedUsage.outputTokens !== usage.outputTokens
+    || summedUsage.cacheReadInputTokens !== usage.cacheReadInputTokens
+    || summedUsage.cacheCreationInputTokens !== usage.cacheCreationInputTokens
+  ) return null;
+
+  usage.reasoningOutputTokens = summedUsage.reasoningOutputTokens;
+  return {
+    currentModel: normalizeCopilotModelId(getOptionalString(data, 'currentModel')),
+    usage,
+    modelUsage,
+  };
+}
+
+function canUseLegacyShutdownUsage(
+  snapshot: LegacyShutdownUsageSnapshot,
+  parsedModelUsage: Record<string, CachedModelUsage>,
+): boolean {
+  return Object.entries(parsedModelUsage).every(([model, usage]) => {
+    if (!Object.hasOwn(snapshot.modelUsage, model)) return false;
+    const recorded = snapshot.modelUsage[model];
+    return usage.outputTokens <= recorded.outputTokens;
+  });
+}
+
+function allocateLegacyShutdownUsageToMessages(
+  messages: SessionMessageDisplay[],
+  snapshot: LegacyShutdownUsageSnapshot,
+): void {
+  const finalAssistantByModel = new Map<string, number>();
+  messages.forEach((message, index) => {
+    if (message.role === 'assistant' && message.model) {
+      finalAssistantByModel.set(message.model, index);
+    }
+  });
+
+  for (const [model, usage] of Object.entries(snapshot.modelUsage)) {
+    const messageIndex = finalAssistantByModel.get(model);
+    if (messageIndex == null) continue;
+    const message = messages[messageIndex];
+    const messageUsage = message.usage || EMPTY_USAGE;
+    message.usage = {
+      ...messageUsage,
+      input_tokens: usage.inputTokens,
+      cache_read_input_tokens: usage.cacheReadInputTokens,
+      cache_creation_input_tokens: usage.cacheCreationInputTokens,
+    };
+    message.estimatedCosts = calculateCostAllModes(
+      model,
+      message.usage.input_tokens,
+      message.usage.output_tokens,
+      message.usage.cache_creation_input_tokens,
+      message.usage.cache_read_input_tokens,
+    );
+  }
+}
+
 function isLegacyCopilotSession(filePath: string, fileInfo: CopilotSessionFileInfo): boolean {
   return fileInfo.sourceKind === 'legacy'
     || filePath.replace(/\\/g, '/').includes('/session-state/')
@@ -814,6 +970,7 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
   let currentModel = '';
   let userMessageCount = 0;
   let assistantMessageCount = 0;
+  let shutdownUsage: LegacyShutdownUsageSnapshot | null = null;
 
   const recordTool = (tool: SessionToolCallDisplay) => {
     if (seenToolCallIds.has(tool.id)) return;
@@ -826,6 +983,22 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
     const data = asRecord(record.data) || {};
     const timestamp = updateTime(record, data, time);
     currentModel = normalizeCopilotModelId(getOptionalString(data, 'model')) || currentModel;
+
+    if (record.type === 'session.shutdown') {
+      shutdownUsage = parseLegacyShutdownUsage(data) || shutdownUsage;
+      continue;
+    }
+
+    if (
+      shutdownUsage
+      && (record.type === 'session.start'
+        || record.type === 'session.resume'
+        || record.type === 'session.model_change'
+        || record.type === 'user.message'
+        || record.type === 'assistant.message')
+    ) {
+      shutdownUsage = null;
+    }
 
     if (record.type === 'session.model_change') {
       currentModel = normalizeCopilotModelId(getOptionalString(data, 'newModel')) || currentModel;
@@ -887,7 +1060,16 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
   const createdAt = time.first || fileInfo.createdAt || new Date(0).toISOString();
   const updatedAt = time.last || fileInfo.updatedAt || createdAt;
   const duration = Math.max(0, new Date(updatedAt).getTime() - new Date(createdAt).getTime());
+  const acceptedShutdownUsage = shutdownUsage && canUseLegacyShutdownUsage(shutdownUsage, modelUsage)
+    ? shutdownUsage
+    : null;
+  if (acceptedShutdownUsage) {
+    for (const model of Object.keys(acceptedShutdownUsage.modelUsage)) models.add(model);
+    allocateLegacyShutdownUsageToMessages(messages, acceptedShutdownUsage);
+  }
   const modelList = Array.from(models);
+  const summaryUsage = acceptedShutdownUsage?.usage || tokenUsage;
+  const summaryModelUsage = acceptedShutdownUsage?.modelUsage || modelUsage;
   const summary: CopilotParsedSessionSummary = {
     nativeId,
     routeNativeId: fileInfo.routeNativeId || `${fileInfo.workspaceHash}:${nativeId}`,
@@ -904,11 +1086,11 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
     assistantMessageCount,
     messageCount: userMessageCount + assistantMessageCount,
     toolCallCount: seenToolCallIds.size,
-    model: modelList.at(-1) || 'unknown',
+    model: currentModel || acceptedShutdownUsage?.currentModel || modelList.at(-1) || 'unknown',
     models: modelList,
-    tokenUsage: toTokenUsage(tokenUsage),
-    reasoningOutputTokens: tokenUsage.reasoningOutputTokens,
-    modelUsage,
+    tokenUsage: toTokenUsage(summaryUsage),
+    reasoningOutputTokens: summaryUsage.reasoningOutputTokens,
+    modelUsage: summaryModelUsage,
     toolsUsed,
     searchTextPreview: searchableParts.join('\n').toLowerCase().slice(0, SUMMARY_SEARCH_PREVIEW_LIMIT),
   };
@@ -1075,6 +1257,9 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
 
   const chatSummary = getCopilotSidecarSummary(fileInfo);
   const requestUsages = chatSummary.requests;
+  const subagentsByInvocationId = new Map(
+    chatSummary.subagents.map(subagent => [subagent.invocationId, subagent]),
+  );
   const messages: SessionMessageDisplay[] = [];
   const searchableParts: string[] = [];
   const toolsUsed: Record<string, number> = {};
@@ -1246,12 +1431,20 @@ export function parseCopilotRecords(filePath: string, records: CopilotTranscript
     if (record.type === 'tool.execution_complete') {
       const toolCallId = getOptionalString(data, 'toolCallId') || getOptionalString(data, 'id') || '';
       const block = buildToolResultBlock(data, startedTools.get(toolCallId));
+      const subagent = subagentsByInvocationId.get(toolCallId);
       searchableParts.push(block.summary, block.content || '', ...block.details.map(detail => detail.value));
       messages.push({
         role: 'tool-result',
         content: block.summary,
         timestamp,
+        model: subagent?.model,
         blocks: [block],
+        subagent: subagent ? {
+          id: subagent.invocationId,
+          parentId: subagent.parentInvocationId || nativeId,
+          nickname: subagent.agentName,
+          depth: resolveCopilotSubagentDepth(subagent, subagentsByInvocationId),
+        } : undefined,
       });
     }
   }
