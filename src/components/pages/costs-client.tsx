@@ -1,13 +1,12 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useCacheStatus, useCostAnalytics } from '@/lib/hooks';
+import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCacheStatus, useStats } from '@/lib/hooks';
 import type { DashboardStats, ProjectInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
+import type { TimeRangeParams } from '@/lib/time-range';
 import { CostModeSelector } from '@/components/cost-mode-selector';
 import { StatCard } from '@/components/cards/stat-card';
-import { CostChart } from '@/components/charts/cost-chart';
-import { LinesChangedOverTime } from '@/components/charts/lines-changed-over-time';
 import { formatCost, formatNumber, formatTokens } from '@/lib/format';
 import {
   calculateCacheSavings,
@@ -16,41 +15,95 @@ import {
   getModelColor,
   getPricingReferenceEntries,
   LITELLM_PRICING_SOURCE,
+  OPENAI_PRICING_SOURCE,
 } from '@/config/pricing';
 import { Coins, TrendingUp, Zap, Database, Info, GitPullRequest } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CacheRefreshStatus } from '@/components/cache-refresh-status';
 import { Separator } from '@/components/ui/separator';
 import { TimeRangeControl, useAnalyticsTimeRange } from '@/components/time-range-control';
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-} from 'recharts';
+
+const CostChart = lazy(() => import('@/components/charts/cost-chart').then(module => ({ default: module.CostChart })));
+const LinesChangedOverTime = lazy(() => import('@/components/charts/lines-changed-over-time').then(module => ({ default: module.LinesChangedOverTime })));
+const ProjectCostChart = lazy(() => import('@/components/charts/project-cost-chart'));
+
+function ChartSection({ title, children }: { title: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const placeholder = (
+    <Card aria-busy="true" className="border-border/50 shadow-sm">
+      <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">{title}</CardTitle></CardHeader>
+      <CardContent className="pt-0"><div className="h-[300px]" /></CardContent>
+    </Card>
+  );
+  return (
+    <div ref={ref}>
+      <Suspense fallback={placeholder}>
+        {visible || typeof IntersectionObserver === 'undefined' ? children : placeholder}
+      </Suspense>
+    </div>
+  );
+}
 
 export function CostsClient({ initialStats, initialProjects }: { initialStats?: DashboardStats; initialProjects?: ProjectInfo[] }) {
   const timeRange = useAnalyticsTimeRange();
-  const initialAnalytics = initialStats && initialProjects ? { stats: initialStats, projects: initialProjects } : undefined;
-  const { data: analytics, isLoading, mutate } = useCostAnalytics(initialAnalytics, timeRange.apiParams);
-  const { data: cacheStatus } = useCacheStatus();
-  const { costMode, pickCost, label: modeLabel } = useCostMode();
-  const stats = analytics?.stats;
-  const projects = analytics?.projects;
+  const { data: stats, mutate, error } = useStats(initialStats, timeRange.apiParams);
+  const { data: cacheStatus } = useCacheStatus(mutate);
+  const { costMode, label: modeLabel } = useCostMode();
 
-  useEffect(() => {
-    if (!cacheStatus?.refreshCompletedAt) return;
-    void mutate();
-  }, [cacheStatus?.refreshCompletedAt, mutate]);
-
-  if (isLoading || !stats || !projects) {
-    return (
-      <div className="flex h-[80vh] items-center justify-center">
-        <div className="space-y-3 text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Loading cost data...</p>
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">Cost Analytics</h1>
+          <p className="text-sm text-muted-foreground">Usage estimates and recorded credits — not actual billing</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          <TimeRangeControl value={timeRange.value} onChange={timeRange.setValue} />
+          <CostModeSelector />
         </div>
       </div>
-    );
-  }
+      <CacheRefreshStatus status={cacheStatus} />
 
+      {/* Mode explainer */}
+      <div className="flex items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-4 py-3">
+        <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+        <div className="text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">{modeLabel.name}:</span>{' '}
+          {modeLabel.description}.{' '}
+          Recorded Copilot credit values stay the same across estimation modes.{' '}
+          {costMode === 'api' && 'This shows what your usage would cost at published API rates — typically 5-8x higher than subscription billing.'}
+          {costMode === 'conservative' && 'Cache tokens are discounted but not eliminated. This is an upper-bound estimate for subscription users.'}
+          {costMode === 'subscription' && 'Cache tokens are heavily discounted to approximate subscription-style CLI billing where cache reads are not charged like fresh input tokens.'}
+        </div>
+      </div>
+
+      {stats ? (
+        <CostResults stats={stats} initialProjects={initialProjects} range={timeRange.apiParams} />
+      ) : (
+        <p role="status" className="text-sm text-muted-foreground">{error ? 'Could not load cost data.' : 'Loading cost data...'}</p>
+      )}
+    </div>
+  );
+}
+
+const CostResults = memo(function CostResults({ stats, initialProjects, range }: {
+  stats: DashboardStats; initialProjects?: ProjectInfo[]; range: TimeRangeParams;
+}) {
+  const { costMode, pickCost, label: modeLabel } = useCostMode();
   // Calculate cache savings
   let totalCacheReadTokens = 0;
   let totalCacheWriteTokens = 0;
@@ -73,20 +126,6 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
   const totalCost = pickCost(stats.estimatedCosts, stats.estimatedCost);
   const totalPromptInputTokens = totalInputTokens + totalCacheReadTokens;
   const changeTotals = stats.changeTotals;
-
-  // Cost by project
-  const projectCosts = projects
-    .filter(p => (p.estimatedCosts ? pickCost(p.estimatedCosts) : p.estimatedCost) > 0)
-    .sort((a, b) => {
-      const costA = a.estimatedCosts ? pickCost(a.estimatedCosts) : a.estimatedCost;
-      const costB = b.estimatedCosts ? pickCost(b.estimatedCosts) : b.estimatedCost;
-      return costB - costA;
-    })
-    .slice(0, 10)
-    .map(p => ({
-      name: p.name,
-      cost: parseFloat((p.estimatedCosts ? pickCost(p.estimatedCosts) : p.estimatedCost).toFixed(2)),
-    }));
 
   // Model cost breakdown
   const modelCostGroups = new Map<string, {
@@ -125,37 +164,10 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
   });
 
   const modelCosts = Array.from(modelCostGroups.values())
-    .filter(item => item.tokens > 0)
+    .filter(item => item.tokens > 0 || item.cost > 0)
     .sort((a, b) => b.cost - a.cost);
-  const pricingRows = getPricingReferenceEntries();
-  const pricingUpdatedAt = new Date(LITELLM_PRICING_SOURCE.updatedAt).toLocaleDateString();
-
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight">Cost Analytics</h1>
-          <p className="text-sm text-muted-foreground">Estimated usage costs — not actual billing</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 md:justify-end">
-          <TimeRangeControl value={timeRange.value} onChange={timeRange.setValue} />
-          <CostModeSelector />
-        </div>
-      </div>
-      <CacheRefreshStatus status={cacheStatus} />
-
-      {/* Mode explainer */}
-      <div className="flex items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-4 py-3">
-        <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-        <div className="text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{modeLabel.name}:</span>{' '}
-          {modeLabel.description}.{' '}
-          {costMode === 'api' && 'This shows what your usage would cost at published API rates — typically 5-8x higher than subscription billing.'}
-          {costMode === 'conservative' && 'Cache tokens are discounted but not eliminated. This is an upper-bound estimate for subscription users.'}
-          {costMode === 'subscription' && 'Cache tokens are heavily discounted to approximate subscription-style CLI billing where cache reads are not charged like fresh input tokens.'}
-        </div>
-      </div>
-
+    <>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard
           title="Estimated Usage"
@@ -189,55 +201,19 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
       </div>
 
       {/* Cost Over Time */}
-      <CostChart data={stats.dailyModelTokens} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
+      <ChartSection title="Usage Cost Over Time">
+        <CostChart data={stats.dailyModelTokens} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
+      </ChartSection>
 
-      <LinesChangedOverTime data={stats.dailyChangeActivity} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
+      <ChartSection title="Lines Changed Over Time">
+        <LinesChangedOverTime data={stats.dailyChangeActivity} buckets={stats.usageBuckets} granularity={stats.bucketGranularity} />
+      </ChartSection>
 
       <div className="grid grid-cols-2 gap-4">
         {/* Cost by Project */}
-        <Card className="border-border/50 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold">Estimated Cost by Project</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={projectCosts}
-                  layout="vertical"
-                  margin={{ top: 5, right: 20, left: 5, bottom: 5 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => `$${v}`}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={100}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'var(--card)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                    }}
-                    formatter={(value) => [`$${Number(value).toFixed(2)}`, 'Est. Cost']}
-                  />
-                  <Bar dataKey="cost" fill="var(--primary)" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
+        <ChartSection title="Estimated Cost by Project">
+          <ProjectCostChart range={range} initialProjects={initialProjects} />
+        </ChartSection>
 
         {/* Model Cost Breakdown */}
         <Card className="border-border/50 shadow-sm">
@@ -296,46 +272,57 @@ export function CostsClient({ initialStats, initialProjects }: { initialStats?: 
         </Card>
       </div>
 
-      {/* Pricing Reference */}
-      <Card className="border-border/50 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-semibold">Pricing Reference (per 1M tokens, API rates)</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <div className="max-h-[460px] overflow-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border/50">
-                  <th className="sticky top-0 bg-card text-left py-2 font-medium text-muted-foreground">Provider</th>
-                  <th className="sticky top-0 bg-card text-left py-2 font-medium text-muted-foreground">Model</th>
-                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Input</th>
-                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Output</th>
-                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Cache Write</th>
-                  <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Cache Read</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pricingRows.map(({ model, pricing }) => (
-                  <tr key={model} className="border-b border-border/30">
-                    <td className="py-2 pr-3 font-medium text-muted-foreground">{formatProvider(pricing.provider)}</td>
-                    <td className="py-2 pr-3 font-mono font-medium">{model}</td>
-                    <td className="py-2 text-right">{formatRate(pricing.inputPerMillion)}</td>
-                    <td className="py-2 text-right">{formatRate(pricing.outputPerMillion)}</td>
-                    <td className="py-2 text-right">{formatRate(pricing.cacheWritePerMillion)}</td>
-                    <td className="py-2 text-right">{formatRate(pricing.cacheReadPerMillion)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="mt-2 text-[10px] text-muted-foreground">
-            Rates are generated from LiteLLM pricing data, refreshed {pricingUpdatedAt}. CLI subscription billing can differ significantly from API rates, especially for cached tokens.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+      <PricingReference />
+    </>
   );
-}
+});
+
+const PricingReference = memo(function PricingReference() {
+  const pricingRows = getPricingReferenceEntries();
+  const pricingUpdatedAt = new Date(LITELLM_PRICING_SOURCE.updatedAt).toLocaleDateString();
+
+  return (
+    <Card className="border-border/50 shadow-sm [content-visibility:auto] [contain-intrinsic-size:auto_540px]">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-semibold">Pricing Reference (per 1M tokens, API rates)</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="max-h-[460px] overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/50">
+                <th className="sticky top-0 bg-card text-left py-2 font-medium text-muted-foreground">Provider</th>
+                <th className="sticky top-0 bg-card text-left py-2 font-medium text-muted-foreground">Model</th>
+                <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Input</th>
+                <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Output</th>
+                <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Cache Write</th>
+                <th className="sticky top-0 bg-card text-right py-2 font-medium text-muted-foreground">Cache Read</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pricingRows.map(({ model, pricing }) => (
+                <tr key={model} className="border-b border-border/30">
+                  <td className="py-2 pr-3 font-medium text-muted-foreground">{formatProvider(pricing.provider)}</td>
+                  <td className="py-2 pr-3 font-mono font-medium">{model}</td>
+                  <td className="py-2 text-right">{formatRate(pricing.inputPerMillion)}</td>
+                  <td className="py-2 text-right">{formatRate(pricing.outputPerMillion)}</td>
+                  <td className="py-2 text-right">{formatRate(pricing.cacheWritePerMillion)}</td>
+                  <td className="py-2 text-right">{formatRate(pricing.cacheReadPerMillion)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          LiteLLM rates were refreshed {pricingUpdatedAt}. GPT-6 and GPT-6.1 rates were verified against{' '}
+          <a href={OPENAI_PRICING_SOURCE.source} target="_blank" rel="noreferrer" className="underline">OpenAI pricing</a>{' '}
+          on {OPENAI_PRICING_SOURCE.verifiedAt} and use Standard short-context rates. Requests above 272K input tokens, other service tiers, and regional premiums are not reflected in these estimates. CLI subscription billing can differ significantly from API rates, especially for cached tokens.
+        </p>
+      </CardContent>
+    </Card>
+  );
+});
+
 
 function formatProvider(provider: string | undefined): string {
   if (provider === 'anthropic') return 'Anthropic';

@@ -3,12 +3,14 @@
 import { format } from 'date-fns';
 import type { SessionMessageDisplay } from '@/lib/claude-data/types';
 import { SubagentIndicator } from './SubagentIndicator';
+import { conversationInputLabel } from '@/lib/session-transcript';
 
 function imageAlt(label: string | undefined, index: number): string {
   return label || `User uploaded image ${index + 1}`;
 }
 
 export function UserMessage({ msg, index }: { msg: SessionMessageDisplay; index: number }) {
+  const agentRow = Boolean(msg.subagent || msg.communication);
   const images = (msg.images || []).filter(image => (
     image.url.startsWith('data:image/')
     || image.url.startsWith('blob:')
@@ -17,9 +19,9 @@ export function UserMessage({ msg, index }: { msg: SessionMessageDisplay; index:
   ));
 
   return (
-    <div id={`conversation-message-${index}`} className={`border-l-2 pl-3.5 py-2 ${msg.subagent ? 'border-violet-500 bg-violet-500/[0.03]' : 'border-blue-500'}`}>
+    <div id={`conversation-message-${index}`} className={`border-l-2 pl-3.5 py-2 ${agentRow ? 'border-violet-500 bg-violet-500/[0.03]' : 'border-blue-500'}`}>
       <div className="flex items-center gap-2 mb-1">
-        <span className={`text-[11px] font-medium uppercase tracking-wide ${msg.subagent ? 'text-violet-600' : 'text-blue-500'}`}>User</span>
+        <span className={`break-words text-[11px] font-semibold ${agentRow ? 'text-violet-700 dark:text-violet-300' : 'uppercase tracking-wide text-blue-500'}`}>{conversationInputLabel(msg)}</span>
         <SubagentIndicator subagent={msg.subagent} />
         {msg.timestamp && !Number.isNaN(new Date(msg.timestamp).getTime()) && (
           <span className="text-[11px] text-muted-foreground">{format(new Date(msg.timestamp), 'h:mm a')}</span>

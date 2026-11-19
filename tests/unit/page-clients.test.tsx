@@ -37,13 +37,6 @@ vi.mock('@/lib/hooks', () => ({
     data: hookState.projects ?? fallbackData,
     isLoading: hookState.projectsLoading,
   }),
-  useCostAnalytics: (fallbackData?: { stats: DashboardStats; projects: ProjectInfo[] }) => ({
-    data: fallbackData ?? (hookState.stats && hookState.projects
-      ? { stats: hookState.stats, projects: hookState.projects }
-      : undefined),
-    isLoading: hookState.statsLoading || hookState.projectsLoading,
-    mutate: vi.fn(),
-  }),
   useSessions: (limit = 50, offset = 0, _query?: string, fallbackData?: SessionInfo[]) => ({
     data: hookState.sessions
       ? { sessions: hookState.sessions.slice(offset, offset + limit), total: hookState.sessions.length, limit, offset }
@@ -237,7 +230,7 @@ describe('page client components', () => {
     expect(screen.getByTestId('usage-chart')).toHaveTextContent('usage 1');
   });
 
-  it('renders costs and pricing information', () => {
+  it('renders costs and pricing information', async () => {
     renderWithProviders(<CostsClient initialStats={stats} initialProjects={[project]} />);
 
     expect(screen.getByText('Cost Analytics')).toBeInTheDocument();
@@ -251,8 +244,8 @@ describe('page client components', () => {
     expect(screen.getByText('Estimated Cost by Project')).toBeInTheDocument();
     expect(screen.queryByText('unknown')).not.toBeInTheDocument();
     expect(screen.queryByText('Synthetic')).not.toBeInTheDocument();
-    expect(screen.getByTestId('cost-chart')).toHaveTextContent('cost 1');
-    expect(screen.getByTestId('lines-chart')).toHaveTextContent('lines 1');
+    expect(await screen.findByTestId('cost-chart')).toHaveTextContent('cost 1');
+    expect(await screen.findByTestId('lines-chart')).toHaveTextContent('lines 1');
   });
 
   it('uses the selected pricing mode for cache savings', () => {
@@ -280,6 +273,12 @@ describe('page client components', () => {
 
     expect(cacheSavingsCard).toHaveTextContent('$4.50');
     expect(cacheSavingsCard).toHaveTextContent('api equivalent estimate');
+  });
+
+  it('displays usage totals while the project breakdown is loading', async () => {
+    renderWithProviders(<CostsClient initialStats={stats} />);
+    expect(screen.getByText('Estimated Usage')).toBeVisible();
+    expect(await screen.findByText('Loading project costs...')).toBeVisible();
   });
 
   it('renders projects as navigable cards', () => {

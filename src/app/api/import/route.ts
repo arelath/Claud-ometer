@@ -96,7 +96,7 @@ export const POST = withErrorHandler(async (request: Request) => {
       agentCounts.claude = countClaudeData(claudeDir);
     }
     if (!agentCounts.codex && agents.includes('codex')) {
-      agentCounts.codex = countCodexData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'codex'));
+      agentCounts.codex = await countCodexData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'codex'));
     }
     if (!agentCounts.copilot && agents.includes('copilot')) {
       agentCounts.copilot = countCopilotData(path.join(importDir, AGENT_ARCHIVE_ROOT, 'copilot'));

@@ -222,14 +222,14 @@ describe('Copilot reader', () => {
       sourceFilePaths: [transcriptPath, chatSessionPath],
     });
     expect(source.sourceFilePath).toBe(transcriptPath);
-    expect(source.parserVersion).toBe('copilot-summary-v8');
+    expect(source.parserVersion).toBe('copilot-summary-v12');
     expect(lightweightSummary).toMatchObject({
-      parserVersion: 'copilot-summary-v8',
+      parserVersion: 'copilot-summary-v12',
       model: 'gpt-5.6-sol',
       models: ['gpt-5.6-sol', 'gpt-5.6-luna'],
     });
     expect(summary).toMatchObject({
-      parserVersion: 'copilot-summary-v8',
+      parserVersion: 'copilot-summary-v12',
       routeId,
       model: 'gpt-5.6-sol',
       models: ['gpt-5.6-sol', 'gpt-5.6-luna'],
@@ -284,6 +284,7 @@ describe('Copilot reader', () => {
       },
     };
     const finalShutdown = {
+      totalNanoAiu: 40530656000,
       currentModel: 'copilot/claude-haiku-4.5',
       tokenDetails: {
         input: { tokenCount: 12 },
@@ -365,6 +366,7 @@ describe('Copilot reader', () => {
       toolsUsed: { Read: 1 },
     });
     expect(detail?.messages.map(message => message.role)).toEqual(['user', 'assistant', 'assistant', 'user', 'assistant']);
+    expect(detail?.recordedUsageCost).toBeUndefined();
     expect(detail?.messages[1].usage).toEqual({
       input_tokens: 0,
       output_tokens: 40,
@@ -387,13 +389,13 @@ describe('Copilot reader', () => {
       (costs, message) => addCosts(costs, message.estimatedCosts || zeroCosts()),
       zeroCosts(),
     )).toEqual(expectedCosts);
-    expect(source.parserVersion).toBe('copilot-summary-v8');
+    expect(source.parserVersion).toBe('copilot-summary-v12');
     expect(lightweightSummary).toMatchObject({
-      parserVersion: 'copilot-summary-v8',
+      parserVersion: 'copilot-summary-v12',
       tokenTotals: { input: 12, output: 125, cacheRead: 150, cacheWrite: 30, reasoningOutput: 10 },
     });
     expect(summary).toMatchObject({
-      parserVersion: 'copilot-summary-v8',
+      parserVersion: 'copilot-summary-v12',
       tokenTotals: { input: 12, output: 125, cacheRead: 150, cacheWrite: 30, reasoningOutput: 10 },
       modelUsage: {
         'gpt-4.1': {
@@ -425,6 +427,135 @@ describe('Copilot reader', () => {
       cacheWrite: 30,
       reasoningOutput: 10,
     });
+  });
+
+  it('preserves CLI messages without usage, tool results, edits, and interleaved subagents', async () => {
+    const nativeId = 'legacy-cli-events';
+    const sessionDir = path.join(copilotDir, 'session-state', nativeId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'workspace.yaml'), 'cwd: "D:/repo/legacy-app"\n');
+    const patch = '*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch';
+    const toolRequest = { toolCallId: 'patch-1', name: 'apply_patch', arguments: patch };
+    const records = [
+      { type: 'session.start', data: { sessionId: nativeId, selectedModel: 'gpt-5.4' } },
+      { type: 'user.message', data: { content: 'Fix the app.' } },
+      { type: 'assistant.message', data: { messageId: 'root-1', content: 'Inspecting the app.', toolRequests: [toolRequest] } },
+      { type: 'tool.execution_start', data: { toolCallId: 'patch-1', toolName: 'apply_patch', arguments: patch } },
+      { type: 'tool.execution_complete', data: { toolCallId: 'patch-1', success: true, result: { content: 'Patched.', detailedContent: 'Updated src/app.ts successfully.' } } },
+      { type: 'tool.execution_start', data: { toolCallId: 'task-1', toolName: 'task', arguments: { prompt: 'Check the fix.' } } },
+      { type: 'subagent.started', agentId: 'child', data: { toolCallId: 'task-1', agentDisplayName: 'checker', agentName: 'code-searcher', model: 'gpt-4.1' } },
+      { type: 'user.message', agentId: 'child', data: { content: 'Check the fix.' } },
+      { type: 'assistant.message', agentId: 'child', data: { messageId: 'child-1', content: 'Checking.', reasoningText: 'Inspect the changed branch.' } },
+      { type: 'tool.execution_start', agentId: 'child', data: { toolCallId: 'read-1', toolName: 'read_file', arguments: { filePath: 'src/app.ts' } } },
+      { type: 'tool.execution_complete', agentId: 'child', data: { toolCallId: 'read-1', success: false, error: { message: 'Read failed.', code: 'failure' } } },
+      { type: 'subagent.completed', agentId: 'child', data: { toolCallId: 'task-1', totalTokens: 500 } },
+      { type: 'tool.execution_complete', data: { toolCallId: 'task-1', success: true, result: 'Review done.' } },
+      { type: 'assistant.message', data: { messageId: 'root-2', content: 'Fixed.', outputTokens: 0 } },
+      // Replay of the same message must not duplicate its calls or content.
+      { type: 'assistant.message', data: { messageId: 'root-1', content: 'Inspecting the app.', toolRequests: [toolRequest] } },
+    ];
+    fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), records.map(record => JSON.stringify(record)).join('\n'));
+
+    const reader = await loadReader();
+    const detail = await reader.getSessionDetail(`copilot:legacy:${nativeId}`);
+    expect(detail).toMatchObject({
+      messageCount: 5, userMessageCount: 2, assistantMessageCount: 3, toolCallCount: 3,
+      model: 'gpt-5.4', models: ['gpt-5.4', 'gpt-4.1'], totalInputTokens: 0, totalOutputTokens: 0,
+    });
+    expect(detail!.messages.filter(message => message.role === 'assistant').map(message => [message.content, message.model, message.usage])).toEqual([
+      ['Inspecting the app.', 'gpt-5.4', undefined], ['Checking.', 'gpt-4.1', undefined], ['Fixed.', 'gpt-5.4', undefined],
+    ]);
+    const childMessages = detail!.messages.filter(message => message.subagent);
+    expect(childMessages).toHaveLength(4);
+    for (const message of childMessages) {
+      expect(message.subagent).toEqual({ id: 'child', parentId: nativeId, nickname: 'checker', role: 'code-searcher', depth: 1 });
+    }
+    expect(childMessages[1].blocks?.[0]).toMatchObject({ type: 'thinking', content: 'Inspect the changed branch.' });
+    const results = detail!.messages.filter(message => message.role === 'tool-result');
+    expect(results.map(message => message.blocks?.[0].content)).toEqual(['Updated src/app.ts successfully.', 'Read failed.', 'Review done.']);
+    expect(results[1].blocks?.[0]).toMatchObject({ title: 'Read result', summary: 'failed' });
+    expect(getSessionDiffSummary(detail!.messages)).toMatchObject({ fileCount: 1, editCount: 1, addedLines: 1, removedLines: 1 });
+
+    const source = (await reader.discoverSessionSummarySources()).find(item => (item.metadata as { nativeId: string }).nativeId === nativeId)!;
+    const summary = await reader.buildSessionSummary(source);
+    expect(summary).toMatchObject({ messageCount: 5, assistantMessageCount: 3, toolCallCount: 3, tokenTotals: { input: 0, output: 0 } });
+    expect(summary.searchTextPreview).toContain('updated src/app.ts successfully.');
+  });
+
+  it('uses completed patch positions for repeated contexts in separate methods', async () => {
+    const nativeId = 'legacy-positioned-patch';
+    const sessionDir = path.join(copilotDir, 'session-state', nativeId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const request = '*** Begin Patch\n*** Update File: src/app.cs\n@@\n {\n     int depth = -1;\n+    int layer = -1;\n }\n@@\n {\n     int depth = -1;\n+    int layer = -1;\n }\n*** End Patch';
+    const result = 'diff --git a/src/app.cs b/src/app.cs\n--- a/src/app.cs\n+++ b/src/app.cs\n@@ -100,3 +100,4 @@\n {\n     int depth = -1;\n+    int layer = -1;\n }\n@@ -200,3 +201,4 @@\n {\n     int depth = -1;\n+    int layer = -1;\n }\n';
+    const tool = { toolCallId: 'patch', name: 'apply_patch', arguments: request };
+    const records = [
+      { type: 'assistant.message', data: { toolRequests: [tool] } },
+      { type: 'tool.execution_start', data: { ...tool, toolName: tool.name } },
+      { type: 'tool.execution_complete', data: { toolCallId: tool.toolCallId, success: true, result: { detailedContent: result } } },
+    ];
+    const transcriptPath = path.join(sessionDir, 'events.jsonl');
+    fs.writeFileSync(transcriptPath, records.map(record => JSON.stringify(record)).join('\n'));
+    const reader = await loadReader();
+    const detail = await reader.getSessionDetail(`copilot:legacy:${nativeId}`);
+    const diff = getSessionDiffSummary(detail!.messages);
+    expect(diff).toMatchObject({ fileCount: 1, editCount: 2, addedLines: 2, removedLines: 0 });
+    expect(diff.files[0].hunks.map(hunk => [hunk.oldStartLine, hunk.newStartLine])).toEqual([[100, 100], [200, 201]]);
+
+    // Without a completion, bare @@ sections must not invent source line numbers.
+    fs.writeFileSync(transcriptPath, JSON.stringify(records[0]));
+    reader.resetCopilotReaderCacheForTests();
+    const partial = await reader.getSessionDetail(`copilot:legacy:${nativeId}`);
+    expect(partial!.messages[0].toolCalls?.[0].artifact?.edits?.map(edit => edit.location)).toEqual([undefined, undefined]);
+  });
+
+  it('prices tokenless CLI sessions from cumulative recorded credits across detail, lists, and analytics', async () => {
+    const nativeId = 'legacy-recorded-credits';
+    const sessionDir = path.join(copilotDir, 'session-state', nativeId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const checkpoint = (totalNanoAiu: unknown, agentId?: string) => ({
+      type: 'session.usage_checkpoint', timestamp: '2026-09-16T18:30:38.819Z', agentId, data: { totalNanoAiu },
+    });
+    const records = [
+      { type: 'session.start', timestamp: '2026-09-16T18:25:41.000Z', data: { selectedModel: 'gpt-5.6-sol' } },
+      { type: 'assistant.message', timestamp: '2026-09-16T18:26:00.000Z', data: { content: 'Done.' } },
+      checkpoint(10386400000), checkpoint(40530656000), checkpoint(40530656000),
+      checkpoint(-1), checkpoint('invalid'), checkpoint(Number.MAX_SAFE_INTEGER + 1),
+      checkpoint(999000000000, 'child'),
+    ];
+    const transcriptPath = path.join(sessionDir, 'events.jsonl');
+    fs.writeFileSync(transcriptPath, records.map(record => JSON.stringify(record)).join('\n'));
+    const reader = await loadReader();
+    const summaryApi = await import('@/lib/agent-data/session-summary');
+    const detail = await reader.getSessionDetail(`copilot:legacy:${nativeId}`);
+    const expectedCosts = { api: 0.40530656, conservative: 0.40530656, subscription: 0.40530656 };
+    const recordedUsageCost = { usd: 0.40530656, credits: 40.530656, timestamp: '2026-09-16T18:30:38.819Z' };
+    expect(detail).toMatchObject({ estimatedCosts: expectedCosts, recordedUsageCost, totalInputTokens: 0, totalOutputTokens: 0 });
+    expect((await reader.getSessions()).find(session => session.nativeId === nativeId)).toMatchObject({ estimatedCosts: expectedCosts, recordedUsageCost });
+    const source = (await reader.discoverSessionSummarySources()).find(item => (item.metadata as { nativeId: string }).nativeId === nativeId)!;
+    for (const summary of [await reader.buildSessionSummary(source), reader.buildLightweightSessionSummary(source)]) {
+      expect(summary).toMatchObject({ recordedUsageCost, tokenTotals: { input: 0, output: 0 }, modelUsage: {} });
+      expect(summaryApi.summaryToSessionInfo(summary)).toMatchObject({ estimatedCosts: expectedCosts, recordedUsageCost });
+      expect(summaryApi.summariesToDashboardStats([summary]).estimatedCosts).toEqual(expectedCosts);
+      expect(summaryApi.summariesToCostAnalytics([summary]).stats.estimatedCosts).toEqual(expectedCosts);
+      expect(summaryApi.summariesToProjects([summary])[0].estimatedCosts).toEqual(expectedCosts);
+    }
+
+    // An explicit zero is valid and replaces the previous checkpoint.
+    fs.appendFileSync(transcriptPath, `\n${JSON.stringify(checkpoint(0))}`);
+    reader.resetCopilotReaderCacheForTests();
+    expect(await reader.getSessionDetail(`copilot:legacy:${nativeId}`)).toMatchObject({ recordedUsageCost: { usd: 0, credits: 0 } });
+  });
+
+  it('keeps legacy assistant content without model metadata', async () => {
+    const nativeId = 'legacy-no-model';
+    const sessionDir = path.join(copilotDir, 'session-state', nativeId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), JSON.stringify({ type: 'assistant.message', data: { content: 'Recorded response.' } }));
+    const reader = await loadReader();
+    const detail = await reader.getSessionDetail(`copilot:legacy:${nativeId}`);
+    expect(detail?.messages).toEqual([expect.objectContaining({ role: 'assistant', content: 'Recorded response.', model: 'unknown' })]);
+    expect(detail?.assistantMessageCount).toBe(1);
   });
 
   it('preserves output-only legacy usage when no valid shutdown summary exists', async () => {

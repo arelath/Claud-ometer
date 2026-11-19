@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useCacheStatus, useProjects } from '@/lib/hooks';
 import type { ProjectInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
@@ -13,15 +12,11 @@ import { FolderKanban, MessageSquare, Clock, Layers } from 'lucide-react';
 import Link from 'next/link';
 
 export function ProjectsClient({ initialProjects }: { initialProjects?: ProjectInfo[] }) {
-  const { data: projects, isLoading, mutate } = useProjects(initialProjects);
-  const { data: cacheStatus } = useCacheStatus();
+  const { data: projects, mutate } = useProjects(initialProjects);
+  const { data: cacheStatus } = useCacheStatus(mutate);
   const { pickCost } = useCostMode();
 
-  useEffect(() => {
-    if (cacheStatus?.refreshCompletedAt) void mutate();
-  }, [cacheStatus?.refreshCompletedAt, mutate]);
-
-  if (isLoading || !projects) {
+  if (!projects) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
         <div className="space-y-3 text-center">

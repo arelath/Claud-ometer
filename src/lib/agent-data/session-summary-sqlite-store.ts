@@ -1,3 +1,4 @@
+import { initializeHourlyAnalytics, refreshSourceHourlyAnalytics } from './hourly-analytics-index';
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -342,6 +343,7 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   microcompactions INTEGER NOT NULL DEFAULT 0,
   compaction_tokens_saved INTEGER NOT NULL DEFAULT 0,
   compaction_timestamps_json TEXT NOT NULL DEFAULT '[]',
+  recorded_usage_cost_json TEXT,
   search_text TEXT NOT NULL DEFAULT '',
   payload_json TEXT NOT NULL
 );
@@ -505,7 +507,7 @@ function isReadableIndexDatabase(filePath: string, expectedSchemaVersion?: numbe
         reasoning_output_tokens, added_lines, removed_lines, net_line_delta,
         changed_lines, changed_file_count, edit_count, compactions,
         microcompactions, compaction_tokens_saved, compaction_timestamps_json,
-        search_text, payload_json
+        recorded_usage_cost_json, search_text, payload_json
        FROM session_summaries LIMIT 0`,
     );
     db.query('SELECT source_key, model, input_tokens, output_tokens FROM summary_model_usage LIMIT 0');
@@ -597,6 +599,7 @@ function ensureSchemaCompatibility(db: SqliteDatabase): void {
   ensureColumn(db, 'session_summaries', 'microcompactions', 'microcompactions INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'session_summaries', 'compaction_tokens_saved', 'compaction_tokens_saved INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'session_summaries', 'compaction_timestamps_json', "compaction_timestamps_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'session_summaries', 'recorded_usage_cost_json', 'recorded_usage_cost_json TEXT');
   ensureColumn(db, 'usage_events', 'cost_api', 'cost_api REAL NOT NULL DEFAULT 0');
   ensureColumn(db, 'usage_events', 'cost_conservative', 'cost_conservative REAL NOT NULL DEFAULT 0');
   ensureColumn(db, 'usage_events', 'cost_subscription', 'cost_subscription REAL NOT NULL DEFAULT 0');
@@ -612,6 +615,7 @@ function initializeSchema(db: SqliteDatabase): void {
   }
 
   ensureSchemaCompatibility(db);
+  initializeHourlyAnalytics(db);
   setMeta(db, 'schema_version', String(SQLITE_SCHEMA_VERSION));
   setMeta(db, 'summary_cache_version', String(SESSION_SUMMARY_CACHE_VERSION));
   if (!getMeta(db, 'revision')) setMeta(db, 'revision', '0');
@@ -1148,10 +1152,11 @@ function upsertSummary(
       microcompactions,
       compaction_tokens_saved,
       compaction_timestamps_json,
+      recorded_usage_cost_json,
       search_text,
       payload_json
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
     ON CONFLICT(source_key) DO UPDATE SET
       route_id = excluded.route_id,
@@ -1193,6 +1198,7 @@ function upsertSummary(
       microcompactions = excluded.microcompactions,
       compaction_tokens_saved = excluded.compaction_tokens_saved,
       compaction_timestamps_json = excluded.compaction_timestamps_json,
+      recorded_usage_cost_json = excluded.recorded_usage_cost_json,
       search_text = excluded.search_text,
       payload_json = excluded.payload_json`,
     [
@@ -1236,6 +1242,7 @@ function upsertSummary(
       summary.compaction?.microcompactions || 0,
       summary.compaction?.totalTokensSaved || 0,
       JSON.stringify(summary.compaction?.compactionTimestamps || []),
+      summary.recordedUsageCost ? JSON.stringify(summary.recordedUsageCost) : null,
       summarySearchText(summary),
       JSON.stringify(summary),
     ],
@@ -1246,6 +1253,7 @@ function upsertSummary(
   if (replaceEvents) {
     replaceUsageEvents(db, sourceKey, summary);
     replaceChangeEvents(db, sourceKey, summary);
+    refreshSourceHourlyAnalytics(db, sourceKey);
   }
 }
 
@@ -1796,6 +1804,8 @@ export function querySessionSummaryIndex<T>(callback: (db: SqliteDatabase) => T)
   const db = openIndexDatabase(true);
   if (!db) return null;
   try {
+    // Keep all page queries on one committed snapshot while the indexer writes.
+    db.exec('BEGIN');
     return callback(db);
   } finally {
     closeIndexDatabase(db);
@@ -2132,6 +2142,7 @@ export function commitSessionSummaryIndexSource(commit: SessionSummaryIndexSourc
         upsertSummary(db, commit.summary, now, false);
         applyStableUsageEventMutations(db, sourceKey, publishedGeneration, commit.mutations.usageEvents);
         applyStableChangeEventMutations(db, sourceKey, publishedGeneration, commit.mutations.changeEvents);
+        refreshSourceHourlyAnalytics(db, sourceKey);
         upsertCheckpoint(db, commit.checkpoint);
         publishCheckpointComponents(db, sourceKey, commit.checkpoint, targetRevision);
         db.run(
@@ -2310,8 +2321,9 @@ export function getSessionSummaryIndexReadSignature(): string {
       SESSION_SUMMARY_CACHE_VERSION,
       getMeta(db, 'revision') || '0',
       getMeta(db, 'generated_at'),
-      stat.size,
-      stat.mtimeMs,
+      dbPath,
+      stat.birthtimeMs,
+      stat.ino,
     ].join(':');
   } catch {
     return `json:${getSessionSummaryCacheReadSignature()}`;

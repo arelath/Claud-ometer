@@ -9,6 +9,7 @@ import type {
   SessionMessageDisplay,
   SessionPromptTokenBreakdown,
   SessionSubagentDisplay,
+  SessionToolCallDisplay,
   TokenUsage,
 } from '@/lib/claude-data/types';
 import type { CachedModelUsage } from '@/lib/agent-data/session-summary';
@@ -16,12 +17,15 @@ import { makeRouteId, qualifyProjectId } from '@/lib/agent-data/route-id';
 import { asRecord, getCodexPayloadKind, type CodexEnvelope } from './schema';
 import {
   collectCodexToolResults,
+  collectCodexFileChanges,
   buildCodexPatchResultToolCalls,
   buildCodexToolCalls,
   buildCodexToolResultBlock,
   isCodexEnrichedToolResult,
+  isAgentMessagingTool,
 } from './tool-parser';
-import { forEachCodexJsonlLineSync } from './io';
+import { forEachCodexJsonlLine } from './io';
+import { incomingProtocol } from './subagent';
 import type { CodexSessionFileInfo } from './session-index';
 
 export interface CodexParsedSession {
@@ -330,23 +334,19 @@ function shouldSkipDuplicateAssistant(seen: Set<string>, text: string): boolean 
   return false;
 }
 
-export function readCodexRecordsSync(filePath: string): CodexEnvelope[] {
+export async function readCodexRecords(filePath: string, endOffset?: number): Promise<CodexEnvelope[]> {
   const records: CodexEnvelope[] = [];
-  forEachCodexJsonlLineSync(filePath, record => {
+  await forEachCodexJsonlLine(filePath, record => {
     records.push(record);
-  });
+  }, endOffset);
   return records;
-}
-
-export async function readCodexRecords(filePath: string): Promise<CodexEnvelope[]> {
-  return readCodexRecordsSync(filePath);
 }
 
 function getSummaryToolName(payload: Record<string, unknown>): string {
   return getOptionalString(payload, 'name') || getOptionalString(payload, 'type') || 'tool_call';
 }
 
-export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexSessionFileInfo): CodexParsedSessionSummary {
+export async function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexSessionFileInfo): Promise<CodexParsedSessionSummary> {
   const search = createBoundedSearchCollector();
   const seenAssistantText = new Set<string>();
   const toolsUsed: Record<string, number> = {};
@@ -386,7 +386,7 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
     if (time != null) compactionEvents.push({ time, source });
   };
 
-  forEachCodexJsonlLineSync(filePath, record => {
+  await forEachCodexJsonlLine(filePath, record => {
     const payload = asRecord(record.payload) || {};
     const timestamp = getTimestamp(record, payload);
     if (timestamp) {
@@ -418,6 +418,11 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
 
     if (record.type === 'response_item') {
       const kind = getCodexPayloadKind(record);
+      if (kind === 'agent_message') {
+        const delivery = incomingProtocol(record);
+        if (delivery) search.add(delivery.content);
+        return;
+      }
       if (kind === 'message') {
         const role = getOptionalString(payload, 'role');
         const text = getContentText(payload.content);
@@ -449,8 +454,14 @@ export function parseCodexSessionSummaryFile(filePath: string, fileInfo?: CodexS
         toolCallCount++;
         toolsUsed[toolName] = (toolsUsed[toolName] || 0) + 1;
         search.add(toolName);
-        search.add(typeof payload.arguments === 'string' ? payload.arguments : undefined);
-        search.add(typeof payload.input === 'string' ? payload.input : undefined);
+        if (isAgentMessagingTool(toolName)) {
+          const [tool] = buildCodexToolCalls(payload, new Map());
+          search.add(tool.summary);
+          for (const entry of tool.details) search.add(entry.value);
+        } else {
+          search.add(typeof payload.arguments === 'string' ? payload.arguments : undefined);
+          search.add(typeof payload.input === 'string' ? payload.input : undefined);
+        }
         return;
       }
 
@@ -563,9 +574,10 @@ export function parseCodexRecords(
   filePath: string,
   records: CodexEnvelope[],
   fileInfo?: CodexSessionFileInfo,
-  options: { subagent?: SessionSubagentDisplay } = {},
+  options: { subagent?: SessionSubagentDisplay; summaryOnly?: boolean } = {},
 ): CodexParsedSession {
   const results = collectCodexToolResults(records);
+  const fileChanges = collectCodexFileChanges(records);
   const explicitPatchCallIds = new Set(records.flatMap(record => {
     const kind = getCodexPayloadKind(record);
     if (record.type !== 'response_item' || (kind !== 'custom_tool_call' && kind !== 'function_call')) return [];
@@ -576,6 +588,37 @@ export function parseCodexRecords(
   }));
   const messages: SessionMessageDisplay[] = [];
   const searchableParts: string[] = [];
+  let searchLength = 0;
+  const addSearch = (...parts: string[]) => {
+    for (const part of parts) {
+      if (!options.summaryOnly) searchableParts.push(part);
+      else if (searchLength < SUMMARY_SEARCH_PREVIEW_LIMIT) {
+        const text = part.toLowerCase().slice(0, SUMMARY_SEARCH_PREVIEW_LIMIT - searchLength);
+        searchableParts.push(text);
+        searchLength += text.length + 1;
+      }
+    }
+  };
+  const readCallIds = new Set(records.flatMap(record => {
+    const payload = asRecord(record.payload);
+    return record.type === 'response_item' && payload?.name === 'Read'
+      ? [String(payload.call_id ?? payload.callId ?? payload.id ?? '')] : [];
+  }));
+  const pushMessage = (message: SessionMessageDisplay) => {
+    if (options.summaryOnly) {
+      message.content = '';
+      message.images = undefined;
+      message.blocks = message.blocks?.filter(block => block.type === 'tool-result'
+        && block.details.some(item => item.key === 'tool_use_id' && readCallIds.has(item.value)));
+      message.toolCalls = message.toolCalls?.map(tool => ({
+        ...tool,
+        summary: '',
+        details: tool.artifact?.kind === 'diff' || tool.name === 'Read'
+          ? tool.details.filter(item => item.key !== 'input') : [],
+      }));
+    }
+    messages.push(message);
+  };
   const seenAssistantText = new Set<string>();
   const toolsUsed: Record<string, number> = {};
   const modelsSet = new Set<string>();
@@ -602,8 +645,18 @@ export function parseCodexRecords(
   let lastAssistantMessageIndex: number | null = null;
   let hasSessionMetadata = false;
 
+  const pushToolCalls = (toolCalls: SessionToolCallDisplay[], timestamp: string) => {
+    if (toolCalls.length === 0) return;
+    toolCallCount += toolCalls.length;
+    for (const tool of toolCalls) {
+      toolsUsed[tool.name] = (toolsUsed[tool.name] || 0) + 1;
+      addSearch(tool.summary, ...tool.details.map(item => item.value));
+    }
+    pushMessage({ role: 'tool-use', content: '', timestamp, model, toolCalls });
+  };
+
   const pushAssistantMessage = (message: SessionMessageDisplay) => {
-    messages.push(message);
+    pushMessage(message);
     lastAssistantMessageIndex = messages.length - 1;
   };
 
@@ -630,7 +683,7 @@ export function parseCodexRecords(
 
     compactions++;
     compactionTimestamps.push(timestamp);
-    messages.push({
+    pushMessage({
       role: 'system',
       content: 'Context compacted',
       timestamp,
@@ -674,16 +727,30 @@ export function parseCodexRecords(
 
     if (record.type === 'response_item') {
       const kind = getCodexPayloadKind(record);
+      if (kind === 'agent_message') {
+        const delivery = incomingProtocol(record);
+        if (delivery) {
+          addSearch(delivery.content);
+          // Child inbox messages are inputs to the child model. A report
+          // delivered to its parent is already counted on the sending turn.
+          if (options.subagent && delivery.type !== 'FINAL_ANSWER') {
+            userMessageCount++;
+            addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(delivery.content) });
+          }
+          pushMessage({ role: 'agent-message', content: delivery.content, communication: delivery.communication, timestamp });
+        }
+        continue;
+      }
       if (kind === 'message') {
         const role = getOptionalString(payload, 'role');
         const text = getContentText(payload.content);
-        if (text) searchableParts.push(text);
+        if (text) addSearch(text);
 
         if (role === 'user') {
           const images = getContentImages(payload.content);
           userMessageCount++;
           addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
-          messages.push({ role: 'user', content: text, timestamp, images });
+          pushMessage({ role: 'user', content: text, timestamp, images });
         } else if (role === 'assistant') {
           if (!shouldSkipDuplicateAssistant(seenAssistantText, text)) {
             assistantMessageCount++;
@@ -692,7 +759,7 @@ export function parseCodexRecords(
           }
         } else if (role === 'developer' || role === 'system') {
           addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
-          messages.push({
+          pushMessage({
             role: 'system',
             content: text,
             timestamp,
@@ -720,24 +787,12 @@ export function parseCodexRecords(
             details: [],
           }],
         });
-        if (summary) searchableParts.push(summary);
+        if (summary) addSearch(summary);
         continue;
       }
 
       if (kind === 'function_call' || kind === 'custom_tool_call' || kind === 'web_search_call') {
-        const toolCalls = buildCodexToolCalls(payload, results);
-        toolCallCount += toolCalls.length;
-        for (const tool of toolCalls) {
-          toolsUsed[tool.name] = (toolsUsed[tool.name] || 0) + 1;
-          searchableParts.push(tool.summary, ...tool.details.map(item => item.value));
-        }
-        messages.push({
-          role: 'tool-use',
-          content: '',
-          timestamp,
-          model,
-          toolCalls,
-        });
+        pushToolCalls(buildCodexToolCalls(payload, results, fileChanges.coveredCallIds), timestamp);
         continue;
       }
 
@@ -745,8 +800,8 @@ export function parseCodexRecords(
         const result = results.get(getOptionalString(payload, 'call_id') || '');
         if (result && !isCodexEnrichedToolResult(result)) {
           const block = buildCodexToolResultBlock(result);
-          searchableParts.push(block.summary, block.content || '', ...block.details.map(item => item.value));
-          messages.push({
+          addSearch(block.summary, block.content || '', ...block.details.map(item => item.value));
+          pushMessage({
             role: 'tool-result',
             content: block.summary,
             timestamp,
@@ -759,14 +814,19 @@ export function parseCodexRecords(
 
     if (record.type === 'event_msg') {
       const kind = getCodexPayloadKind(record);
+      if (kind === 'item_completed') {
+        const result = fileChanges.byRecord.get(record);
+        if (result) pushToolCalls(buildCodexPatchResultToolCalls(result).filter(tool => tool.artifact), timestamp);
+        continue;
+      }
       if (kind === 'user_message') {
         const text = getUserMessageText(payload);
         const images = getUserMessageImages(payload);
         if (text || images.length > 0) {
           userMessageCount++;
           addTokenUsage(estimatedTokenUsage, { input_tokens: estimateTokens(text) });
-          searchableParts.push(text);
-          messages.push({ role: 'user', content: text, timestamp, images });
+          addSearch(text);
+          pushMessage({ role: 'user', content: text, timestamp, images });
         }
         continue;
       }
@@ -788,7 +848,7 @@ export function parseCodexRecords(
             details: [],
           }],
         });
-        if (summary) searchableParts.push(summary);
+        if (summary) addSearch(summary);
         continue;
       }
 
@@ -797,7 +857,7 @@ export function parseCodexRecords(
         if (text && !shouldSkipDuplicateAssistant(seenAssistantText, text)) {
           assistantMessageCount++;
           addTokenUsage(estimatedTokenUsage, { output_tokens: estimateTokens(text) });
-          searchableParts.push(text);
+          addSearch(text);
           pushAssistantMessage({ role: 'assistant', content: text, timestamp, model });
         }
         continue;
@@ -833,24 +893,12 @@ export function parseCodexRecords(
       if (kind === 'exec_command_end' || kind === 'patch_apply_end' || kind === 'web_search_end') {
         const result = results.get(getOptionalString(payload, 'call_id') || '');
         if (result) {
-          if (kind === 'patch_apply_end' && !explicitPatchCallIds.has(result.callId)) {
-            const toolCalls = buildCodexPatchResultToolCalls(result);
-            toolCallCount += toolCalls.length;
-            for (const tool of toolCalls) {
-              toolsUsed[tool.name] = (toolsUsed[tool.name] || 0) + 1;
-              searchableParts.push(tool.summary, ...tool.details.map(item => item.value));
-            }
-            messages.push({
-              role: 'tool-use',
-              content: '',
-              timestamp,
-              model,
-              toolCalls,
-            });
+          if (kind === 'patch_apply_end' && !explicitPatchCallIds.has(result.callId) && !fileChanges.coveredCallIds.has(result.callId)) {
+            pushToolCalls(buildCodexPatchResultToolCalls(result), timestamp);
           }
           const block = buildCodexToolResultBlock(result);
-          searchableParts.push(block.summary, block.content || '', ...block.details.map(item => item.value));
-          messages.push({
+          addSearch(block.summary, block.content || '', ...block.details.map(item => item.value));
+          pushMessage({
             role: 'tool-result',
             content: block.summary,
             timestamp,
@@ -874,7 +922,7 @@ export function parseCodexRecords(
 
       if (kind === 'error' || kind === 'turn_aborted') {
         const reason = getOptionalString(payload, 'reason') || getOptionalString(payload, 'message') || kind;
-        messages.push({
+        pushMessage({
           role: 'system',
           content: reason,
           timestamp,
@@ -946,7 +994,7 @@ export function parseCodexRecords(
     },
   };
 
-  const displayMessages = options.subagent
+  const displayMessages = options.subagent && !options.summaryOnly
     ? messages.map(message => ({ ...message, subagent: options.subagent }))
     : messages;
 

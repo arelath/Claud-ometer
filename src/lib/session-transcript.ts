@@ -39,7 +39,7 @@ export type AssistantTimelineItem =
   | CompactionMarker;
 
 export interface TranscriptTarget {
-  type: 'user' | 'assistant' | 'system-group' | 'compaction';
+  type: 'user' | 'assistant' | 'system-group' | 'compaction' | 'subagent';
   targetId: string;
 }
 
@@ -511,7 +511,7 @@ export function groupMessages(
 
     const { message, index } = items[i];
 
-    if (message.role === 'user') {
+    if (message.role === 'user' || message.role === 'agent-message') {
       groups.push({ type: 'user', message, index });
       i++;
     } else if (message.role === 'assistant') {
@@ -696,7 +696,7 @@ function mergeAdjacentAssistantGroups(
 }
 
 export function messagePassesPreset(msg: SessionMessageDisplay, preset: FilterPreset): boolean {
-  if (preset === 'all') return true;
+  if (preset === 'all' || msg.role === 'agent-message') return true;
   if (preset === 'tools') {
     return msg.role === 'user' || msg.role === 'assistant' || msg.role === 'tool-use' || msg.role === 'tool-result' || msg.role === 'command';
   }
@@ -722,16 +722,19 @@ export function buildTranscriptItems(
   preset: FilterPreset,
   compactionTimestamps: string[] = [],
   toolFilter: string | null = null,
+  agentFilter: string | null = null,
 ): TranscriptItem[] {
   const compactionBoundaries = messages.flatMap((message, index) => (
     message.isMeta
     && message.content === 'Context compacted'
+    && messageMatchesAgent(message, agentFilter)
     && compactionTimestamps.includes(message.timestamp)
       ? [{ index, originKey: messageOriginKey(message) }]
       : []
   ));
   const groupedMessages = groupMessages(
-    messages.map((message, index) => ({ message, index })).filter(({ message }) => messagePassesPreset(message, preset)),
+    messages.map((message, index) => ({ message, index })).filter(({ message }) =>
+      messagePassesPreset(message, preset) && messageMatchesAgent(message, agentFilter)),
     compactionBoundaries,
   );
   const baseGroups = preset === 'tools'
@@ -745,7 +748,9 @@ export function buildTranscriptItems(
       && message.content === 'Context compacted'
     ))?.subagent,
   }));
-  const groups = insertCompactionMarkers(baseGroups, compactionInputs);
+  const selectedCompactions = agentFilter ? compactionInputs.filter(marker =>
+    (marker.subagent?.path || marker.subagent?.id || '/root') === agentFilter) : compactionInputs;
+  const groups = insertCompactionMarkers(baseGroups, selectedCompactions);
   return groups.filter(group => itemMatchesToolFilter(group, toolFilter));
 }
 
@@ -765,7 +770,8 @@ export function getMinimapTargets(items: TranscriptItem[]): TranscriptTarget[] {
     }
 
     const targetId = getTranscriptItemTargetId(item);
-    if (targetId) targets.push({ type: item.type, targetId });
+    const message = item.type === 'system-group' ? item.messages[0]?.message : item.message;
+    if (targetId) targets.push({ type: message?.subagent || message?.communication ? 'subagent' : item.type, targetId });
 
     if (item.type === 'assistant') {
       for (const nestedItem of item.toolTimeline || []) {
@@ -988,6 +994,19 @@ function appendMarkdownSubagent(parts: string[], subagent: SessionSubagentDispla
   parts.push(`> Subagent: ${identity}${subagent.depth > 1 ? ` · depth ${subagent.depth}` : ''}`);
 }
 
+export function conversationInputLabel(message: SessionMessageDisplay): string {
+  const delivery = message.communication;
+  if (!delivery) return 'User';
+  return [delivery.kind, delivery.sender && `from ${delivery.sender}`, delivery.recipient && `to ${delivery.recipient}`]
+    .filter(Boolean).join(' ');
+}
+
+export function messageMatchesAgent(message: SessionMessageDisplay, agent: string | null): boolean {
+  if (!agent) return true;
+  const owner = message.subagent?.path || message.subagent?.id || '/root';
+  return owner === agent || message.communication?.sender === agent || message.communication?.recipient === agent;
+}
+
 export function buildTranscriptMarkdown(items: TranscriptItem[], options: TranscriptMarkdownOptions = {}): string {
   const parts: string[] = [];
   const assistantLabel = options.assistantLabel || 'Assistant';
@@ -1001,7 +1020,7 @@ export function buildTranscriptMarkdown(items: TranscriptItem[], options: Transc
     if (item.type === 'compaction') {
       appendMarkdownCompaction(parts, item);
     } else if (item.type === 'user') {
-      parts.push(headingWithTimestamp(2, 'User', item.message.timestamp));
+      parts.push(headingWithTimestamp(2, conversationInputLabel(item.message), item.message.timestamp));
       const content = normalizeMarkdownText(item.message.content);
       if (content) parts.push(content);
     } else if (item.type === 'assistant') {

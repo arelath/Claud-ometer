@@ -1,7 +1,7 @@
 import { calculateCostAllModes } from '@/config/pricing';
-import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { addCosts, recordedCostEstimates, zeroCosts } from '@/lib/claude-data/cost-utils';
 import { makeChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
-import type { ChangeTotals, CostEstimates, SessionMessageDisplay, TokenUsage } from '@/lib/claude-data/types';
+import type { ChangeTotals, CostEstimates, RecordedUsageCost, SessionMessageDisplay, TokenUsage } from '@/lib/claude-data/types';
 import { getSessionDiffSummary } from '@/lib/session-diff';
 import type { CachedModelUsage } from './session-summary';
 
@@ -26,6 +26,7 @@ export interface CachedChangeEvent extends ChangeTotals {
 }
 
 export interface UsageEventSummaryInput {
+  recordedUsageCost?: RecordedUsageCost;
   createdAt: string;
   updatedAt: string;
   model: string;
@@ -176,7 +177,17 @@ export function buildUsageEvents(
     });
   });
 
-  return reconcileUsageEvents(capUsageEventCounts(events, summary), summary);
+  return applyRecordedUsageCost(reconcileUsageEvents(capUsageEventCounts(events, summary), summary), summary);
+}
+
+function applyRecordedUsageCost(events: CachedUsageEvent[], summary: UsageEventSummaryInput): CachedUsageEvent[] {
+  if (!summary.recordedUsageCost) return events;
+  // A session-wide checkpoint cannot be attributed to a specific model or
+  // request. Keep its timestamp and avoid inventing a token breakdown.
+  return [
+    ...events.map(event => ({ ...event, estimatedCosts: zeroCosts() })),
+    { ...makeUsageEvent({ timestamp: summary.recordedUsageCost.timestamp }), estimatedCosts: recordedCostEstimates(summary.recordedUsageCost.usd) },
+  ];
 }
 
 export function buildLegacyUsageEvents(summary: UsageEventSummaryInput): CachedUsageEvent[] {
@@ -216,8 +227,8 @@ export function buildLegacyUsageEvents(summary: UsageEventSummaryInput): CachedU
     }));
   }
 
-  return [countEvent, ...tokenEvents]
-    .filter(event => event.messageCount > 0 || event.toolCallCount > 0 || tokenTotal(event) > 0);
+  return applyRecordedUsageCost([countEvent, ...tokenEvents]
+    .filter(event => event.messageCount > 0 || event.toolCallCount > 0 || tokenTotal(event) > 0), summary);
 }
 
 export function buildChangeEvents(messages: SessionMessageDisplay[]): CachedChangeEvent[] {

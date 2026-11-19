@@ -442,6 +442,25 @@ describe('session transcript grouping', () => {
     expect(markdown).toContain('CHILD_RESULT');
   });
 
+  it('filters by agent before pairing tools and keeps reports delivered to the parent', () => {
+    const child = { id: 'search-id', path: '/root/search', parentId: 'root', depth: 1 };
+    const messages: SessionMessageDisplay[] = [
+      { ...toolUse(0, toolCall('Read', 'read-1', {})), subagent: child },
+      { role: 'assistant', content: 'Unrelated parent work', timestamp: '' },
+      { ...toolResult(2, 'read-1', 'Found the file'), subagent: child },
+      { role: 'agent-message', content: 'Report body', timestamp: '',
+        communication: { kind: 'Final report', sender: child.path, recipient: '/root' } },
+    ];
+    const selected = buildTranscriptItems(messages, 'tools', [], null, child.path);
+    expect(selected).toHaveLength(2);
+    expect(selected[0]).toMatchObject({ type: 'assistant', toolPairs: [{ toolUse: { index: 0 }, toolResult: { index: 2 } }] });
+    expect(getMinimapTargets(selected).map(target => target.type)).toEqual(['subagent', 'subagent']);
+    const copied = buildTranscriptMarkdown(selected);
+    expect(copied).toContain('Final report from /root/search to /root');
+    expect(copied).toContain('Found the file');
+    expect(copied).not.toContain('Unrelated parent work');
+  });
+
   it('keeps child compactions attributed and outside a root assistant timeline', () => {
     const child = {
       id: 'child-session',

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import useSWR from 'swr';
 import type { AgentKind } from '@/lib/agent-data/types';
 import type { SessionIndexState } from '@/lib/agent-data/indexer';
@@ -24,6 +25,7 @@ export interface DataSourceInfo {
 }
 
 export interface CacheStatus {
+  revision: number;
   status: SessionIndexState;
   cachePath: string;
   exists: boolean;
@@ -123,8 +125,8 @@ export function useLiveSessionBinding(sessionId: string) {
   return useSWR<LiveSessionInfo | null>(`/api/live-sessions/by-session/${sessionId}`, fetcher, { refreshInterval: 1000 });
 }
 
-export function useCacheStatus() {
-  return useSWR<CacheStatus>('/api/cache?quick=1', fetcher, {
+export function useCacheStatus(onIndexChange?: () => Promise<unknown>) {
+  const status = useSWR<CacheStatus>('/api/cache?quick=1', fetcher, {
     refreshInterval: (latestData) => {
       if (!latestData) return 2000;
       return latestData.status === 'refreshing' || latestData.status === 'stale' || latestData.status === 'empty'
@@ -132,4 +134,16 @@ export function useCacheStatus() {
         : 15000;
     },
   });
+
+  // SWR already fetches the page on mount. Only refetch for subsequent
+  // changes to published data, including commits during a long index run.
+  const revision = status.data?.revision;
+  const previousRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === undefined) return;
+    const changed = previousRevision.current !== undefined && previousRevision.current !== revision;
+    previousRevision.current = revision;
+    if (changed) void onIndexChange?.();
+  }, [revision, onIndexChange]);
+  return status;
 }

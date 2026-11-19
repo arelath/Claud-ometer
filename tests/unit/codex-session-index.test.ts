@@ -47,6 +47,40 @@ describe('Codex session discovery', () => {
     });
   });
 
+  it('keeps one indexed session across compression and reads the same transcript and usage', async () => {
+    const fixtureRoot = path.join(process.cwd(), 'tests', 'fixtures');
+    fs.cpSync(path.join(fixtureRoot, 'codex'), codexDir, { recursive: true });
+    const directory = path.join(codexDir, 'sessions', '2026', '05', '08');
+    const plain = path.join(directory, fs.readdirSync(directory)[0]);
+    const compressed = plain + '.zst';
+    await loadModule();
+    const reader = await import('@/lib/agent-data/providers/codex/reader');
+    const { readCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const { sourceSummaryCacheKey } = await import('@/lib/agent-data/session-summary-cache');
+    const [original] = await reader.discoverSessionSummarySources();
+    const before = await reader.buildSessionSummary(original);
+    const originalDetail = await reader.getSessionDetail(before.routeId);
+    const firstLine = fs.readFileSync(plain, 'utf8').split(/\r?\n/, 1)[0];
+    fs.copyFileSync(path.join(fixtureRoot, 'codex-compressed', path.basename(compressed)), compressed);
+    expect((await reader.discoverSessionSummarySources()).map(source => source.sourceFilePath)).toEqual([plain]);
+    fs.unlinkSync(plain);
+    const sources = await reader.discoverSessionSummarySources();
+    expect(sources.map(source => source.sourceFilePath)).toEqual([compressed]);
+    const [source] = sources;
+    expect(sourceSummaryCacheKey(source)).toBe(sourceSummaryCacheKey(original));
+    const summary = await reader.buildSessionSummary(source);
+    expect(summary).toMatchObject({
+      routeId: before.routeId, cwd: before.cwd, projectName: before.projectName,
+      messageCount: before.messageCount, usageEvents: before.usageEvents, tokenTotals: before.tokenTotals,
+      sourceFilePaths: [compressed],
+    });
+    expect(await reader.buildLightweightSessionSummary(source)).toMatchObject({ tokenTotals: before.tokenTotals });
+    expect((await reader.getSessionDetail(before.routeId))?.messages).toEqual(originalDetail?.messages);
+    const boundary = Buffer.byteLength(firstLine) + 1;
+    expect(await readCodexRecords(compressed, boundary)).toEqual([JSON.parse(firstLine)]);
+    await expect(readCodexRecords(compressed, boundary - 1)).rejects.toThrow('not a record boundary');
+  });
+
   it('skips files whose first line is not Codex session metadata', async () => {
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });

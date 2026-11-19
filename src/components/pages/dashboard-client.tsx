@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useCacheStatus, useStats } from '@/lib/hooks';
 import type { DashboardStats } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
@@ -28,15 +27,11 @@ import Link from 'next/link';
 
 export function DashboardClient({ initialStats }: { initialStats?: DashboardStats }) {
   const timeRange = useAnalyticsTimeRange();
-  const { data: stats, isLoading, mutate } = useStats(initialStats, timeRange.apiParams);
-  const { data: cacheStatus } = useCacheStatus();
+  const { data: stats, mutate } = useStats(initialStats, timeRange.apiParams);
+  const { data: cacheStatus } = useCacheStatus(mutate);
   const { pickCost, label: modeLabel } = useCostMode();
 
-  useEffect(() => {
-    if (cacheStatus?.refreshCompletedAt) void mutate();
-  }, [cacheStatus?.refreshCompletedAt, mutate]);
-
-  if (isLoading || !stats) {
+  if (!stats) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
         <div className="space-y-3 text-center">

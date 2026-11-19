@@ -54,7 +54,10 @@ function hasNumericPrice(entry, key) {
 }
 
 const registry = await fetchJson(SOURCE_URL);
-const models = {};
+// LiteLLM drops retired models that still appear in historical sessions.
+const models = fs.existsSync(OUT_PATH)
+  ? JSON.parse(fs.readFileSync(OUT_PATH, 'utf8')).models
+  : {};
 
 for (const [model, entry] of Object.entries(registry)) {
   if (

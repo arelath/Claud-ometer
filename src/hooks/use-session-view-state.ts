@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { SessionMessageDisplay } from '@/lib/claude-data/types';
-import { buildTranscriptItems, buildTranscriptMarkdown, getMinimapTargets, messagePassesPreset, type FilterPreset } from '@/lib/session-transcript';
+import { buildTranscriptItems, buildTranscriptMarkdown, getMinimapTargets, messageMatchesAgent, messagePassesPreset, type FilterPreset } from '@/lib/session-transcript';
 import type { SessionDiffSummary } from '@/lib/session-diff';
-import { MinimapSegment, MinimapViewport } from '@/components/session/minimap';
+import type { MinimapSegment } from '@/components/session/minimap';
 import { normalizeDiffPathKey, type DiffDisplayMode, type MainSessionView } from '@/components/session/diff-viewer';
 import type { ArtifactViewerState } from '@/components/session/session-render-context';
 
 const FILTER_STORAGE_KEY = 'agentscope-session-filter-preset';
+const EAGER_MESSAGE_LIMIT = 200;
 
 function loadPreset(): FilterPreset {
   if (typeof window === 'undefined') return 'narrative';
@@ -51,7 +52,7 @@ export function useSessionViewState({
   const [preset, setPreset] = useState<FilterPreset>(loadPreset);
   const [copiedContextPath, setCopiedContextPath] = useState<string | null>(null);
   const [minimapSegments, setMinimapSegments] = useState<MinimapSegment[]>([]);
-  const [minimapViewport, setMinimapViewport] = useState<MinimapViewport>({ topPct: 0, heightPct: 6 });
+  const deferredJump = useRef<{ id: string; block: 'start' | 'center' } | null>(null);
   const [artifactViewer, setArtifactViewer] = useState<ArtifactViewerState | null>(null);
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null);
   const [copiedPatchKey, setCopiedPatchKey] = useState<string | null>(null);
@@ -64,10 +65,27 @@ export function useSessionViewState({
   const wasAtBottomRef = useRef(true);
   const previousMessageCountRef = useRef(messages.length);
   const initialLiveScrollSessionRef = useRef<string | null>(null);
+  const deferContent = messages.length > EAGER_MESSAGE_LIMIT;
 
   const mainView: MainSessionView = searchParams.get('view') === 'changes' ? 'changes' : 'conversation';
   const diffMode: DiffDisplayMode = searchParams.get('diff') === 'edits' ? 'edits' : 'net';
   const toolFilter = searchParams.get('filter') || null;
+  const agentFilter = searchParams.get('agent') || null;
+  const agentOptions = useMemo(() => {
+    const options = new Map<string, { key: string; label: string; toolCalls: number }>();
+    for (const message of messages) {
+      const agent = message.subagent;
+      if (!agent) continue;
+      const key = agent.path || agent.id;
+      let option = options.get(key);
+      if (!option) {
+        option = { key, label: [agent.path || agent.nickname || agent.id, agent.role].filter(Boolean).join(' · '), toolCalls: 0 };
+        options.set(key, option);
+      }
+      option.toolCalls += message.toolCalls?.length || 0;
+    }
+    return Array.from(options.values());
+  }, [messages]);
 
   const replaceSearchParams = useCallback((updates: Record<string, string | null>) => {
     const nextParams = new URLSearchParams(searchParams.toString());
@@ -94,6 +112,8 @@ export function useSessionViewState({
     replaceSearchParams({ filter });
   }, [replaceSearchParams]);
 
+  const setAgentFilter = useCallback((agent: string | null) => replaceSearchParams({ agent }), [replaceSearchParams]);
+
   const handlePresetChange = useCallback((next: FilterPreset) => {
     setPreset(next);
     savePreset(next);
@@ -118,12 +138,13 @@ export function useSessionViewState({
       ? elementTop - (container.clientHeight / 2) + (elementRect.height / 2)
       : elementTop;
 
+    deferredJump.current = deferContent ? { id: targetId, block } : null;
     container.scrollTo({
       top: Math.max(0, targetTop),
-      behavior: 'smooth',
+      behavior: deferContent ? 'instant' : 'smooth',
     });
     return true;
-  }, []);
+  }, [deferContent]);
 
   const scrollMessageIntoConversation = useCallback((messageIndex: number, block: 'start' | 'center' = 'center') => (
     scrollElementIntoConversation(`conversation-message-${messageIndex}`, block)
@@ -146,34 +167,36 @@ export function useSessionViewState({
   }, [isConversationAtBottom]);
 
   const scrollToConversationBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    deferredJump.current = null;
     const bottom = bottomRef.current;
     const container = conversationRef.current;
+    const scrollBehavior = deferContent ? 'instant' : behavior;
 
     if (bottom) {
-      bottom.scrollIntoView({ behavior, block: 'end' });
+      bottom.scrollIntoView({ behavior: scrollBehavior, block: 'end' });
     } else if (container) {
-      container.scrollTo({ top: container.scrollHeight, behavior });
+      container.scrollTo({ top: container.scrollHeight, behavior: scrollBehavior });
     }
 
     wasAtBottomRef.current = true;
     setShowScrollToBottom(false);
     setUnseenMessageCount(0);
-  }, []);
+  }, [deferContent]);
 
   const handleJumpToMessage = useCallback((messageIndexes: number[]) => {
     for (const messageIndex of messageIndexes) {
       if (mainView === 'conversation' && scrollMessageIntoConversation(messageIndex, 'center')) return;
-      setMainView('conversation');
+      replaceSearchParams({ view: null, agent: null });
       setPendingConversationJump(messageIndex);
       return;
     }
-  }, [mainView, scrollMessageIntoConversation, setMainView]);
+  }, [mainView, scrollMessageIntoConversation, replaceSearchParams]);
 
   const handleJumpToDiffMessage = useCallback((messageIndex: number) => {
     if (mainView === 'conversation' && scrollMessageIntoConversation(messageIndex, 'center')) return;
-    setMainView('conversation');
+    replaceSearchParams({ view: null, agent: null });
     setPendingConversationJump(messageIndex);
-  }, [mainView, scrollMessageIntoConversation, setMainView]);
+  }, [mainView, scrollMessageIntoConversation, replaceSearchParams]);
 
   const handleCopyContextPath = useCallback((filePath: string) => {
     void navigator.clipboard.writeText(filePath).then(() => {
@@ -194,26 +217,25 @@ export function useSessionViewState({
   }, []);
 
   const groupedMessages = useMemo(
-    () => buildTranscriptItems(messages, preset, compactionTimestamps, toolFilter),
-    [messages, preset, toolFilter, compactionTimestamps],
-  );
-  const visibleConversationMarkdown = useMemo(
-    () => buildTranscriptMarkdown(groupedMessages, { assistantLabel }),
-    [assistantLabel, groupedMessages],
+    () => buildTranscriptItems(messages, preset, compactionTimestamps, toolFilter, agentFilter),
+    [messages, preset, toolFilter, compactionTimestamps, agentFilter],
   );
   const handleCopyVisibleConversation = useCallback(() => {
-    void navigator.clipboard.writeText(visibleConversationMarkdown).then(() => {
+    void navigator.clipboard.writeText(buildTranscriptMarkdown(groupedMessages, { assistantLabel })).then(() => {
       setCopiedVisibleConversation(true);
       window.setTimeout(() => {
         setCopiedVisibleConversation(false);
       }, 1200);
     });
-  }, [visibleConversationMarkdown]);
-  const presetCounts = useMemo(() => ({
-    narrative: messages.filter(message => messagePassesPreset(message, 'narrative')).length,
-    tools: messages.filter(message => messagePassesPreset(message, 'tools')).length,
-    all: messages.length,
-  }), [messages]);
+  }, [assistantLabel, groupedMessages]);
+  const presetCounts = useMemo(() => {
+    const selected = agentFilter ? messages.filter(message => messageMatchesAgent(message, agentFilter)) : messages;
+    return {
+      narrative: selected.filter(message => messagePassesPreset(message, 'narrative')).length,
+      tools: selected.filter(message => messagePassesPreset(message, 'tools')).length,
+      all: selected.length,
+    };
+  }, [messages, agentFilter]);
   const diffPathMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const file of diffSummary.files) {
@@ -228,13 +250,13 @@ export function useSessionViewState({
   const minimapTargets = useMemo(() => getMinimapTargets(groupedMessages), [groupedMessages]);
 
   useEffect(() => {
-    if (mainView !== 'conversation' || pendingConversationJump === null) return;
+    if (mainView !== 'conversation' || agentFilter || pendingConversationJump === null) return;
     const frame = window.requestAnimationFrame(() => {
       scrollMessageIntoConversation(pendingConversationJump, 'center');
       setPendingConversationJump(null);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [mainView, pendingConversationJump, scrollMessageIntoConversation]);
+  }, [agentFilter, mainView, pendingConversationJump, scrollMessageIntoConversation]);
 
   useEffect(() => {
     if (initialLiveScrollSessionRef.current !== sessionId) {
@@ -293,21 +315,6 @@ export function useSessionViewState({
     return true;
   }, [diffPathMap, setMainView]);
 
-  const updateMinimapViewport = useCallback(() => {
-    const container = conversationRef.current;
-    if (!container) return;
-
-    const scrollHeight = Math.max(container.scrollHeight, 1);
-    const maxScroll = Math.max(container.scrollHeight - container.clientHeight, 0);
-    const rawHeightPct = (container.clientHeight / scrollHeight) * 100;
-    const heightPct = Math.min(100, Math.max(rawHeightPct, 6));
-    const topPct = maxScroll > 0
-      ? (container.scrollTop / maxScroll) * (100 - heightPct)
-      : 0;
-
-    setMinimapViewport({ topPct, heightPct });
-  }, []);
-
   const updateMinimapSegments = useCallback(() => {
     const container = conversationRef.current;
     if (!container) return;
@@ -316,8 +323,8 @@ export function useSessionViewState({
     const scrollHeight = Math.max(container.scrollHeight, 1);
     const nextSegments = minimapTargets
       .map((target): MinimapSegment | null => {
-        const element = container.querySelector<HTMLElement>(`#${CSS.escape(target.targetId)}`);
-        if (!element) return null;
+        const element = document.getElementById(target.targetId);
+        if (!element || !container.contains(element)) return null;
 
         const rect = element.getBoundingClientRect();
         const top = rect.top - containerRect.top + container.scrollTop;
@@ -332,32 +339,50 @@ export function useSessionViewState({
       .sort((left, right) => left.topPct - right.topPct);
 
     setMinimapSegments(nextSegments);
-    updateMinimapViewport();
-  }, [minimapTargets, updateMinimapViewport]);
+  }, [minimapTargets]);
 
   useEffect(() => {
     const container = conversationRef.current;
     if (!container) return;
 
     updateMinimapSegments();
-    const handleScrollWithBottomState = () => {
-      updateMinimapViewport();
-      updateConversationBottomState();
-    };
-    container.addEventListener('scroll', handleScrollWithBottomState, { passive: true });
+    container.addEventListener('scroll', updateConversationBottomState, { passive: true });
+    const releaseJump = () => { deferredJump.current = null; };
+    container.addEventListener('wheel', releaseJump, { passive: true });
+    container.addEventListener('pointerdown', releaseJump);
+    container.addEventListener('keydown', releaseJump);
 
-    const resizeObserver = new ResizeObserver(() => updateMinimapSegments());
+    let frame = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        // Revealing nearby content can move a distant target after the jump.
+        const jump = deferredJump.current;
+        if (jump) scrollElementIntoConversation(jump.id, jump.block);
+        else if (deferContent && isLive && wasAtBottomRef.current) {
+          container.scrollTop = container.scrollHeight;
+        }
+        updateMinimapSegments();
+      });
+    });
     resizeObserver.observe(container);
     Array.from(container.children).forEach(child => resizeObserver.observe(child));
 
     return () => {
-      container.removeEventListener('scroll', handleScrollWithBottomState);
+      releaseJump();
+      container.removeEventListener('wheel', releaseJump);
+      container.removeEventListener('pointerdown', releaseJump);
+      container.removeEventListener('keydown', releaseJump);
+      container.removeEventListener('scroll', updateConversationBottomState);
       resizeObserver.disconnect();
+      window.cancelAnimationFrame(frame);
     };
-  }, [groupedMessages, mainView, updateConversationBottomState, updateMinimapSegments, updateMinimapViewport]);
+  }, [deferContent, groupedMessages, isLive, mainView, scrollElementIntoConversation, updateConversationBottomState, updateMinimapSegments]);
 
   return {
     state: {
+      agentFilter,
+      agentOptions,
       artifactViewer,
       copiedContextPath,
       copiedPatchKey,
@@ -367,7 +392,7 @@ export function useSessionViewState({
       groupedMessages,
       mainView,
       minimapSegments,
-      minimapViewport,
+      deferContent,
       preset,
       presetCounts,
       showScrollToBottom,
@@ -379,6 +404,7 @@ export function useSessionViewState({
       conversationRef,
     },
     actions: {
+      setAgentFilter,
       handleCopyContextPath,
       handleCopyPatch,
       handleCopyVisibleConversation,

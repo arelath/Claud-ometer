@@ -1,6 +1,7 @@
 'use client';
 
-import { use, useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { memo, use, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import {
@@ -21,7 +22,7 @@ import {
 import { useDataSourceInfo, useSessionDetail, useSessionSummary } from '@/lib/hooks';
 import { useCostMode } from '@/lib/cost-mode-context';
 import { getContextFileGroups } from '@/lib/context-files';
-import type { FilterPreset } from '@/lib/session-transcript';
+import type { FilterPreset, TranscriptItem } from '@/lib/session-transcript';
 import type { SessionInfo } from '@/lib/claude-data/types';
 import { getSessionDiffSummary } from '@/lib/session-diff';
 import { useSessionViewState } from '@/hooks/use-session-view-state';
@@ -48,6 +49,7 @@ import {
   SessionRenderContext,
   type SessionRenderContextValue,
 } from '@/components/session/session-render-context';
+import { DeferredTranscriptContent } from '@/components/session/transcript/DeferredTranscriptContent';
 import { AssistantCard, CompactionDivider, SystemGroup, UserMessage } from '@/components/session/transcript';
 
 function FilterPresets({ preset, onChange, counts }: {
@@ -90,6 +92,43 @@ const TRANSCRIPT_ITEM_STYLE: CSSProperties = {
   contentVisibility: 'auto',
   containIntrinsicSize: '96px',
 };
+
+const TranscriptRows = memo(function TranscriptRows({ groups, deferContent: largeTranscript }: {
+  groups: TranscriptItem[];
+  deferContent: boolean;
+}) {
+  const [searchAll, setSearchAll] = useState(false);
+  const deferContent = largeTranscript && !searchAll;
+  useEffect(() => {
+    if (!deferContent) return;
+    const prepareBrowserFind = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        // The browser searches the DOM as soon as the shortcut is delivered.
+        flushSync(() => setSearchAll(true));
+      }
+    };
+    window.addEventListener('keydown', prepareBrowserFind);
+    return () => window.removeEventListener('keydown', prepareBrowserFind);
+  }, [deferContent]);
+
+  return groups.map(group => {
+    const index = group.type === 'system-group' ? group.messages[0].index : group.index;
+    const targetId = group.type === 'compaction' ? group.targetId : `conversation-message-${index}`;
+    let content: ReactNode;
+    if (group.type === 'assistant') {
+      content = <AssistantCard msg={group.message} index={index} toolPairs={group.toolPairs} toolTimeline={group.toolTimeline} deferContent={deferContent} />;
+    } else if (group.type === 'compaction') {
+      content = <CompactionDivider timestamp={group.timestamp} targetId={targetId} subagent={group.subagent} />;
+    } else {
+      content = (
+        <DeferredTranscriptContent enabled={deferContent} placeholderHeight={group.type === 'user' ? 88 : 32} targetId={targetId}>
+          {group.type === 'user' ? <UserMessage msg={group.message} index={index} /> : <SystemGroup messages={group.messages} />}
+        </DeferredTranscriptContent>
+      );
+    }
+    return <div key={targetId} style={deferContent ? undefined : TRANSCRIPT_ITEM_STYLE}>{content}</div>;
+  });
+});
 
 type SessionWithRawPaths = SessionInfo & {
   liveMetadataFilePath?: string;
@@ -233,6 +272,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   const assistantLabel = displaySession?.agentKind ? getAgentLabel(displaySession.agentKind) : 'Claude';
   const {
     state: {
+      agentFilter,
+      agentOptions,
       artifactViewer,
       copiedContextPath,
       copiedPatchKey,
@@ -242,7 +283,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
       groupedMessages,
       mainView,
       minimapSegments,
-      minimapViewport,
+      deferContent,
       preset,
       presetCounts,
       showScrollToBottom,
@@ -251,6 +292,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     },
     refs: { bottomRef, conversationRef },
     actions: {
+      setAgentFilter,
       handleCopyContextPath,
       handleCopyPatch,
       handleCopyVisibleConversation,
@@ -277,6 +319,14 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
     assistantLabel,
   });
 
+  const sessionRenderContext = useMemo<SessionRenderContextValue>(() => ({
+    projectRoot: displaySession?.cwd || undefined,
+    agentKind: displaySession?.agentKind,
+    assistantLabel,
+    openArtifact: setArtifactViewer,
+  }), [assistantLabel, displaySession?.agentKind, displaySession?.cwd, setArtifactViewer]);
+  const contextFiles = useMemo(() => getContextFileGroups(messages), [messages]);
+
   if ((isLoading && !displaySession) || !displaySession?.id) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
@@ -300,15 +350,8 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 
   const models = [...new Set(displaySession.models || [])];
 
-  const contextFiles = getContextFileGroups(messages);
   const compaction = compactionInfo;
   const compactionCount = compaction.compactions + compaction.microcompactions;
-  const sessionRenderContext: SessionRenderContextValue = {
-    projectRoot: displaySession.cwd || undefined,
-    agentKind: displaySession.agentKind,
-    assistantLabel,
-    openArtifact: setArtifactViewer,
-  };
 
   return (
     <SessionRenderContext.Provider value={sessionRenderContext}>
@@ -392,7 +435,9 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                     <Coins className="h-3 w-3 text-primary" />
                     <p className="whitespace-nowrap text-sm font-bold leading-5 text-primary">{formatCost(pickCost(displaySession.estimatedCosts, displaySession.estimatedCost))}</p>
                   </div>
-                  <p className="text-[9px] leading-3 text-muted-foreground">Est. Usage</p>
+                  <p className="text-[9px] leading-3 text-muted-foreground" title={displaySession.recordedUsageCost ? `${displaySession.recordedUsageCost.credits} recorded Copilot AI credits. Included plan credits may cover this usage.` : undefined}>
+                    {displaySession.recordedUsageCost ? 'Recorded Usage' : 'Est. Usage'}
+                  </p>
                 </CardContent>
               </Card>
             <Card className="min-w-[86px] border-border/50 shadow-sm">
@@ -480,14 +525,29 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 onCopyVisibleConversation={handleCopyVisibleConversation}
               />
               {mainView === 'conversation' && (
-                <FilterPresets preset={preset} onChange={handlePresetChange} counts={presetCounts} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <FilterPresets preset={preset} onChange={handlePresetChange} counts={presetCounts} />
+                  {Boolean(agentOptions?.length) && (
+                    <label className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      Agent
+                      <select aria-label="Filter by agent" value={agentFilter || ''} onChange={event => setAgentFilter(event.target.value || null)}
+                        className="min-w-0 max-w-72 rounded border bg-background px-2 py-1 text-foreground">
+                        <option value="">All agents</option>
+                        <option value="/root">Main agent</option>
+                        {agentOptions.map(agent => (
+                          <option key={agent.key} value={agent.key}>{agent.label} ({agent.toolCalls} tool {agent.toolCalls === 1 ? 'call' : 'calls'})</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
               )}
             </CardHeader>
             <CardContent className="min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-0">
               {mainView === 'conversation' ? (
                 <div className="flex h-full min-h-0 gap-3">
                   <div className="relative min-h-0 flex-1 min-w-0">
-                    <div ref={conversationRef} data-testid="conversation-scroll-viewer" className="h-full min-h-0 space-y-2 overflow-y-auto pr-2">
+                    <div ref={conversationRef} data-transcript-scroll="" data-testid="conversation-scroll-viewer" className="h-full min-h-0 space-y-2 overflow-y-auto pr-2">
                       {!hasTranscript ? (
                         <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/20">
                           <div className="space-y-3 text-center">
@@ -495,31 +555,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                             <p className="text-sm text-muted-foreground">Loading transcript...</p>
                           </div>
                         </div>
-                      ) : groupedMessages.map((group, groupIndex) => {
-                        let content: ReactNode = null;
-                        if (group.type === 'compaction') {
-                          content = <CompactionDivider timestamp={group.timestamp} targetId={group.targetId} subagent={group.subagent} />;
-                        } else if (group.type === 'user') {
-                          content = <UserMessage msg={group.message} index={group.index} />;
-                        } else if (group.type === 'assistant') {
-                          content = (
-                            <AssistantCard
-                              msg={group.message}
-                              index={group.index}
-                              toolPairs={group.toolPairs}
-                              toolTimeline={group.toolTimeline}
-                            />
-                          );
-                        } else if (group.type === 'system-group') {
-                          content = <SystemGroup messages={group.messages} />;
-                        }
-                        if (!content) return null;
-                        return (
-                          <div key={`${group.type}-${groupIndex}`} style={TRANSCRIPT_ITEM_STYLE}>
-                            {content}
-                          </div>
-                        );
-                      })}
+                      ) : <TranscriptRows key={id} groups={groupedMessages} deferContent={deferContent} />}
                       <div ref={bottomRef} data-testid="conversation-bottom-sentinel" className="h-px" />
                     </div>
                     {isLive && showScrollToBottom && (
@@ -538,7 +574,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                   {hasTranscript && (
                     <Minimap
                       segments={minimapSegments}
-                      viewport={minimapViewport}
+                      conversationRef={conversationRef}
                       onJump={(targetId) => {
                         scrollElementIntoConversation(targetId, 'start');
                       }}

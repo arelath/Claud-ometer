@@ -1,14 +1,17 @@
 import fs from 'fs';
 import path from 'path';
-import readline from 'readline';
+import * as zlib from 'node:zlib';
+import { Transform } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
+import { Decompress } from 'fzstd';
 import { getAgentDataDir } from '@/lib/agent-data/data-source';
 import { codexEnvelopeSchema, type CodexEnvelope } from './schema';
 
 const JSONL_READ_CHUNK_SIZE = 1024 * 1024;
-export const FIRST_LINE_READ_CAP = 1024 * 1024;
+const FIRST_LINE_READ_CAP = 1024 * 1024;
 const YEAR_DIR_PATTERN = /^\d{4}$/;
 const MONTH_OR_DAY_DIR_PATTERN = /^\d{2}$/;
-const ROLLOUT_FILE_PATTERN = /^rollout-.*\.jsonl$/;
+const ROLLOUT_FILE_PATTERN = /^rollout-.*\.jsonl(?:\.zst)?$/;
 
 export function getCodexDir(): string {
   return getAgentDataDir('codex');
@@ -42,82 +45,79 @@ function parseCodexJsonlLine(line: string): CodexEnvelope | null {
   }
 }
 
-function readFirstLine(filePath: string, maxBytes = FIRST_LINE_READ_CAP): string {
-  const fd = fs.openSync(filePath, 'r');
+// Node 22.15 added native Zstandard. Earlier supported runtimes use the
+// streaming JS decoder so discovery and detail reads have the same semantics.
+function zstdDecoder(): Transform {
+  if (zlib.createZstdDecompress) return zlib.createZstdDecompress({ chunkSize: 128 * 1024 });
+  const decoder = new Decompress(chunk => stream.push(Buffer.from(chunk)));
+  const stream = new Transform({
+    transform(chunk, _encoding, callback) {
+      try { decoder.push(chunk); callback(); } catch (error) { callback(error as Error); }
+    },
+    flush(callback) {
+      try { decoder.push(new Uint8Array(), true); callback(); } catch (error) { callback(error as Error); }
+    },
+  });
+  return stream;
+}
+
+async function* rolloutChunks(filePath: string, inputChunkSize = JSONL_READ_CHUNK_SIZE): AsyncGenerator<Buffer> {
+  const input = fs.createReadStream(filePath, { highWaterMark: inputChunkSize });
+  const stream = filePath.endsWith('.zst') ? input.pipe(zstdDecoder()) : input;
+  input.on('error', error => stream.destroy(error));
+  try {
+    for await (const chunk of stream) yield chunk as Buffer;
+  } finally {
+    input.destroy();
+    stream.destroy();
+  }
+}
+
+export async function readCodexPrefix(filePath: string, maxBytes = FIRST_LINE_READ_CAP): Promise<{ text: string; complete: boolean }> {
+  let length = 0;
   const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  try {
-    while (totalBytes < maxBytes) {
-      const remaining = maxBytes - totalBytes;
-      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
-      if (bytesRead === 0) break;
-      const chunk = buffer.subarray(0, bytesRead);
-      const newlineIndex = chunk.indexOf(0x0a);
-      if (newlineIndex >= 0) {
-        chunks.push(chunk.subarray(0, newlineIndex));
-        break;
-      }
-      chunks.push(chunk);
-      totalBytes += bytesRead;
-    }
-  } finally {
-    fs.closeSync(fd);
+  for await (const chunk of rolloutChunks(filePath, 32 * 1024)) {
+    const remaining = maxBytes - length;
+    chunks.push(chunk.subarray(0, remaining));
+    length += Math.min(remaining, chunk.length);
+    if (chunk.length > remaining) return { text: Buffer.concat(chunks).toString('utf8'), complete: false };
   }
-
-  return Buffer.concat(chunks).toString('utf-8').replace(/\r$/, '');
+  return { text: Buffer.concat(chunks).toString('utf8'), complete: true };
 }
 
-export function isValidCodexSessionFile(filePath: string): boolean {
-  try {
-    const firstLine = readFirstLine(filePath);
-    const record = parseCodexJsonlLine(firstLine);
-    if (record?.type !== 'session_meta') return false;
-    const originator = record.payload?.originator;
-    return typeof originator === 'string' && originator.toLowerCase().startsWith('codex');
-  } catch {
-    return false;
-  }
-}
-
-export function forEachCodexJsonlLineSync(filePath: string, callback: (record: CodexEnvelope) => void): void {
+export async function forEachCodexJsonlLine(filePath: string, callback: (record: CodexEnvelope) => void, endOffset?: number): Promise<void> {
   if (!fs.existsSync(filePath)) return;
+  if (endOffset != null && (!Number.isSafeInteger(endOffset) || endOffset < 0)) {
+    throw new Error(`Invalid Codex history boundary ${endOffset} for ${filePath}`);
+  }
+  if (endOffset === 0) return;
 
-  const buffer = Buffer.allocUnsafe(JSONL_READ_CHUNK_SIZE);
-  const fd = fs.openSync(filePath, 'r');
+  const decoder = new StringDecoder('utf8');
   let carry = '';
-
-  try {
-    while (true) {
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
-      if (bytesRead === 0) break;
-
-      carry += buffer.subarray(0, bytesRead).toString('utf-8');
-      const lines = carry.split(/\r?\n/);
-      carry = lines.pop() || '';
-
-      for (const line of lines) {
-        const parsed = parseCodexJsonlLine(line);
-        if (parsed) callback(parsed);
-      }
-    }
-
-    const parsed = parseCodexJsonlLine(carry);
-    if (parsed) callback(parsed);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-export async function forEachCodexJsonlLine(filePath: string, callback: (record: CodexEnvelope) => void | Promise<void>): Promise<void> {
-  if (!fs.existsSync(filePath)) return;
-  const fileStream = fs.createReadStream(filePath);
-  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
-
-  for await (const line of rl) {
+  let position = 0;
+  const emit = (line: string) => {
     const parsed = parseCodexJsonlLine(line);
-    if (parsed) await callback(parsed);
+    if (parsed) callback(parsed);
+  };
+  for await (const chunk of rolloutChunks(filePath)) {
+    const bytes = endOffset == null ? chunk : chunk.subarray(0, endOffset - position);
+    position += bytes.length;
+    const lines = decoder.write(bytes).split('\n');
+    // Search only the new bytes for line breaks. A single embedded image can
+    // span hundreds of chunks.
+    for (let index = 0; index < lines.length - 1; index++) {
+      emit(carry + lines[index]);
+      carry = '';
+    }
+    carry += lines[lines.length - 1];
+    if (position === endOffset) break;
   }
+  carry += decoder.end();
+  if (endOffset != null) {
+    if (position !== endOffset) throw new Error(`Invalid Codex history boundary ${endOffset} for ${filePath}`);
+    if (carry) throw new Error(`Codex history boundary ${endOffset} is not a record boundary for ${filePath}`);
+  }
+  if (carry) emit(carry);
 }
 
 export function listCodexSessionFiles(sessionsDir = getCodexSessionsDir()): string[] {
@@ -135,7 +135,7 @@ export function listCodexSessionFiles(sessionsDir = getCodexSessionsDir()): stri
         const dayDir = path.join(monthDir, day.name);
         for (const entry of fs.readdirSync(dayDir, { withFileTypes: true })) {
           const entryPath = path.join(dayDir, entry.name);
-          if (entry.isFile() && ROLLOUT_FILE_PATTERN.test(entry.name) && isValidCodexSessionFile(entryPath)) {
+          if (entry.isFile() && ROLLOUT_FILE_PATTERN.test(entry.name)) {
             files.push(entryPath);
           }
         }

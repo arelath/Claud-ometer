@@ -10,7 +10,7 @@ import {
   normalizeTimeZone,
 } from '@/lib/analytics-time';
 import { addChangeTotals, zeroChangeTotals } from '@/lib/claude-data/change-utils';
-import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { addCosts, recordedCostEstimates, zeroCosts } from '@/lib/claude-data/cost-utils';
 import type {
   AnalyticsTimeBucket,
   BucketGranularity,
@@ -23,6 +23,7 @@ import type {
   DailyModelTokens,
   ModelUsage,
   ProjectInfo,
+  RecordedUsageCost,
   SessionInfo,
 } from '@/lib/claude-data/types';
 import type { TimeRangeParams } from '@/lib/time-range';
@@ -64,6 +65,7 @@ export interface CachedModelUsage {
 }
 
 export interface CachedSessionSummary {
+  recordedUsageCost?: RecordedUsageCost;
   cacheVersion: number;
   parserVersion: string;
   provider: AgentKind;
@@ -138,6 +140,7 @@ export function getSummaryModelUsage(summary: CachedSessionSummary): Record<stri
 }
 
 export function calculateSummaryCosts(summary: CachedSessionSummary): CostEstimates {
+  if (summary.recordedUsageCost) return recordedCostEstimates(summary.recordedUsageCost.usd);
   let costs = zeroCosts();
   for (const [model, usage] of Object.entries(getSummaryModelUsage(summary))) {
     costs = addCosts(
@@ -182,6 +185,7 @@ export function summaryToSessionInfo(summary: CachedSessionSummary): SessionInfo
     totalCacheWriteTokens: summary.tokenTotals.cacheWrite,
     estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
     estimatedCosts,
+    recordedUsageCost: summary.recordedUsageCost,
     model: summary.model,
     models: summary.models,
     gitBranch: summary.gitBranch,
@@ -296,7 +300,7 @@ export function summariesToDashboardStats(summaries: CachedSessionSummary[], ran
       totalMessages += event.messageCount;
 
       const tokens = usageEventTokenTotal(event);
-      if (tokens > 0) {
+      if (tokens > 0 || hasUsageEventCost(event)) {
         const model = event.model || 'unknown';
         bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
         bucket.costsByModel[model] = addCosts(bucket.costsByModel[model] || zeroCosts(), event.estimatedCosts);
@@ -426,7 +430,7 @@ export function summariesToCostAnalytics(
       project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
       if (!project.lastActive || event.timestamp > project.lastActive) project.lastActive = event.timestamp;
 
-      if (tokens <= 0) continue;
+      if (tokens <= 0 && !hasUsageEventCost(event)) continue;
 
       const model = event.model || 'unknown';
       bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
@@ -525,6 +529,10 @@ function isEventInRange(timestamp: string, context: AggregationContext): boolean
 
 function usageEventTokenTotal(event: CachedUsageEvent): number {
   return event.inputTokens + event.outputTokens + event.cacheReadTokens + event.cacheWriteTokens;
+}
+
+function hasUsageEventCost(event: CachedUsageEvent): boolean {
+  return Object.values(event.estimatedCosts).some(cost => cost > 0);
 }
 
 function ensureBucket(

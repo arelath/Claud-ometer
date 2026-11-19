@@ -1,5 +1,5 @@
 import type { DashboardStats, ProjectInfo, SessionDetail, SessionInfo } from '@/lib/claude-data/types';
-import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { addCosts, recordedCostEstimates, zeroCosts } from '@/lib/claude-data/cost-utils';
 import { zeroChangeTotals } from '@/lib/claude-data/change-utils';
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
 import { AgentDataCache } from '@/lib/agent-data/cache';
@@ -21,7 +21,7 @@ import { buildChangeEvents, buildUsageEvents } from '@/lib/agent-data/event-metr
 
 const parsedCache = new AgentDataCache<CopilotParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const COPILOT_SESSION_SUMMARY_PARSER_VERSION = 'copilot-summary-v8';
+export const COPILOT_SESSION_SUMMARY_PARSER_VERSION = 'copilot-summary-v12';
 
 async function parseDiscoveredSession(fileInfo: CopilotSessionFileInfo): Promise<CopilotParsedSession> {
   const cached = parsedCache.get({ provider: 'copilot', filePath: fileInfo.filePath, signature: fileInfo.sourceSignature, scope: 'detail' });
@@ -96,7 +96,7 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
 
   if (fileInfo.sourceKind === 'legacy') {
     const summary = parseCopilotSessionSummaryFile(fileInfo.filePath, fileInfo);
-    const estimatedCosts = calculateCosts(summary.modelUsage);
+    const estimatedCosts = summary.recordedUsageCost ? recordedCostEstimates(summary.recordedUsageCost.usd) : calculateCosts(summary.modelUsage);
     const routeId = makeRouteId('copilot', getRouteNativeId(fileInfo));
     const projectRouteId = qualifyProjectId('copilot', fileInfo.nativeProjectId);
     const info: SessionInfo = {
@@ -123,6 +123,7 @@ function buildLightweightSessionInfo(fileInfo: CopilotSessionFileInfo): SessionI
       totalCacheWriteTokens: summary.tokenUsage.cache_creation_input_tokens,
       estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
       estimatedCosts,
+      recordedUsageCost: summary.recordedUsageCost,
       model: summary.model,
       models: summary.models,
       gitBranch: '',
@@ -334,6 +335,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: summary.modelUsage,
+    recordedUsageCost: summary.recordedUsageCost,
   };
 
   return {
@@ -367,6 +369,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
       reasoningOutput: summary.reasoningOutputTokens,
     },
     modelUsage: summary.modelUsage,
+    recordedUsageCost: summary.recordedUsageCost,
     changeTotals,
     usageEvents: buildUsageEvents(parsed.detail.messages, summaryMetrics),
     changeEvents: buildChangeEvents(parsed.detail.messages),
@@ -427,6 +430,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
         reasoningOutput: summary.reasoningOutputTokens,
       },
       modelUsage: summary.modelUsage,
+      recordedUsageCost: summary.recordedUsageCost,
       changeTotals: zeroChangeTotals(),
       toolsUsed: summary.toolsUsed,
       compaction: {

@@ -61,7 +61,7 @@ vi.mock('@/hooks/use-session-view-state', () => ({
       groupedMessages: transcriptItems,
       mainView: detailState.mainView,
       minimapSegments: [],
-      minimapViewport: { topPct: 0, heightPct: 25 },
+      deferContent: false,
       preset: 'narrative',
       presetCounts: { narrative: 2, tools: 4, all: 5 },
       showScrollToBottom: false,
@@ -284,6 +284,13 @@ describe('session detail page', () => {
     expect(screen.getByText('Raw Session File')).toBeInTheDocument();
     expect(screen.getByText('session-1.jsonl')).toBeInTheDocument();
     expect(screen.getByLabelText('Copy raw session file path: session-1.jsonl')).toBeInTheDocument();
+  });
+
+  it('labels recorded Copilot credit values separately from estimates', async () => {
+    detailState.session = { ...session(), recordedUsageCost: { usd: 0.40530656, credits: 40.530656, timestamp: '2026-09-16T18:30:38.819Z' }, estimatedCosts: { api: 0.40530656, conservative: 0.40530656, subscription: 0.40530656 } };
+    renderPage();
+    expect(await screen.findByText('Recorded Usage')).toHaveAttribute('title', expect.stringContaining('40.530656 recorded Copilot AI credits'));
+    expect(screen.getByText('$0.41')).toBeInTheDocument();
   });
 
   it('renders live changes mode and live send controls', async () => {

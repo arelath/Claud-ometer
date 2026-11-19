@@ -4,6 +4,12 @@ import type { AgentKind } from '@/lib/agent-data/types';
 /** Cost estimates in all three modes */
 export type CostEstimates = Record<CostMode, number>;
 
+export interface RecordedUsageCost {
+  usd: number;
+  credits: number;
+  timestamp: string;
+}
+
 export interface DailyActivity {
   date: string;
   messageCount: number;
@@ -180,6 +186,7 @@ export interface CompactionInfo {
 }
 
 export interface SessionInfo {
+  recordedUsageCost?: RecordedUsageCost;
   id: string;
   agentKind?: AgentKind;
   nativeId?: string;
@@ -312,6 +319,7 @@ export interface SessionMessageBlockDisplay {
   summary: string;
   details: SessionToolCallDetail[];
   content?: string;
+  outputParts?: Array<{ label?: string; text: string }>;
   images?: SessionMessageImageDisplay[];
 }
 
@@ -331,7 +339,12 @@ export interface SessionSubagentDisplay {
 }
 
 export interface SessionMessageDisplay {
-  role: 'user' | 'assistant' | 'system' | 'tool-use' | 'tool-result' | 'command';
+  role: 'user' | 'assistant' | 'system' | 'tool-use' | 'tool-result' | 'command' | 'agent-message';
+  communication?: {
+    kind: 'Task assignment' | 'Follow-up task' | 'Agent message' | 'Final report';
+    sender?: string;
+    recipient?: string;
+  };
   content: string;
   timestamp: string;
   messageId?: string;

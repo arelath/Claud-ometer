@@ -305,4 +305,30 @@ describe('Codex tool parser', () => {
     expect(block.title).toBe('exec_command_end');
     expect(block.content).toBe('enriched output');
   });
+
+  it.each([false, true])('unpacks labeled and plain tool returns (serialized: %s)', (serialize) => {
+    const report = '# Report\r\nFirst line\r\nSecond line';
+    const output = [
+      { type: 'input_text', text: 'Script completed\nOutput:\n' },
+      { type: 'input_text', text: JSON.stringify(['audit', report]) },
+      { type: 'output_text', text: 'D:\\new\\notes.md' },
+      { type: 'input_image', image_url: 'data:image/png;base64,AAAA' },
+      { type: 'resource', uri: 'file:///report.md' },
+    ];
+    const results = collectCodexToolResults([{
+      type: 'response_item',
+      payload: { type: 'custom_tool_call_output', call_id: 'exec', output: serialize ? JSON.stringify(output) : output },
+    }]);
+
+    const block = buildCodexToolResultBlock(results.get('exec')!);
+    expect(block.outputParts).toEqual([
+      { text: output[0].text },
+      { label: 'audit', text: report },
+      { text: output[2].text },
+      { text: JSON.stringify(output[4], null, 2) },
+    ]);
+    expect(block.content).toContain(report);
+    expect(block.content).not.toContain('input_text');
+    expect(block.images).toHaveLength(1);
+  });
 });

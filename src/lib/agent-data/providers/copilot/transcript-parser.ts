@@ -1,13 +1,16 @@
 import path from 'path';
+import { parsePatch } from 'diff';
 import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
-import { addCosts, zeroCosts } from '@/lib/claude-data/cost-utils';
+import { addCosts, recordedCostEstimates, zeroCosts } from '@/lib/claude-data/cost-utils';
 import type {
   CostEstimates,
+  RecordedUsageCost,
   SessionArtifactDisplay,
   SessionDetail,
   SessionInfo,
   SessionMessageBlockDisplay,
   SessionMessageDisplay,
+  SessionSubagentDisplay,
   SessionToolCallDetail,
   SessionToolCallDisplay,
   TokenUsage,
@@ -32,6 +35,7 @@ export interface CopilotParsedSession {
 }
 
 export interface CopilotParsedSessionSummary {
+  recordedUsageCost?: RecordedUsageCost;
   nativeId: string;
   routeNativeId: string;
   title?: string;
@@ -311,7 +315,6 @@ function parseApplyPatchInput(input: string): ParsedApplyPatchEdit[] {
   let oldLines: string[] = [];
   let newLines: string[] = [];
   let location: string | undefined;
-  let hunkCountForFile = 0;
 
   const flushHunk = () => {
     if (!filePath) return;
@@ -320,7 +323,7 @@ function parseApplyPatchInput(input: string): ParsedApplyPatchEdit[] {
       path: filePath,
       oldText: oldLines.join('\n'),
       newText: newLines.join('\n'),
-      location: location && location !== '@@' ? location : hunkCountForFile > 1 ? `hunk ${hunkCountForFile}` : undefined,
+      location: location && location !== '@@' ? location : undefined,
     });
     oldLines = [];
     newLines = [];
@@ -333,7 +336,6 @@ function parseApplyPatchInput(input: string): ParsedApplyPatchEdit[] {
     oldLines = [];
     newLines = [];
     location = operation === 'add' || operation === 'delete' ? 'line 1' : undefined;
-    hunkCountForFile = operation === 'add' || operation === 'delete' ? 1 : 0;
   };
 
   for (const line of input.replace(/\r\n?/g, '\n').split('\n')) {
@@ -363,7 +365,6 @@ function parseApplyPatchInput(input: string): ParsedApplyPatchEdit[] {
 
     if (line.startsWith('@@')) {
       flushHunk();
-      hunkCountForFile += 1;
       location = line.trim();
       continue;
     }
@@ -418,6 +419,34 @@ function getApplyPatchPaths(args: Record<string, unknown>): string[] {
   const input = getApplyPatchInput(args);
   if (!input) return [];
   return Array.from(new Set(parseApplyPatchInput(input).map(edit => edit.path).filter(Boolean)));
+}
+
+function applyCompletedPatchArtifact(tool: SessionToolCallDisplay | undefined, data: Record<string, unknown>, content: string): void {
+  if (tool?.name !== 'apply_patch' || data.success !== true || !content.includes('@@ ')) return;
+  try {
+    const edits = parsePatch(content).flatMap(patch => {
+      const filePath = patch.newFileName === '/dev/null' ? patch.oldFileName : patch.newFileName;
+      if (!filePath) return [];
+      return patch.hunks.map(hunk => ({
+        path: filePath.replace(/^[ab]\//, ''),
+        oldText: hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('-')).map(line => line.slice(1)).join('\n'),
+        newText: hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('+')).map(line => line.slice(1)).join('\n'),
+        // Artifacts are applied sequentially, so later hunks use the position
+        // after earlier hunks in this same patch have shifted the file.
+        location: `line ${Math.max(1, hunk.newStart)}`,
+        includeWhenEmpty: true,
+      }));
+    });
+    if (!edits.length) return;
+    tool.artifact = {
+      kind: 'diff', title: `${edits.length} patch edits`, edits,
+      oldText: edits.map(edit => edit.oldText).join('\n'),
+      newText: edits.map(edit => edit.newText).join('\n'),
+      includeWhenEmpty: true,
+    };
+  } catch {
+    // Partial completion output must not erase the original patch request.
+  }
 }
 
 function buildDiffArtifact(rawName: string, args: Record<string, unknown>, filePath: string | undefined): SessionArtifactDisplay | undefined {
@@ -599,11 +628,18 @@ function buildToolResultBlock(data: Record<string, unknown>, startTool?: Session
       details.push(detail);
     }
   }
-  addDetail(details, 'error', getOptionalString(data, 'error') || getOptionalString(data, 'message'));
+  const error = asRecord(data.error);
+  const errorMessage = getOptionalString(data, 'error')
+    || (error && getOptionalString(error, 'message'))
+    || getOptionalString(data, 'message');
+  addDetail(details, 'error', errorMessage);
 
+  const result = asRecord(data.result);
   const rawContent = getOptionalString(data, 'output')
     || getOptionalString(data, 'result')
+    || (result && (getOptionalString(result, 'detailedContent') || getOptionalString(result, 'content')))
     || getOptionalString(data, 'content')
+    || errorMessage
     || '';
   const content = images.length > 0 && rawContent.replace(/\s+/g, '').startsWith(images[0]?.url.split(',')[1] || '\0')
     ? ''
@@ -747,7 +783,9 @@ function buildBaseSessionInfo(
 ): Omit<SessionDetail, 'messages'> {
   const routeId = makeRouteId('copilot', summary.routeNativeId);
   const projectRouteId = qualifyProjectId('copilot', summary.nativeProjectId);
-  const estimatedCosts = calculateCopilotCosts(summary.modelUsage);
+  const estimatedCosts = summary.recordedUsageCost
+    ? recordedCostEstimates(summary.recordedUsageCost.usd)
+    : calculateCopilotCosts(summary.modelUsage);
   return {
     id: routeId,
     agentKind: 'copilot',
@@ -772,6 +810,7 @@ function buildBaseSessionInfo(
     totalCacheWriteTokens: summary.tokenUsage.cache_creation_input_tokens,
     estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
     estimatedCosts,
+    recordedUsageCost: summary.recordedUsageCost,
     model: summary.model,
     models: summary.models,
     gitBranch: '',
@@ -960,17 +999,55 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
   const toolsUsed: Record<string, number> = {};
   const seenToolCallIds = new Set<string>();
   const seenMessageIds = new Set<string>();
+  const startedTools = new Map<string, SessionToolCallDisplay>();
+  const agentModels = new Map<string, string>();
   const tokenUsage = zeroCopilotUsage();
   const modelUsage: Record<string, CachedModelUsage> = {};
   const models = new Set<string>();
   const time = { first: fileInfo.createdAt || '', last: fileInfo.updatedAt || '' };
 
   const nativeId = fileInfo.nativeId || path.basename(path.dirname(filePath));
+  // CLI transcripts interleave child events with the root conversation. Use
+  // explicit agent and invocation IDs, never the model, to attribute them.
+  const subagents = new Map<string, SessionSubagentDisplay>();
+  const toolOwners = new Map<string, string>();
+  for (const record of records) {
+    const data = asRecord(record.data) || {};
+    if (record.type === 'tool.execution_start') {
+      const toolCallId = getOptionalString(data, 'toolCallId');
+      if (toolCallId) toolOwners.set(toolCallId, record.agentId || nativeId);
+    }
+  }
+  for (const record of records) {
+    if (!record.agentId) continue;
+    const data = asRecord(record.data) || {};
+    const existing = subagents.get(record.agentId);
+    const invocationId = record.type === 'subagent.started'
+      ? getOptionalString(data, 'toolCallId')
+      : getOptionalString(data, 'parentToolCallId');
+    subagents.set(record.agentId, {
+      id: record.agentId,
+      parentId: (invocationId && toolOwners.get(invocationId)) || existing?.parentId || nativeId,
+      nickname: getOptionalString(data, 'agentDisplayName') || existing?.nickname,
+      role: getOptionalString(data, 'agentName') || existing?.role,
+      depth: 1,
+    });
+  }
+  for (const subagent of subagents.values()) {
+    const seen = new Set([subagent.id]);
+    let parent = subagents.get(subagent.parentId);
+    while (parent && !seen.has(parent.id)) {
+      seen.add(parent.id);
+      subagent.depth++;
+      parent = subagents.get(parent.parentId);
+    }
+  }
   let title = fileInfo.title || '';
   let currentModel = '';
   let userMessageCount = 0;
   let assistantMessageCount = 0;
   let shutdownUsage: LegacyShutdownUsageSnapshot | null = null;
+  let recordedUsageCost: RecordedUsageCost | undefined;
 
   const recordTool = (tool: SessionToolCallDisplay) => {
     if (seenToolCallIds.has(tool.id)) return;
@@ -982,9 +1059,24 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
   for (const record of records) {
     const data = asRecord(record.data) || {};
     const timestamp = updateTime(record, data, time);
-    currentModel = normalizeCopilotModelId(getOptionalString(data, 'model')) || currentModel;
+    if (!record.agentId && (record.type === 'session.usage_checkpoint' || record.type === 'session.shutdown')) {
+      const nanoAiu = getOptionalNumber(data, 'totalNanoAiu');
+      if (nanoAiu != null && Number.isSafeInteger(nanoAiu) && nanoAiu >= 0) {
+        // Copilot's cumulative checkpoints are replacements, not increments.
+        // 1e9 nano-AIU = 1 AI credit; GitHub values one credit at $0.01.
+        recordedUsageCost = { usd: nanoAiu / 1e11, credits: nanoAiu / 1e9, timestamp };
+      }
+    }
+    const explicitModel = normalizeCopilotModelId(getOptionalString(data, 'model'));
+    const subagent = record.agentId ? subagents.get(record.agentId) : undefined;
+    if (record.agentId) {
+      if (explicitModel) agentModels.set(record.agentId, explicitModel);
+    } else {
+      currentModel = explicitModel || currentModel;
+    }
+    const messageModel = (record.agentId ? agentModels.get(record.agentId) : currentModel) || 'unknown';
 
-    if (record.type === 'session.shutdown') {
+    if (record.type === 'session.shutdown' && !record.agentId) {
       shutdownUsage = parseLegacyShutdownUsage(data) || shutdownUsage;
       continue;
     }
@@ -1000,9 +1092,13 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
       shutdownUsage = null;
     }
 
-    if (record.type === 'session.model_change') {
-      currentModel = normalizeCopilotModelId(getOptionalString(data, 'newModel')) || currentModel;
-      if (currentModel) models.add(currentModel);
+    if (record.type === 'session.start' || record.type === 'session.model_change') {
+      const model = normalizeCopilotModelId(getOptionalString(data, record.type === 'session.start' ? 'selectedModel' : 'newModel'));
+      if (model) {
+        if (record.agentId) agentModels.set(record.agentId, model);
+        else currentModel = model;
+        models.add(model);
+      }
       continue;
     }
 
@@ -1013,20 +1109,40 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
       userMessageCount++;
       title ||= firstLine(content);
       searchableParts.push(content);
-      messages.push({ role: 'user', content, timestamp, images: images.length > 0 ? images : undefined });
+      messages.push({ role: 'user', content, timestamp, subagent, images: images.length > 0 ? images : undefined });
+      continue;
+    }
+
+    if (record.type === 'tool.execution_start') {
+      const tool = buildToolStartCall(data);
+      if (!tool) continue;
+      if (!startedTools.has(tool.id)) startedTools.set(tool.id, tool);
+      if (seenToolCallIds.has(tool.id)) continue;
+      recordTool(tool);
+      messages.push({ role: 'tool-use', content: '', timestamp, model: messageModel, subagent, toolCalls: [tool] });
+      continue;
+    }
+
+    if (record.type === 'tool.execution_complete') {
+      const toolCallId = getOptionalString(data, 'toolCallId') || getOptionalString(data, 'id') || '';
+      const block = buildToolResultBlock(data, startedTools.get(toolCallId));
+      applyCompletedPatchArtifact(startedTools.get(toolCallId), data, block.content || '');
+      searchableParts.push(block.summary, block.content || '', ...block.details.map(detail => detail.value));
+      messages.push({ role: 'tool-result', content: block.summary, timestamp, model: messageModel, subagent, blocks: [block] });
       continue;
     }
 
     if (record.type !== 'assistant.message') continue;
 
     const outputTokens = getOptionalNumber(data, 'outputTokens') ?? getOptionalNumber(data, 'output_tokens') ?? 0;
-    if (outputTokens === 0 || !currentModel) continue;
 
-    const messageId = getOptionalString(data, 'messageId') || getOptionalString(data, 'id') || `${assistantMessageCount}`;
-    if (seenMessageIds.has(messageId)) continue;
-    seenMessageIds.add(messageId);
+    const messageId = getOptionalString(data, 'messageId') || getOptionalString(data, 'id') || record.id || `${assistantMessageCount}`;
+    const messageKey = JSON.stringify([record.agentId, messageId]);
+    if (seenMessageIds.has(messageKey)) continue;
+    seenMessageIds.add(messageKey);
 
     const content = getOptionalString(data, 'content') || '';
+    const reasoningText = getOptionalString(data, 'reasoningText') || '';
     const toolCalls = getToolRequests(data);
     const usage = {
       inputTokens: 0,
@@ -1036,24 +1152,29 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
       reasoningOutputTokens: 0,
     };
     const tokenUsageForMessage = toTokenUsage(usage);
-    const estimatedCosts = calculateCostAllModes(currentModel, 0, outputTokens, 0, 0);
+    const estimatedCosts = calculateCostAllModes(messageModel, 0, outputTokens, 0, 0);
 
     assistantMessageCount++;
-    models.add(currentModel);
+    if (messageModel !== 'unknown') models.add(messageModel);
     addCopilotUsage(tokenUsage, usage);
-    addModelUsage(modelUsage, currentModel, usage);
-    searchableParts.push(content);
-    for (const tool of toolCalls) recordTool(tool);
+    if (hasCopilotUsage(usage)) addModelUsage(modelUsage, messageModel, usage);
+    searchableParts.push(content, reasoningText);
+    for (const tool of toolCalls) {
+      startedTools.set(tool.id, tool);
+      recordTool(tool);
+    }
 
     messages.push({
       role: 'assistant',
       content,
       timestamp,
       messageId,
-      model: currentModel,
-      usage: tokenUsageForMessage,
-      estimatedCosts,
+      model: messageModel,
+      subagent,
+      usage: hasCopilotUsage(usage) ? tokenUsageForMessage : undefined,
+      estimatedCosts: hasCopilotUsage(usage) ? estimatedCosts : undefined,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      blocks: reasoningText ? [{ type: 'thinking', title: 'Reasoning', summary: reasoningText, content: reasoningText, details: [] }] : undefined,
     });
   }
 
@@ -1071,6 +1192,9 @@ function parseLegacyCopilotRecords(filePath: string, records: CopilotTranscriptR
   const summaryUsage = acceptedShutdownUsage?.usage || tokenUsage;
   const summaryModelUsage = acceptedShutdownUsage?.modelUsage || modelUsage;
   const summary: CopilotParsedSessionSummary = {
+    // Retain established token-based estimates when usage is available. A
+    // credit checkpoint supplies a price even when token events were ephemeral.
+    recordedUsageCost: !hasCopilotUsage(summaryUsage) ? recordedUsageCost : undefined,
     nativeId,
     routeNativeId: fileInfo.routeNativeId || `${fileInfo.workspaceHash}:${nativeId}`,
     title,

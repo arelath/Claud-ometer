@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { CostModeProvider } from '@/lib/cost-mode-context';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -25,6 +25,7 @@ import { findSegmentForRatio, Minimap, type MinimapSegment } from '@/components/
 import { SessionPill } from '@/components/session/session-pill';
 import { SessionRenderContext, type ArtifactViewerState, type SessionRenderContextValue } from '@/components/session/session-render-context';
 import { AssistantCard } from '@/components/session/transcript/AssistantTurn';
+import { DeferredTranscriptContent } from '@/components/session/transcript/DeferredTranscriptContent';
 import { BlockCard, CompactionDivider, SystemGroup, ThinkingSummary } from '@/components/session/transcript/SystemEvent';
 import { DetailPanel, ToolCallInline, ToolResultInline } from '@/components/session/transcript/ToolCall';
 import { UserMessage } from '@/components/session/transcript/UserTurn';
@@ -82,6 +83,49 @@ function toolResult(content = 'completed', exitCode = '0'): SessionMessageDispla
     }],
   };
 }
+
+it('renders each labeled tool return in its own expandable preview', () => {
+  const result = toolResult();
+  result.blocks![0].outputParts = [
+    { text: 'Script completed\nOutput:' },
+    { label: 'previous', text: 'D:\\new\\notes.md' },
+    { label: 'audit', text: 'First line\r\nSecond line\r\n3\r\n4\r\n5\r\nLast line' },
+  ];
+  const { container, openArtifact } = renderWithProviders(<ToolResultInline msg={result} />);
+
+  const previews = Array.from(container.querySelectorAll('pre'));
+  expect(previews.map(preview => preview.textContent)).toEqual([
+    'Script completed\nOutput:',
+    'D:\\new\\notes.md',
+    'First line\nSecond line\n3\n4\n5',
+  ]);
+  expect(screen.getByText('previous')).toBeVisible();
+  expect(screen.getByText('audit')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
+  expect(screen.getByText('Last line')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse 3 outputs' }));
+  expect(screen.getByText('Last line')).not.toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand 3 outputs' }));
+  expect(screen.getByText('Last line')).toBeVisible();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[1]);
+  expect(openArtifact).toHaveBeenCalledWith(expect.objectContaining({
+    title: 'audit', content: 'First line\nSecond line\n3\n4\n5\nLast line',
+  }));
+});
+
+it('can collapse multiple short returns even when none needs a preview', () => {
+  const result = toolResult();
+  result.blocks![0].outputParts = [{ text: 'first result' }, { text: '  ' }, { text: 'second result' }];
+  renderWithProviders(<ToolResultInline msg={result} />);
+
+  const toggle = screen.getByRole('button', { name: 'Collapse 2 outputs', expanded: true });
+  fireEvent.click(toggle);
+  expect(screen.getByText('first result')).not.toBeVisible();
+  expect(screen.getByText('second result')).not.toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand 2 outputs', expanded: false }));
+  expect(screen.getByText('first result')).toBeVisible();
+  expect(screen.getByText('second result')).toBeVisible();
+});
 
 const diffSummary: SessionDiffSummary = {
   fileCount: 1,
@@ -425,6 +469,34 @@ describe('session UI building blocks', () => {
     expect(screen.getByText('No file changes found in this session.')).toBeInTheDocument();
   });
 
+  it('keeps a deferred jump target reachable and preserves its content after reveal', () => {
+    let intersect: (entries: { target: Element; isIntersecting: boolean }[]) => void;
+    const unobserve = vi.fn();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: typeof intersect) { intersect = callback; }
+      observe() {}
+      unobserve = unobserve;
+    });
+    try {
+      render(<div data-transcript-scroll="">
+        <DeferredTranscriptContent enabled targetId="message-99" placeholderHeight={88}>
+          <input id="message-99" aria-label="Loaded result" />
+        </DeferredTranscriptContent>
+      </div>);
+      const placeholder = document.getElementById('message-99')!;
+      expect(placeholder).toHaveStyle({ height: '88px' });
+      expect(screen.queryByRole('textbox')).toBeNull();
+      act(() => intersect([{ target: placeholder, isIntersecting: true }]));
+      expect(unobserve).toHaveBeenCalledWith(placeholder);
+      const input = screen.getByRole('textbox');
+      fireEvent.change(input, { target: { value: 'visited' } });
+      act(() => intersect([{ target: placeholder, isIntersecting: false }]));
+      expect(input).toHaveValue('visited');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('renders minimap and jumps to clicked or keyboard-selected targets', () => {
     const segments: MinimapSegment[] = [
       { type: 'user', targetId: 'message-1', topPct: 0, heightPct: 2 },
@@ -432,15 +504,20 @@ describe('session UI building blocks', () => {
       { type: 'compaction', targetId: 'compact-1', topPct: 90, heightPct: 0.7 },
     ];
     const jump = vi.fn();
+    const pane = document.createElement('div');
+    Object.defineProperties(pane, { scrollHeight: { value: 1000 }, clientHeight: { value: 250 } });
 
     renderWithProviders(
       <>
         <SessionPill value="exit 0" tone="good" mono />
-        <Minimap segments={segments} viewport={{ topPct: 10, heightPct: 25 }} onJump={jump} />
+        <Minimap segments={segments} conversationRef={{ current: pane }} onJump={jump} />
       </>,
     );
 
     expect(findSegmentForRatio(segments, 0.51)?.targetId).toBe('message-2');
+    pane.scrollTop = 400;
+    fireEvent.scroll(pane);
+    expect(screen.getByTestId('session-minimap-indicator')).toHaveStyle({ top: '40%', height: '25%' });
     fireEvent.click(screen.getAllByTestId('session-minimap-segment')[1]);
     fireEvent.keyDown(screen.getByRole('button', { name: 'Session timeline' }), { key: 'End' });
     expect(jump).toHaveBeenCalledWith('message-2');

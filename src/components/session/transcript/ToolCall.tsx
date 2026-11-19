@@ -1,7 +1,8 @@
 'use client';
 
-import { AlertCircle, Check, FileText } from 'lucide-react';
-import type { SessionMessageDisplay, SessionMessageImageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
+import { useId, useState, type ReactNode } from 'react';
+import { AlertCircle, Check, ChevronDown, FileText } from 'lucide-react';
+import type { SessionMessageBlockDisplay, SessionMessageDisplay, SessionMessageImageDisplay, SessionToolCallDisplay } from '@/lib/claude-data/types';
 import { formatDisplayPath } from '@/lib/path-utils';
 import { getDetailKeyTail, normalizeDisplayNewlines, detailMatchesKey } from '@/lib/string-utils';
 import { guessCodeLanguage } from '@/lib/code-highlighting';
@@ -106,9 +107,9 @@ export function DetailPanel({ details, content, shownKeys = [], summaryLabel = '
       {filtered.length > 0 && filtered.length <= 2 && (
         <div className="px-2 py-1 space-y-1">
           {filtered.map((detail, idx) => (
-            <div key={`${detail.key}-${detail.value}-${idx}`} className="grid grid-cols-[80px_1fr] gap-1.5 text-[11px]">
+            <div key={`${detail.key}-${detail.value}-${idx}`} className="grid grid-cols-[80px_minmax(0,1fr)] gap-1.5 text-[11px]">
               <span className="text-muted-foreground truncate">{detail.label}</span>
-              <span className={`break-words ${usesMonospaceDetail(detail.key) ? 'font-mono text-[10px]' : ''}`}>
+              <span className={`whitespace-pre-wrap break-words ${usesMonospaceDetail(detail.key) ? 'font-mono text-[10px]' : ''}`}>
                 {formatDisplayValue(detail.key, detail.value, projectRoot)}
               </span>
             </div>
@@ -122,9 +123,9 @@ export function DetailPanel({ details, content, shownKeys = [], summaryLabel = '
           </summary>
           <div className="border-t border-border/30 px-2 py-1.5 space-y-1">
             {filtered.map((detail, idx) => (
-              <div key={`${detail.key}-${detail.value}-${idx}`} className="grid grid-cols-[80px_1fr] gap-1.5 text-[11px]">
+              <div key={`${detail.key}-${detail.value}-${idx}`} className="grid grid-cols-[80px_minmax(0,1fr)] gap-1.5 text-[11px]">
                 <span className="text-muted-foreground truncate">{detail.label}</span>
-                <span className={`break-words ${usesMonospaceDetail(detail.key) ? 'font-mono text-[10px]' : ''}`}>
+                <span className={`whitespace-pre-wrap break-words ${usesMonospaceDetail(detail.key) ? 'font-mono text-[10px]' : ''}`}>
                   {formatDisplayValue(detail.key, detail.value, projectRoot)}
                 </span>
               </div>
@@ -240,7 +241,7 @@ export function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
           </div>
         )}
         {pills.map((pill, index) => <SessionPill key={index} value={pill.value} mono={pill.mono} tone={pill.tone} />)}
-        {remainingDetails.length > 0 && <div className="shrink-0"><DetailPanel details={remainingDetails} shownKeys={shownKeys} /></div>}
+        {remainingDetails.length > 0 && <div className="max-w-full"><DetailPanel details={remainingDetails} shownKeys={shownKeys} /></div>}
       </div>
       {previewArtifact && (
         <ArtifactPreview
@@ -253,12 +254,47 @@ export function ToolCallInline({ tool }: { tool: SessionToolCallDisplay }) {
   );
 }
 
+function OutputGroup({ count, children }: { count: number; children: ReactNode }) {
+  const [expanded, setExpanded] = useState(true);
+  const bodyId = useId();
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        onClick={() => setExpanded(current => !current)}
+        className="mx-3 my-1 inline-flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+      >
+        <ChevronDown aria-hidden="true" className={`h-3 w-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        {expanded ? 'Collapse' : 'Expand'} {count} outputs
+      </button>
+      <div id={bodyId} hidden={!expanded}>{children}</div>
+    </div>
+  );
+}
+
 export function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
-  const { projectRoot } = useSessionRenderContext();
   const blocks = msg.blocks || [];
   const images = safeImages([...(msg.images || []), ...blocks.flatMap(block => block.images || [])]);
   if (blocks.length === 0 && !msg.content && images.length === 0) return null;
 
+  const parts = blocks.some(block => block.outputParts?.length)
+    ? blocks.flatMap(block => block.outputParts ?? (block.content ? [{ text: block.content }] : []))
+      .filter(part => part.label || part.text.trim())
+    : undefined;
+  const count = images.length + (parts?.length ?? blocks.filter(block => block.content?.trim()).length);
+  const content = <ToolResultContent msg={msg} parts={parts} images={images} />;
+  return count > 1 ? <OutputGroup count={count}>{content}</OutputGroup> : content;
+}
+
+function ToolResultContent({ msg, parts, images }: {
+  msg: SessionMessageDisplay;
+  parts: SessionMessageBlockDisplay['outputParts'];
+  images: SessionMessageImageDisplay[];
+}) {
+  const { projectRoot } = useSessionRenderContext();
+  const blocks = msg.blocks || [];
   const blockContent = normalizeDisplayNewlines(
     blocks
       .map(block => block.content)
@@ -285,6 +321,30 @@ export function ToolResultInline({ msg }: { msg: SessionMessageDisplay }) {
   const effectiveContent = blockContent || normalizedMessageContent;
   const contentLines = effectiveContent ? effectiveContent.split('\n') : [];
   const isShortOutput = contentLines.length > 0 && contentLines.length <= 4 && effectiveContent.length <= 300;
+
+  if (parts) {
+    return (
+      <div className={`${accent} space-y-2 px-3 py-1.5`}>
+        {parts.map((part, index) => {
+          const content = part.text.replace(/\r\n?/g, '\n');
+          if (!part.label && content.length <= 300 && content.split('\n').length <= 4) {
+            return (
+              <pre key={index} className={`whitespace-pre-wrap break-words font-mono text-[11px] leading-5 ${textColor}`}>{content}</pre>
+            );
+          }
+          const label = part.label || 'Tool output';
+          return (
+            <ArtifactPreview
+              key={index}
+              label={label}
+              artifact={{ title: label, kind: 'text', content, tone: outputTone, preserveEscapedNewlines: true }}
+            />
+          );
+        })}
+        {images.length > 0 && <ImagePreviewGrid images={images} />}
+      </div>
+    );
+  }
 
   if (isShortOutput && images.length === 0) {
     return (

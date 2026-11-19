@@ -1,4 +1,5 @@
-import { calculateCostAllModes, DEFAULT_COST_MODE } from '@/config/pricing';
+import { hourlyAnalyticsInputs } from './hourly-analytics-index';
+import { calculateCostAllModes, DEFAULT_COST_MODE, getModelPricing } from '@/config/pricing';
 import {
   bucketKeyFromLocalTimeParts,
   bucketKeyToDate,
@@ -22,6 +23,7 @@ import type {
   DailyModelTokens,
   ModelUsage,
   ProjectInfo,
+  RecordedUsageCost,
   SessionInfo,
 } from '@/lib/claude-data/types';
 import type { SqliteDatabase } from '@/lib/sqlite';
@@ -97,6 +99,7 @@ interface SessionSummaryScalarRow extends Record<string, unknown> {
   microcompactions?: number;
   compaction_tokens_saved?: number;
   compaction_timestamps_json?: string;
+  recorded_usage_cost_json?: string;
 }
 
 interface SessionModelUsageRow extends Record<string, unknown> {
@@ -121,6 +124,7 @@ interface SessionToolRow extends Record<string, unknown> {
 interface UsageAggregateRow extends Record<string, unknown> {
   utc_hour_ms: number;
   model: string;
+  has_recorded_cost: number;
   message_count: number;
   user_message_count: number;
   assistant_message_count: number;
@@ -242,7 +246,8 @@ const SESSION_SUMMARY_SCALAR_COLUMNS = `
   s.compactions,
   s.microcompactions,
   s.compaction_tokens_saved,
-  s.compaction_timestamps_json
+  s.compaction_timestamps_json,
+  s.recorded_usage_cost_json
 `;
 const UTC_RANGE_PADDING_MS = 36 * 60 * 60 * 1000;
 
@@ -348,6 +353,7 @@ function scalarRowToSummary(
 ): CachedSessionSummary {
   const models = parseStringArrayJson(row.models_json);
   return {
+    recordedUsageCost: parseRecordedUsageCost(row.recorded_usage_cost_json),
     cacheVersion: SESSION_SUMMARY_CACHE_VERSION,
     parserVersion: row.parser_version,
     provider: row.provider,
@@ -397,6 +403,17 @@ function scalarRowToSummary(
       compactionTimestamps: parseStringArrayJson(row.compaction_timestamps_json),
     },
   };
+}
+
+function parseRecordedUsageCost(value: string | undefined): RecordedUsageCost | undefined {
+  if (!value) return undefined;
+  try {
+    const cost = JSON.parse(value) as RecordedUsageCost | null;
+    if (cost && Number.isFinite(cost.usd) && cost.usd >= 0 && Number.isFinite(cost.credits) && cost.credits >= 0 && typeof cost.timestamp === 'string') return cost;
+  } catch {
+    // Older or malformed cache entries have no recorded-cost fallback.
+  }
+  return undefined;
 }
 
 function scalarRowsToSessions(db: SqliteDatabase, rows: SessionSummaryScalarRow[]): SessionInfo[] {
@@ -472,14 +489,15 @@ function rowCosts(row: UsageAggregateRow): CostEstimates {
     conservative: numberValue(row.cost_conservative),
     subscription: numberValue(row.cost_subscription),
   };
-  if (stored.api || stored.conservative || stored.subscription || usageTokenTotal(row) === 0) return stored;
-  return calculateCostAllModes(
+  if (row.has_recorded_cost || usageTokenTotal(row) === 0) return stored;
+  const current = calculateCostAllModes(
     row.model || 'unknown',
     numberValue(row.input_tokens),
     numberValue(row.output_tokens),
     numberValue(row.cache_write_tokens),
     numberValue(row.cache_read_tokens),
   );
+  return current.api || !stored.api || getModelPricing(row.model) ? current : stored;
 }
 
 function ensureBucket(
@@ -648,14 +666,13 @@ function loadRecentSessions(db: SqliteDatabase, sourceKeys: Set<string>): Sessio
       `SELECT ${SESSION_SUMMARY_SCALAR_COLUMNS}
        FROM session_summaries s
        WHERE source_key IN (${chunk.map(() => '?').join(',')})
-       ORDER BY created_at_ms DESC`,
+       ORDER BY created_at_ms DESC, source_key LIMIT 10`,
       chunk,
     ));
   }
 
-  return scalarRowsToSessions(db, rows)
-    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
-    .slice(0, 10);
+  rows.sort((left, right) => right.created_at_ms - left.created_at_ms || left.source_key.localeCompare(right.source_key));
+  return scalarRowsToSessions(db, rows.slice(0, 10));
 }
 
 function longestSession(db: SqliteDatabase, providerList: AgentKind[]) {
@@ -692,200 +709,208 @@ export function getDashboardStatsSql(
   const providerList = providerKinds(providers);
   if (providerList.length === 0) return emptyDashboardStats(range);
 
-  return querySessionSummaryIndex((db) => {
-    const context = getAggregationContext(range);
-    const buckets = new Map<string, MutableAnalyticsTimeBucket>();
-    const localHourCache = new Map<number, { key: string; hour: number } | null>();
-    const modelUsage: DashboardStats['modelUsage'] = {};
-    const hourCounts: Record<string, number> = {};
-    const activeSessionIds = new Set<string>();
-    const activeProjectIds = new Set<string>();
-    const activeUsageSourceKeys = new Set<string>();
-    let estimatedCosts = zeroCosts();
-    let changeTotals = zeroChangeTotals();
-    let totalMessages = 0;
-    let totalTokens = 0;
+  return querySessionSummaryIndex(db => readDashboardStats(db, providerList, range, true));
+}
 
-    for (const key of listBucketKeys(range, context.granularity)) {
-      ensureBucket(buckets, key, context.granularity);
+function readDashboardStats(
+  db: SqliteDatabase,
+  providerList: AgentKind[],
+  range: TimeRangeParams,
+  includeSessionDetails: boolean,
+): DashboardStats {
+  const inputs = hourlyAnalyticsInputs(db);
+  const context = getAggregationContext(range);
+  const buckets = new Map<string, MutableAnalyticsTimeBucket>();
+  const localHourCache = new Map<number, { key: string; hour: number } | null>();
+  const modelUsage: DashboardStats['modelUsage'] = {};
+  const hourCounts: Record<string, number> = {};
+  const activeSessionIds = new Set<string>();
+  const activeProjectIds = new Set<string>();
+  const activeUsageSourceKeys = new Set<string>();
+  let estimatedCosts = zeroCosts();
+  let changeTotals = zeroChangeTotals();
+  let totalMessages = 0;
+  let totalTokens = 0;
+
+  for (const key of listBucketKeys(range, context.granularity)) {
+    ensureBucket(buckets, key, context.granularity);
+  }
+
+  const usageParams: unknown[] = [];
+  const usageWhere = [providerFilterSql(providerList, usageParams), VISIBLE_SUMMARY_SQL];
+  appendTimestampBounds(usageWhere, usageParams, 'u.utc_hour_ms', range);
+  const usageRows = db.query<UsageAggregateRow>(
+    `SELECT
+       u.utc_hour_ms AS utc_hour_ms,
+       u.model AS model,
+       s.recorded_usage_cost_json IS NOT NULL AS has_recorded_cost,
+       SUM(u.message_count) AS message_count,
+       SUM(u.user_message_count) AS user_message_count,
+       SUM(u.assistant_message_count) AS assistant_message_count,
+       SUM(u.tool_call_count) AS tool_call_count,
+       SUM(u.input_tokens) AS input_tokens,
+       SUM(u.output_tokens) AS output_tokens,
+       SUM(u.cache_read_tokens) AS cache_read_tokens,
+       SUM(u.cache_write_tokens) AS cache_write_tokens,
+       SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
+       SUM(u.cost_api) AS cost_api,
+       SUM(u.cost_conservative) AS cost_conservative,
+       SUM(u.cost_subscription) AS cost_subscription,
+       SUM(u.activity_count) AS activity_count
+     FROM ${inputs.usage} u
+     JOIN session_summaries s ON s.source_key = u.source_key
+     WHERE ${usageWhere.join(' AND ')}
+     GROUP BY utc_hour_ms, u.model, has_recorded_cost
+     ORDER BY utc_hour_ms ASC`,
+    usageParams,
+  );
+
+  for (const row of usageRows) {
+    const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
+    if (!localBucket) continue;
+
+    const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
+    const costs = rowCosts(row);
+    const tokens = usageTokenTotal(row);
+    const model = row.model || 'unknown';
+
+    bucket.messageCount += numberValue(row.message_count);
+    bucket.userMessageCount += numberValue(row.user_message_count);
+    bucket.assistantMessageCount += numberValue(row.assistant_message_count);
+    bucket.toolCallCount += numberValue(row.tool_call_count);
+    totalMessages += numberValue(row.message_count);
+    hourCounts[String(localBucket.hour)] = (hourCounts[String(localBucket.hour)] || 0) + numberValue(row.activity_count);
+
+    if (tokens > 0 || Object.values(costs).some(cost => cost > 0)) {
+      bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
+      bucket.costsByModel[model] = addCosts(bucket.costsByModel[model] || zeroCosts(), costs);
+      estimatedCosts = addCosts(estimatedCosts, costs);
+      totalTokens += tokens;
+      addModelUsage(modelUsage, model, row, costs);
     }
+  }
 
-    const usageParams: unknown[] = [];
-    const usageWhere = [providerFilterSql(providerList, usageParams), VISIBLE_SUMMARY_SQL, 'u.timestamp_ms > 0'];
-    appendTimestampBounds(usageWhere, usageParams, 'u.timestamp_ms', range);
-    const usageRows = db.query<UsageAggregateRow>(
-      `SELECT
-         CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
-         u.model AS model,
-         SUM(u.message_count) AS message_count,
-         SUM(u.user_message_count) AS user_message_count,
-         SUM(u.assistant_message_count) AS assistant_message_count,
-         SUM(u.tool_call_count) AS tool_call_count,
-         SUM(u.input_tokens) AS input_tokens,
-         SUM(u.output_tokens) AS output_tokens,
-         SUM(u.cache_read_tokens) AS cache_read_tokens,
-         SUM(u.cache_write_tokens) AS cache_write_tokens,
-         SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
-         SUM(u.cost_api) AS cost_api,
-         SUM(u.cost_conservative) AS cost_conservative,
-         SUM(u.cost_subscription) AS cost_subscription,
-         SUM(CASE
-           WHEN u.assistant_message_count > 0
-             OR (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens) > 0
-           THEN 1 ELSE 0 END) AS activity_count
-       FROM usage_events u
-       JOIN session_summaries s ON s.source_key = u.source_key
-       WHERE ${usageWhere.join(' AND ')}
-       GROUP BY utc_hour_ms, u.model
-       ORDER BY utc_hour_ms ASC`,
-      usageParams,
-    );
+  const changeParams: unknown[] = [];
+  const changeWhere = [providerFilterSql(providerList, changeParams), VISIBLE_SUMMARY_SQL];
+  appendTimestampBounds(changeWhere, changeParams, 'c.utc_hour_ms', range);
+  const changeRows = db.query<ChangeAggregateRow>(
+    `SELECT
+       c.utc_hour_ms AS utc_hour_ms,
+       SUM(c.added_lines) AS addedLines,
+       SUM(c.removed_lines) AS removedLines,
+       SUM(c.net_line_delta) AS netLineDelta,
+       SUM(c.changed_lines) AS changedLines,
+       SUM(c.file_count) AS fileCount,
+       SUM(c.edit_count) AS editCount
+     FROM ${inputs.changes} c
+     JOIN session_summaries s ON s.source_key = c.source_key
+     WHERE ${changeWhere.join(' AND ')}
+     GROUP BY utc_hour_ms
+     ORDER BY utc_hour_ms ASC`,
+    changeParams,
+  );
 
-    for (const row of usageRows) {
-      const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
-      if (!localBucket) continue;
-
-      const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
-      const costs = rowCosts(row);
-      const tokens = usageTokenTotal(row);
-      const model = row.model || 'unknown';
-
-      bucket.messageCount += numberValue(row.message_count);
-      bucket.userMessageCount += numberValue(row.user_message_count);
-      bucket.assistantMessageCount += numberValue(row.assistant_message_count);
-      bucket.toolCallCount += numberValue(row.tool_call_count);
-      totalMessages += numberValue(row.message_count);
-      hourCounts[String(localBucket.hour)] = (hourCounts[String(localBucket.hour)] || 0) + numberValue(row.activity_count);
-
-      if (tokens > 0) {
-        bucket.tokensByModel[model] = (bucket.tokensByModel[model] || 0) + tokens;
-        bucket.costsByModel[model] = addCosts(bucket.costsByModel[model] || zeroCosts(), costs);
-        estimatedCosts = addCosts(estimatedCosts, costs);
-        totalTokens += tokens;
-        addModelUsage(modelUsage, model, row, costs);
-      }
-    }
-
-    const changeParams: unknown[] = [];
-    const changeWhere = [providerFilterSql(providerList, changeParams), VISIBLE_SUMMARY_SQL, 'c.timestamp_ms > 0'];
-    appendTimestampBounds(changeWhere, changeParams, 'c.timestamp_ms', range);
-    const changeRows = db.query<ChangeAggregateRow>(
-      `SELECT
-         CAST(c.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
-         SUM(c.added_lines) AS addedLines,
-         SUM(c.removed_lines) AS removedLines,
-         SUM(c.net_line_delta) AS netLineDelta,
-         SUM(c.changed_lines) AS changedLines,
-         SUM(c.file_count) AS fileCount,
-         SUM(c.edit_count) AS editCount
-       FROM change_events c
-       JOIN session_summaries s ON s.source_key = c.source_key
-       WHERE ${changeWhere.join(' AND ')}
-       GROUP BY utc_hour_ms
-       ORDER BY utc_hour_ms ASC`,
-      changeParams,
-    );
-
-    for (const row of changeRows) {
-      const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
-      if (!localBucket) continue;
-      const eventTotals = {
-        addedLines: numberValue(row.addedLines),
-        removedLines: numberValue(row.removedLines),
-        netLineDelta: numberValue(row.netLineDelta),
-        changedLines: numberValue(row.changedLines),
-        fileCount: numberValue(row.fileCount),
-        editCount: numberValue(row.editCount),
-      };
-      const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
-      bucket.changeTotals = addChangeTotals(bucket.changeTotals, eventTotals);
-      changeTotals = addChangeTotals(changeTotals, eventTotals);
-    }
-
-    const activeParams: unknown[] = [];
-    const activeUsageWhere = [providerFilterSql(providerList, activeParams), VISIBLE_SUMMARY_SQL, 'u.timestamp_ms > 0'];
-    appendTimestampBounds(activeUsageWhere, activeParams, 'u.timestamp_ms', range);
-    const activeChangeParams: unknown[] = [];
-    const activeChangeWhere = [providerFilterSql(providerList, activeChangeParams), VISIBLE_SUMMARY_SQL, 'c.timestamp_ms > 0'];
-    appendTimestampBounds(activeChangeWhere, activeChangeParams, 'c.timestamp_ms', range);
-    const activeRows = db.query<ActiveSessionRow>(
-      `SELECT
-         u.source_key AS source_key,
-         s.project_route_id AS project_route_id,
-         s.project_name AS project_name,
-         s.cwd AS cwd,
-         CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
-         1 AS has_usage
-       FROM usage_events u
-       JOIN session_summaries s ON s.source_key = u.source_key
-       WHERE ${activeUsageWhere.join(' AND ')}
-       GROUP BY u.source_key, utc_hour_ms
-       UNION ALL
-       SELECT
-         c.source_key AS source_key,
-         s.project_route_id AS project_route_id,
-         s.project_name AS project_name,
-         s.cwd AS cwd,
-         CAST(c.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
-         0 AS has_usage
-       FROM change_events c
-       JOIN session_summaries s ON s.source_key = c.source_key
-       WHERE ${activeChangeWhere.join(' AND ')}
-       GROUP BY c.source_key, utc_hour_ms`,
-      [...activeParams, ...activeChangeParams],
-    );
-
-    for (const row of activeRows) {
-      const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
-      if (!localBucket) continue;
-      const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
-      bucket.activeSessionIds.add(row.source_key);
-      activeSessionIds.add(row.source_key);
-      activeProjectIds.add(getProjectRowPath(row) || row.project_route_id);
-      if (numberValue(row.has_usage) > 0) activeUsageSourceKeys.add(row.source_key);
-    }
-
-    const startParams: unknown[] = [];
-    const startWhere = [providerFilterSql(providerList, startParams), VISIBLE_SUMMARY_SQL];
-    appendTimestampBounds(startWhere, startParams, 's.created_at_ms', range);
-    const startRows = db.query<SessionStartRow>(
-      `SELECT source_key, created_at
-       FROM session_summaries s
-       WHERE ${startWhere.join(' AND ')}`,
-      startParams,
-    );
-    for (const row of startRows) {
-      const key = localBucketForTimestamp(row.created_at, context);
-      if (!key) continue;
-      ensureBucket(buckets, key, context.granularity).sessionStartIds.add(row.source_key);
-    }
-
-    const usageBuckets = finalizeBuckets(buckets);
-    const dailyActivity = bucketsToDailyActivity(usageBuckets);
-    const dailyModelTokens = bucketsToDailyModelTokens(usageBuckets);
-    const dailyChangeActivity = bucketsToDailyChangeActivity(usageBuckets);
-
-    return {
-      totalSessions: activeSessionIds.size,
-      totalMessages,
-      totalTokens,
-      estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
-      estimatedCosts,
-      dailyActivity,
-      dailyModelTokens,
-      changeTotals,
-      dailyChangeActivity,
-      timeZone: context.timeZone,
-      bucketGranularity: context.granularity,
-      usageBuckets,
-      modelUsage,
-      hourCounts,
-      firstSessionDate: dailyActivity.find(day => day.messageCount > 0 || day.sessionCount > 0)?.date || '',
-      longestSession: longestSession(db, providerList),
-      projectCount: activeProjectIds.size,
-      recentSessions: loadRecentSessions(db, activeUsageSourceKeys),
+  for (const row of changeRows) {
+    const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
+    if (!localBucket) continue;
+    const eventTotals = {
+      addedLines: numberValue(row.addedLines),
+      removedLines: numberValue(row.removedLines),
+      netLineDelta: numberValue(row.netLineDelta),
+      changedLines: numberValue(row.changedLines),
+      fileCount: numberValue(row.fileCount),
+      editCount: numberValue(row.editCount),
     };
-  });
+    const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
+    bucket.changeTotals = addChangeTotals(bucket.changeTotals, eventTotals);
+    changeTotals = addChangeTotals(changeTotals, eventTotals);
+  }
+
+  const activeParams: unknown[] = [];
+  const activeUsageWhere = [providerFilterSql(providerList, activeParams), VISIBLE_SUMMARY_SQL];
+  appendTimestampBounds(activeUsageWhere, activeParams, 'u.utc_hour_ms', range);
+  const activeChangeParams: unknown[] = [];
+  const activeChangeWhere = [providerFilterSql(providerList, activeChangeParams), VISIBLE_SUMMARY_SQL];
+  appendTimestampBounds(activeChangeWhere, activeChangeParams, 'c.utc_hour_ms', range);
+  const activeRows = db.query<ActiveSessionRow>(
+    `SELECT
+       u.source_key AS source_key,
+       s.project_route_id AS project_route_id,
+       s.project_name AS project_name,
+       s.cwd AS cwd,
+       u.utc_hour_ms AS utc_hour_ms,
+       1 AS has_usage
+     FROM ${inputs.usage} u
+     JOIN session_summaries s ON s.source_key = u.source_key
+     WHERE ${activeUsageWhere.join(' AND ')}
+     GROUP BY u.source_key, utc_hour_ms
+     UNION ALL
+     SELECT
+       c.source_key AS source_key,
+       s.project_route_id AS project_route_id,
+       s.project_name AS project_name,
+       s.cwd AS cwd,
+       c.utc_hour_ms AS utc_hour_ms,
+       0 AS has_usage
+     FROM ${inputs.changes} c
+     JOIN session_summaries s ON s.source_key = c.source_key
+     WHERE ${activeChangeWhere.join(' AND ')}
+     GROUP BY c.source_key, utc_hour_ms`,
+    [...activeParams, ...activeChangeParams],
+  );
+
+  for (const row of activeRows) {
+    const localBucket = localBucketForUtcHour(row.utc_hour_ms, context, localHourCache);
+    if (!localBucket) continue;
+    const bucket = ensureBucket(buckets, localBucket.key, context.granularity);
+    bucket.activeSessionIds.add(row.source_key);
+    activeSessionIds.add(row.source_key);
+    activeProjectIds.add(getProjectRowPath(row) || row.project_route_id);
+    if (numberValue(row.has_usage) > 0) activeUsageSourceKeys.add(row.source_key);
+  }
+
+  const startParams: unknown[] = [];
+  const startWhere = [providerFilterSql(providerList, startParams), VISIBLE_SUMMARY_SQL];
+  appendTimestampBounds(startWhere, startParams, 's.created_at_ms', range);
+  const startRows = db.query<SessionStartRow>(
+    `SELECT source_key, created_at
+     FROM session_summaries s
+     WHERE ${startWhere.join(' AND ')}`,
+    startParams,
+  );
+  for (const row of startRows) {
+    const key = localBucketForTimestamp(row.created_at, context);
+    if (!key) continue;
+    ensureBucket(buckets, key, context.granularity).sessionStartIds.add(row.source_key);
+  }
+
+  const usageBuckets = finalizeBuckets(buckets);
+  const dailyActivity = bucketsToDailyActivity(usageBuckets);
+  const dailyModelTokens = bucketsToDailyModelTokens(usageBuckets);
+  const dailyChangeActivity = bucketsToDailyChangeActivity(usageBuckets);
+
+  return {
+    totalSessions: activeSessionIds.size,
+    totalMessages,
+    totalTokens,
+    estimatedCost: estimatedCosts[DEFAULT_COST_MODE],
+    estimatedCosts,
+    dailyActivity,
+    dailyModelTokens,
+    changeTotals,
+    dailyChangeActivity,
+    timeZone: context.timeZone,
+    bucketGranularity: context.granularity,
+    usageBuckets,
+    modelUsage,
+    hourCounts,
+    firstSessionDate: dailyActivity.find(day => day.messageCount > 0 || day.sessionCount > 0)?.date || '',
+    longestSession: includeSessionDetails
+      ? longestSession(db, providerList)
+      : { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
+    projectCount: activeProjectIds.size,
+    recentSessions: includeSessionDetails ? loadRecentSessions(db, activeUsageSourceKeys) : [],
+  };
 }
 
 function addProjectAgentKind(project: ProjectInfo, agentKind: AgentKind): void {
@@ -931,100 +956,98 @@ export function getProjectsSql(
   const providerList = providerKinds(providers);
   if (providerList.length === 0) return [];
 
-  return querySessionSummaryIndex((db) => {
-    const context = getAggregationContext(range);
-    const localHourCache = new Map<number, { key: string; hour: number } | null>();
-    const params: unknown[] = [];
-    const where = [providerFilterSql(providerList, params), VISIBLE_SUMMARY_SQL, 'u.timestamp_ms > 0'];
-    appendTimestampBounds(where, params, 'u.timestamp_ms', range);
-    const rows = db.query<ProjectUsageRow>(
-      `SELECT
-         u.source_key AS source_key,
-         s.provider AS provider,
-         s.native_project_id AS native_project_id,
-         s.project_route_id AS project_route_id,
-         s.project_name AS project_name,
-         s.cwd AS cwd,
-         CAST(u.timestamp_ms / 3600000 AS INTEGER) * 3600000 AS utc_hour_ms,
-         u.model AS model,
-         SUM(u.message_count) AS message_count,
-         SUM(u.user_message_count) AS user_message_count,
-         SUM(u.assistant_message_count) AS assistant_message_count,
-         SUM(u.tool_call_count) AS tool_call_count,
-         SUM(u.input_tokens) AS input_tokens,
-         SUM(u.output_tokens) AS output_tokens,
-         SUM(u.cache_read_tokens) AS cache_read_tokens,
-         SUM(u.cache_write_tokens) AS cache_write_tokens,
-         SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
-         SUM(u.cost_api) AS cost_api,
-         SUM(u.cost_conservative) AS cost_conservative,
-         SUM(u.cost_subscription) AS cost_subscription,
-         SUM(CASE
-           WHEN u.assistant_message_count > 0
-             OR (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens) > 0
-           THEN 1 ELSE 0 END) AS activity_count,
-         MAX(u.timestamp_ms) AS last_timestamp_ms
-       FROM usage_events u
-       JOIN session_summaries s ON s.source_key = u.source_key
-       WHERE ${where.join(' AND ')}
-       GROUP BY u.source_key, utc_hour_ms, u.model
-       ORDER BY last_timestamp_ms DESC`,
-      params,
-    );
+  return querySessionSummaryIndex(db => readProjects(db, providerList, range));
+}
 
-    const projects = new Map<string, ProjectInfo>();
-    const sessionsByProject = new Map<string, Set<string>>();
-    const modelsByProject = new Map<string, Set<string>>();
+function readProjects(
+  db: SqliteDatabase,
+  providerList: AgentKind[],
+  range: TimeRangeParams,
+): ProjectInfo[] {
+  const inputs = hourlyAnalyticsInputs(db);
+  const context = getAggregationContext(range);
+  const localHourCache = new Map<number, { key: string; hour: number } | null>();
+  const params: unknown[] = [];
+  const where = [providerFilterSql(providerList, params), VISIBLE_SUMMARY_SQL];
+  appendTimestampBounds(where, params, 'u.utc_hour_ms', range);
+  const rows = db.query<ProjectUsageRow>(
+    `SELECT
+       u.source_key AS source_key,
+       s.provider AS provider,
+       s.native_project_id AS native_project_id,
+       s.project_route_id AS project_route_id,
+       s.project_name AS project_name,
+       s.cwd AS cwd,
+       u.utc_hour_ms AS utc_hour_ms,
+       u.model AS model,
+       s.recorded_usage_cost_json IS NOT NULL AS has_recorded_cost,
+       SUM(u.message_count) AS message_count,
+       SUM(u.user_message_count) AS user_message_count,
+       SUM(u.assistant_message_count) AS assistant_message_count,
+       SUM(u.tool_call_count) AS tool_call_count,
+       SUM(u.input_tokens) AS input_tokens,
+       SUM(u.output_tokens) AS output_tokens,
+       SUM(u.cache_read_tokens) AS cache_read_tokens,
+       SUM(u.cache_write_tokens) AS cache_write_tokens,
+       SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
+       SUM(u.cost_api) AS cost_api,
+       SUM(u.cost_conservative) AS cost_conservative,
+       SUM(u.cost_subscription) AS cost_subscription,
+       SUM(u.activity_count) AS activity_count,
+       MAX(u.last_timestamp_ms) AS last_timestamp_ms
+     FROM ${inputs.usage} u
+     JOIN session_summaries s ON s.source_key = u.source_key
+     WHERE ${where.join(' AND ')}
+     GROUP BY u.source_key, utc_hour_ms, u.model, has_recorded_cost
+     ORDER BY last_timestamp_ms DESC`,
+    params,
+  );
 
-    for (const row of rows) {
-      if (!localBucketForUtcHour(row.utc_hour_ms, context, localHourCache)) continue;
+  const projects = new Map<string, ProjectInfo>();
+  const sessionsByProject = new Map<string, Set<string>>();
+  const modelsByProject = new Map<string, Set<string>>();
 
-      const projectKey = getProjectRowPath(row) || row.project_route_id;
-      const project = ensureProject(projects, row);
-      const sessions = sessionsByProject.get(projectKey) || new Set<string>();
-      sessions.add(row.source_key);
-      sessionsByProject.set(projectKey, sessions);
+  for (const row of rows) {
+    if (!localBucketForUtcHour(row.utc_hour_ms, context, localHourCache)) continue;
 
-      const models = modelsByProject.get(projectKey) || new Set<string>();
-      if (row.model) models.add(row.model);
-      modelsByProject.set(projectKey, models);
+    const projectKey = getProjectRowPath(row) || row.project_route_id;
+    const project = ensureProject(projects, row);
+    const sessions = sessionsByProject.get(projectKey) || new Set<string>();
+    sessions.add(row.source_key);
+    sessionsByProject.set(projectKey, sessions);
 
-      const tokens = usageTokenTotal(row);
-      project.totalMessages += numberValue(row.message_count);
-      project.totalTokens += tokens;
-      project.estimatedCosts = addCosts(project.estimatedCosts, rowCosts(row));
-      project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
+    const models = modelsByProject.get(projectKey) || new Set<string>();
+    if (row.model) models.add(row.model);
+    modelsByProject.set(projectKey, models);
 
-      const lastActive = new Date(numberValue(row.last_timestamp_ms)).toISOString();
-      if (!project.lastActive || lastActive > project.lastActive) project.lastActive = lastActive;
-    }
+    const tokens = usageTokenTotal(row);
+    project.totalMessages += numberValue(row.message_count);
+    project.totalTokens += tokens;
+    project.estimatedCosts = addCosts(project.estimatedCosts, rowCosts(row));
+    project.estimatedCost = project.estimatedCosts[DEFAULT_COST_MODE];
 
-    for (const [projectId, project] of projects) {
-      project.sessionCount = sessionsByProject.get(projectId)?.size || 0;
-      project.models = Array.from(modelsByProject.get(projectId) || []).sort();
-    }
+    const lastActive = new Date(numberValue(row.last_timestamp_ms)).toISOString();
+    if (!project.lastActive || lastActive > project.lastActive) project.lastActive = lastActive;
+  }
 
-    return Array.from(projects.values()).sort((left, right) => right.lastActive.localeCompare(left.lastActive));
-  });
+  for (const [projectId, project] of projects) {
+    project.sessionCount = sessionsByProject.get(projectId)?.size || 0;
+    project.models = Array.from(modelsByProject.get(projectId) || []).sort();
+  }
+
+  return Array.from(projects.values()).sort((left, right) => right.lastActive.localeCompare(left.lastActive));
 }
 
 export function getCostAnalyticsSql(
   providers: AgentDataProvider[],
   range: TimeRangeParams = {},
 ): CostAnalyticsSqlPayload | null {
-  const stats = getDashboardStatsSql(providers, range);
-  if (!stats) return null;
-  const projects = getProjectsSql(providers, range);
-  if (!projects) return null;
-  return {
-    stats: {
-      ...stats,
-      hourCounts: {},
-      longestSession: { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
-      recentSessions: [],
-    },
-    projects,
-  };
+  const providerList = providerKinds(providers);
+  if (providerList.length === 0) return { stats: emptyDashboardStats(range), projects: [] };
+  return querySessionSummaryIndex(db => ({
+    stats: { ...readDashboardStats(db, providerList, range, false), hourCounts: {} },
+    projects: readProjects(db, providerList, range),
+  }));
 }
 
 function appendCreatedDateRange(where: string[], params: unknown[], range: TimeRangeParams): void {
@@ -1072,16 +1095,9 @@ function needsLocalCreatedAtFilter(range: TimeRangeParams = {}): boolean {
   return Boolean(range.timeZone && (range.start || range.end));
 }
 
-function isScalarRowInCreatedAtRange(row: SessionSummaryScalarRow, range: TimeRangeParams = {}): boolean {
-  if (!range.start && !range.end) return true;
-  if (range.timeZone) {
-    return isTimestampInLocalDateRange(row.created_at, normalizeTimeZone(range.timeZone), range);
-  }
-
-  const date = row.created_at.slice(0, 10);
-  if (range.start && date < range.start) return false;
-  if (range.end && date > range.end) return false;
-  return true;
+function filterLocalDates(rows: SessionSummaryScalarRow[], range: TimeRangeParams): SessionSummaryScalarRow[] {
+  const timeZone = normalizeTimeZone(range.timeZone);
+  return rows.filter(row => isTimestampInLocalDateRange(row.created_at, timeZone, range));
 }
 
 export function getSessionsSql(
@@ -1094,7 +1110,7 @@ export function getSessionsSql(
   if (providerList.length === 0) return { sessions: [], total: 0, limit, offset };
 
   return querySessionSummaryIndex((db) => {
-    if (needsLocalCreatedAtFilter(options.range)) {
+    if (options.range && needsLocalCreatedAtFilter(options.range)) {
       const params: unknown[] = [];
       const where = sessionWhereSql(providerList, options, params);
       const rows = db.query<SessionSummaryScalarRow>(
@@ -1104,10 +1120,10 @@ export function getSessionsSql(
          ORDER BY s.created_at_ms DESC`,
         params,
       );
-      const filteredRows = rows.filter(row => isScalarRowInCreatedAtRange(row, options.range));
+      const filteredRows = filterLocalDates(rows, options.range);
 
       return {
-        sessions: scalarRowsToSessions(db, filteredRows).slice(offset, offset + limit),
+        sessions: scalarRowsToSessions(db, filteredRows.slice(offset, offset + limit)),
         total: filteredRows.length,
         limit,
         offset,
@@ -1158,8 +1174,8 @@ export function getProjectSessionsSql(
        ORDER BY s.created_at_ms DESC`,
       params,
     );
-    const rangeFilteredRows = needsLocalCreatedAtFilter(options.range)
-      ? rows.filter(row => isScalarRowInCreatedAtRange(row, options.range))
+    const rangeFilteredRows = options.range && needsLocalCreatedAtFilter(options.range)
+      ? filterLocalDates(rows, options.range)
       : rows;
     const filteredRows = options.projectPath
       ? rangeFilteredRows.filter(row => isSummaryInProjectPath({ cwd: row.cwd, projectName: row.project_name }, options.projectPath || ''))

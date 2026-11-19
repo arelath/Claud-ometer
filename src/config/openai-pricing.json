@@ -1,0 +1,55 @@
+{
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "verifiedAt": "2026-11-18",
+  "models": {
+    "gpt-6-astra": {
+      "provider": "openai",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 1
+    },
+    "gpt-6-sol": {
+      "provider": "openai",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.2
+    },
+    "gpt-6-luna": {
+      "provider": "openai",
+      "inputPerMillion": 0.1,
+      "outputPerMillion": 0.5,
+      "cacheWritePerMillion": 0.125,
+      "cacheReadPerMillion": 0.01
+    },
+    "gpt-6.1-sol": {
+      "provider": "openai",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.1
+    },
+    "gpt-6.1-terra": {
+      "provider": "openai",
+      "inputPerMillion": 1,
+      "outputPerMillion": 5,
+      "cacheWritePerMillion": 1.25,
+      "cacheReadPerMillion": 0.05
+    },
+    "gpt-6.2-astra": {
+      "provider": "openai",
+      "inputPerMillion": 8,
+      "outputPerMillion": 40,
+      "cacheWritePerMillion": 10,
+      "cacheReadPerMillion": 0.4
+    },
+    "gpt-6.2-sol": {
+      "provider": "openai",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.1
+    }
+  }
+}

@@ -87,6 +87,26 @@ describe('bounded JSONL scanner', () => {
     expect(result.nextOffset).toBe(0);
   });
 
+  it('stops at the byte budget instead of treating later records as one oversized record', () => {
+    const rows = Array.from({ length: 30 }, (_, id) => ({ id, text: 'x'.repeat(80) }));
+    fs.writeFileSync(filePath, rows.map(row => JSON.stringify(row) + '\n').join(''));
+    const endOffset = fs.statSync(filePath).size;
+    let offset = 0;
+    const ids: number[] = [];
+    while (offset < endOffset) {
+      const result = scanBoundedJsonlRecords<{ id: number }>(filePath, {
+        startOffset: offset, endOffset, maxBytes: 120, maxRecordBytes: 128,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.partialTrailingRecord).toBe(false);
+      expect(result.records).toHaveLength(1);
+      expect(result.nextOffset).toBeGreaterThan(offset);
+      ids.push(...result.records.map(record => record.value.id));
+      offset = result.nextOffset;
+    }
+    expect(ids).toEqual(rows.map(row => row.id));
+  });
+
   it('accepts one complete record above the soft batch limit but enforces the hard record limit', () => {
     const line = `${JSON.stringify({ text: 'x'.repeat(256) })}\n`;
     fs.writeFileSync(filePath, line);

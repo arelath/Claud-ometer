@@ -83,6 +83,9 @@ describe('agent archives', () => {
     fs.cpSync(path.join(process.cwd(), 'tests', 'fixtures', 'codex'), codexDir, { recursive: true });
     const sessionsDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     fs.mkdirSync(sessionsDir, { recursive: true });
+    const rollout = fs.readdirSync(sessionsDir)[0];
+    fs.copyFileSync(path.join(process.cwd(), 'tests/fixtures/codex-compressed', rollout + '.zst'), path.join(sessionsDir, rollout + '.zst'));
+    fs.unlinkSync(path.join(sessionsDir, rollout));
     fs.writeFileSync(path.join(sessionsDir, 'rollout.jsonl'), '{}\n');
     fs.writeFileSync(path.join(sessionsDir, 'notes.txt'), 'do not export');
     fs.writeFileSync(path.join(codexDir, 'session_index.jsonl'), '{}\n');
@@ -105,6 +108,7 @@ describe('agent archives', () => {
     expect(names).toContain('agent-data/standardized/sessions.json');
     expect(names).toContain('agent-data/standardized/session-details-index.json');
     expect(names).toContain('agent-data/codex/sessions/2026/05/08/rollout.jsonl');
+    expect(names).toContain('agent-data/codex/sessions/2026/05/08/' + rollout + '.zst');
     expect(names).not.toContain('agent-data/codex/sessions/2026/05/08/notes.txt');
     expect(names).toContain('agent-data/codex/session_index.jsonl');
     expect(names).toContain('agent-data/codex/version.json');
@@ -309,7 +313,7 @@ describe('agent archives', () => {
     });
   });
 
-  it('counts Codex projects by distinct cwd values', () => {
+  it('counts Codex projects by distinct cwd values', async () => {
     const firstDir = path.join(codexDir, 'sessions', '2026', '05', '08');
     const secondDir = path.join(codexDir, 'sessions', '2026', '05', '09');
     fs.mkdirSync(firstDir, { recursive: true });
@@ -327,7 +331,7 @@ describe('agent archives', () => {
       `${JSON.stringify({ type: 'session_meta', payload: { id: 'three', cwd: 'D:/repo/two' } })}\n`,
     );
 
-    expect(countCodexData(codexDir)).toEqual({ projectCount: 2, sessionCount: 3 });
+    expect(await countCodexData(codexDir)).toEqual({ projectCount: 2, sessionCount: 3 });
   });
 
   it('counts Copilot workspaces with transcripts', () => {

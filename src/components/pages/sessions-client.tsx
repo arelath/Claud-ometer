@@ -73,10 +73,10 @@ export function SessionsClient({ initialSessions, initialQuery }: {
   const currentPage = parsePageNumber(searchParams.get('page'));
   const offset = (currentPage - 1) * SESSIONS_PAGE_SIZE;
   const fallbackData = initialSessions && currentPage === 1 && debouncedQuery === (initialQuery || '') ? initialSessions : undefined;
-  const { data: sessionPage, isLoading, mutate } = useSessions(SESSIONS_PAGE_SIZE, offset, debouncedQuery, fallbackData, timeRange.apiParams);
+  const { data: sessionPage, mutate } = useSessions(SESSIONS_PAGE_SIZE, offset, debouncedQuery, fallbackData, timeRange.apiParams);
   const { data: liveSessions } = useLiveSessions();
   const { data: sourceInfo } = useDataSourceInfo();
-  const { data: cacheStatus } = useCacheStatus();
+  const { data: cacheStatus } = useCacheStatus(mutate);
   const { pickCost } = useCostMode();
   const sessions = sessionPage?.sessions;
   const totalSessions = sessionPage?.total ?? sessions?.length ?? 0;
@@ -103,10 +103,6 @@ export function SessionsClient({ initialSessions, initialQuery }: {
   }, [debouncedQuery, router]);
 
   useEffect(() => {
-    if (cacheStatus?.refreshCompletedAt) void mutate();
-  }, [cacheStatus?.refreshCompletedAt, mutate]);
-
-  useEffect(() => {
     if (!sessionPage || totalSessions === 0 || currentPage <= totalPages) return;
     goToPage(totalPages);
     // goToPage intentionally reads current browser search params.
@@ -130,7 +126,7 @@ export function SessionsClient({ initialSessions, initialQuery }: {
     router.replace(qs ? `/sessions?${qs}` : '/sessions', { scroll: false });
   }
 
-  if (isLoading || !sessions) {
+  if (!sessions) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
         <div className="space-y-3 text-center">

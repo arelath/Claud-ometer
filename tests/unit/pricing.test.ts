@@ -11,9 +11,53 @@ import {
   getModelPricing,
   getPricingReferenceEntries,
   LITELLM_PRICING_SOURCE,
+  OPENAI_PRICING_SOURCE,
 } from '@/config/pricing';
 
 describe('pricing helpers', () => {
+  it.each([
+    ['gpt-6-astra', 10, 50, 12.5, 1, 2.425, 2.05875, 2.0305],
+    ['gpt-6-sol', 2, 10, 2.5, 0.2, 0.485, 0.41175, 0.4061],
+    ['gpt-6-luna', 0.1, 0.5, 0.125, 0.01, 0.02425, 0.0205875, 0.020305],
+    ['gpt-6.1-sol', 2, 10, 2.5, 0.1, 0.48, 0.4115, 0.40605],
+    ['gpt-6.1-terra', 1, 5, 1.25, 0.05, 0.24, 0.20575, 0.203025],
+    ['gpt-6.2-astra', 8, 40, 10, 0.4, 1.92, 1.646, 1.6242],
+    ['gpt-6.2-sol', 2, 10, 2.5, 0.1, 0.48, 0.4115, 0.40605],
+  ] as const)('prices %s using verified OpenAI Standard rates', (model, input, output, write, read, api, conservative, subscription) => {
+    expect(getModelPricing(model)).toEqual({
+      provider: 'openai',
+      inputPerMillion: input,
+      outputPerMillion: output,
+      cacheWritePerMillion: write,
+      cacheReadPerMillion: read,
+    });
+    const costs = calculateCostAllModes(model, 100_000, 20_000, 30_000, 50_000);
+    expect(costs.api).toBeCloseTo(api, 10);
+    expect(costs.conservative).toBeCloseTo(conservative, 10);
+    expect(costs.subscription).toBeCloseTo(subscription, 10);
+    for (const mode of ['api', 'conservative', 'subscription'] as const) {
+      expect(calculateCost(model, 100_000, 20_000, 30_000, 50_000, mode)).toBeCloseTo(costs[mode], 10);
+    }
+    expect(getModelPricing(` ${model.toUpperCase()} `)).toEqual(getModelPricing(model));
+    expect(getModelPricing(`${model}-2026-10-01`)).toEqual(getModelPricing(model));
+    expect(getModelDisplayName(model)).toBe(model);
+    expect(getModelCostGroupKey(model)).toBe(model);
+  });
+
+  it('keeps both Sol versions in the pricing reference with separate cache rates', () => {
+    expect(OPENAI_PRICING_SOURCE).toEqual({
+      source: 'https://developers.openai.com/api/docs/pricing',
+      verifiedAt: '2026-11-18',
+    });
+    const models = getPricingReferenceEntries().map(row => row.model);
+    expect(models).toEqual(expect.arrayContaining(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']));
+    expect(models.indexOf('gpt-6.1-sol')).toBeLessThan(models.indexOf('gpt-6-sol'));
+    expect(models.indexOf('gpt-6-sol')).toBeLessThan(models.indexOf('gpt-5.5'));
+    expect(calculateCacheSavings('gpt-6-sol', 1_000_000, 'api')).toBe(1.8);
+    expect(calculateCacheSavings('gpt-6.1-sol', 1_000_000, 'api')).toBe(1.9);
+    expect(models.indexOf('gpt-6.2-sol')).toBeLessThan(models.indexOf('gpt-6.1-sol'));
+  });
+
   it('calculates API-equivalent token costs from all token buckets', () => {
     expect(calculateCost('claude-opus-4-7', 1_000_000, 1_000_000, 1_000_000, 1_000_000, 'api')).toBe(36.75);
   });
@@ -36,13 +80,15 @@ describe('pricing helpers', () => {
 
   it('falls back to matching model families for dated or variant model names', () => {
     expect(calculateCost('claude-sonnet-4-6-20260504', 1_000_000, 1_000_000, 0, 0, 'api')).toBe(18);
-    expect(calculateCost('internal-haiku-experiment', 1_000_000, 1_000_000, 0, 0, 'api')).toBe(6);
+    expect(calculateCost('internal-haiku-experiment', 1_000_000, 1_000_000, 0, 0, 'api')).toBeCloseTo(0.6);
   });
 
   it('loads rates from the LiteLLM pricing snapshot', () => {
     expect(LITELLM_PRICING_SOURCE.source).toContain('BerriAI/litellm');
     expect(getModelPricing('anthropic.claude-opus-4-7')?.outputPerMillion).toBe(25);
     expect(getModelPricing('claude-opus-4-1')?.outputPerMillion).toBe(75);
+    expect(getModelPricing('claude-opus-5.5')?.outputPerMillion).toBe(20);
+    expect(getModelPricing('claude-fable-5.2')?.cacheReadPerMillion).toBe(0.2);
   });
 
   it('keeps separate pricing reference rows for model versions and OpenAI models', () => {
@@ -106,6 +152,13 @@ describe('pricing helpers', () => {
 
   it('assigns distinct colors to common OpenAI model families', () => {
     const models = [
+      'gpt-6.2-astra',
+      'gpt-6.2-sol',
+      'gpt-6.1-terra',
+      'gpt-6.1-sol',
+      'gpt-6-astra',
+      'gpt-6-sol',
+      'gpt-6-luna',
       'gpt-5.5',
       'gpt-5.5-pro',
       'gpt-5.4',
@@ -122,6 +175,8 @@ describe('pricing helpers', () => {
 
     expect(new Set(colors).size).toBe(models.length);
     expect(getModelColor('gpt-5.5-2026-04-23')).toBe(getModelColor('gpt-5.5'));
+    expect(colors).not.toContain('#888888');
+    expect(getModelColor('gpt-6.1-sol-2026-10-01')).toBe(getModelColor('gpt-6.1-sol'));
     expect(getModelColor('gpt-5.4-mini-2026-03-17')).toBe(getModelColor('gpt-5.4-mini'));
   });
 

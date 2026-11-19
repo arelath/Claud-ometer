@@ -20,8 +20,8 @@ const HIGHLIGHT_TOKEN_CLASSES: Record<HighlightToken['kind'], string> = {
   type: 'text-emerald-700 dark:text-emerald-300',
 };
 
-export function toPreviewLines(value: string): string[] {
-  const normalized = normalizeDisplayNewlines(value).replace(/\r\n?/g, '\n');
+export function toPreviewLines(value: string, preserveEscapedNewlines = false): string[] {
+  const normalized = (preserveEscapedNewlines ? value : normalizeDisplayNewlines(value)).replace(/\r\n?/g, '\n');
   return normalized ? normalized.split('\n') : [];
 }
 
@@ -135,7 +135,7 @@ function ArtifactPreviewContent({ artifact, maxLines, fullscreen = false }: {
     );
   }
 
-  const lines = toPreviewLines(artifact.content || '');
+  const lines = toPreviewLines(artifact.content || '', artifact.preserveEscapedNewlines);
   const shownLines = lines.slice(0, visibleLines);
   const hiddenLines = Math.max(lines.length - shownLines.length, 0);
 
@@ -166,7 +166,7 @@ export function ArtifactPreview({ artifact, label, className = '' }: {
   const frameClasses = getArtifactFrameClasses(artifact);
   const totalLines = artifact.kind === 'diff'
     ? buildDiffPreviewLines(artifact.oldText || '', artifact.newText || '', artifact.location).length
-    : Math.max(toPreviewLines(artifact.content || '').length, 1);
+    : Math.max(toPreviewLines(artifact.content || '', artifact.preserveEscapedNewlines).length, 1);
   const canExpandInline = totalLines > COLLAPSED_PREVIEW_LINES;
 
   return (

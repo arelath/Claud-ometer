@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useCacheStatus, useProjectSessions } from '@/lib/hooks';
 import type { SessionInfo } from '@/lib/claude-data/types';
 import { useCostMode } from '@/lib/cost-mode-context';
@@ -13,17 +12,13 @@ import { ArrowLeft, Clock, GitBranch, MessageSquare, Wrench } from 'lucide-react
 import Link from 'next/link';
 
 export function ProjectDetailClient({ projectId, initialSessions }: { projectId: string; initialSessions?: SessionInfo[] }) {
-  const { data: sessions, isLoading, mutate } = useProjectSessions(projectId, initialSessions);
-  const { data: cacheStatus } = useCacheStatus();
+  const { data: sessions, mutate } = useProjectSessions(projectId, initialSessions);
+  const { data: cacheStatus } = useCacheStatus(mutate);
   const { pickCost } = useCostMode();
-
-  useEffect(() => {
-    if (cacheStatus?.refreshCompletedAt) void mutate();
-  }, [cacheStatus?.refreshCompletedAt, mutate]);
 
   const projectName = sessions?.[0]?.projectName || projectId.split('-').pop() || projectId;
 
-  if (isLoading || !sessions) {
+  if (!sessions) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
         <div className="space-y-3 text-center">

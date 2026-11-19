@@ -45,7 +45,7 @@ export interface AgentDataProvider {
   discoverSessionSources?(): Promise<SessionSummarySource[]>;
   buildSessionSummary?(source: SessionSummarySource): Promise<CachedSessionSummary>;
   buildSessionSummaryWithCheckpoint?(source: SessionSummarySource): Promise<IncrementalSessionSummaryResult>;
-  buildLightweightSessionSummary?(source: SessionSummarySource): CachedSessionSummary;
+  buildLightweightSessionSummary?(source: SessionSummarySource): CachedSessionSummary | Promise<CachedSessionSummary>;
   incrementalSessionSummary?: IncrementalSessionSummaryProvider;
   resetCache?(): void;
   getLiveSessions?(): LiveSessionInfo[];

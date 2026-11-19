@@ -41,7 +41,7 @@ vi.mock('@/hooks/use-session-view-state', () => ({
       }],
       mainView: 'conversation',
       minimapSegments: [],
-      minimapViewport: { topPct: 0, heightPct: 20 },
+      deferContent: false,
       preset: 'narrative',
       presetCounts: { narrative: 0, tools: 0, all: 0 },
       showScrollToBottom: false,

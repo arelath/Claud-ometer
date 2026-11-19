@@ -1,6 +1,6 @@
 {
   "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-  "updatedAt": "2026-07-17T19:33:24.908Z",
+  "updatedAt": "2026-11-18T17:25:51.474Z",
   "models": {
     "claude-3-7-sonnet-20250219": {
       "provider": "anthropic",
@@ -44,6 +44,20 @@
       "cacheWritePerMillion": 12.5,
       "cacheReadPerMillion": 1
     },
+    "claude-fable-5-1": {
+      "provider": "anthropic",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 0.25
+    },
+    "claude-fable-5-2": {
+      "provider": "anthropic",
+      "inputPerMillion": 8,
+      "outputPerMillion": 40,
+      "cacheWritePerMillion": 10,
+      "cacheReadPerMillion": 0.2
+    },
     "claude-haiku-4-5": {
       "provider": "anthropic",
       "inputPerMillion": 1,
@@ -57,6 +71,41 @@
       "outputPerMillion": 5,
       "cacheWritePerMillion": 1.25,
       "cacheReadPerMillion": 0.1
+    },
+    "claude-haiku-5-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 0.1,
+      "outputPerMillion": 0.5,
+      "cacheWritePerMillion": 0.125,
+      "cacheReadPerMillion": 0.01
+    },
+    "claude-mythos-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 1
+    },
+    "claude-mythos-5-1": {
+      "provider": "anthropic",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 0.25
+    },
+    "claude-mythos-5-2": {
+      "provider": "anthropic",
+      "inputPerMillion": 8,
+      "outputPerMillion": 40,
+      "cacheWritePerMillion": 10,
+      "cacheReadPerMillion": 0.2
+    },
+    "claude-mythos-preview": {
+      "provider": "anthropic",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 1
     },
     "claude-opus-4-1": {
       "provider": "anthropic",
@@ -128,6 +177,20 @@
       "cacheWritePerMillion": 6.25,
       "cacheReadPerMillion": 0.5
     },
+    "claude-opus-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 5,
+      "outputPerMillion": 25,
+      "cacheWritePerMillion": 6.25,
+      "cacheReadPerMillion": 0.5
+    },
+    "claude-opus-5-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 4,
+      "outputPerMillion": 20,
+      "cacheWritePerMillion": 5,
+      "cacheReadPerMillion": 0.2
+    },
     "claude-sonnet-4-20250514": {
       "provider": "anthropic",
       "inputPerMillion": 3,
@@ -162,6 +225,13 @@
       "outputPerMillion": 10,
       "cacheWritePerMillion": 2.5,
       "cacheReadPerMillion": 0.2
+    },
+    "claude-sonnet-5-5": {
+      "provider": "anthropic",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.1
     },
     "gpt-3.5-turbo": {
       "provider": "openai",
@@ -553,14 +623,14 @@
       "inputPerMillion": 30,
       "outputPerMillion": 180,
       "cacheWritePerMillion": 0,
-      "cacheReadPerMillion": 3
+      "cacheReadPerMillion": 0
     },
     "gpt-5.4-pro-2026-03-05": {
       "provider": "openai",
       "inputPerMillion": 30,
       "outputPerMillion": 180,
       "cacheWritePerMillion": 0,
-      "cacheReadPerMillion": 3
+      "cacheReadPerMillion": 0
     },
     "gpt-5.5": {
       "provider": "openai",
@@ -576,47 +646,166 @@
       "cacheWritePerMillion": 0,
       "cacheReadPerMillion": 0.5
     },
+    "gpt-5.5-cyber": {
+      "provider": "openai",
+      "inputPerMillion": 12.5,
+      "outputPerMillion": 75,
+      "cacheWritePerMillion": 0,
+      "cacheReadPerMillion": 1.25
+    },
+    "gpt-5.5-cyber-preview": {
+      "provider": "openai",
+      "inputPerMillion": 12.5,
+      "outputPerMillion": 75,
+      "cacheWritePerMillion": 0,
+      "cacheReadPerMillion": 1.25
+    },
     "gpt-5.5-pro": {
       "provider": "openai",
       "inputPerMillion": 30,
       "outputPerMillion": 180,
       "cacheWritePerMillion": 0,
-      "cacheReadPerMillion": 3
+      "cacheReadPerMillion": 0
     },
     "gpt-5.5-pro-2026-04-23": {
       "provider": "openai",
       "inputPerMillion": 30,
       "outputPerMillion": 180,
       "cacheWritePerMillion": 0,
-      "cacheReadPerMillion": 3
+      "cacheReadPerMillion": 0
     },
     "gpt-5.6": {
       "provider": "openai",
-      "inputPerMillion": 5,
-      "outputPerMillion": 30,
-      "cacheWritePerMillion": 6.25,
-      "cacheReadPerMillion": 0.5
+      "inputPerMillion": 4,
+      "outputPerMillion": 20,
+      "cacheWritePerMillion": 5,
+      "cacheReadPerMillion": 0.4
+    },
+    "gpt-5.6-cyber": {
+      "provider": "openai",
+      "inputPerMillion": 12.5,
+      "outputPerMillion": 75,
+      "cacheWritePerMillion": 15.625,
+      "cacheReadPerMillion": 1.25
     },
     "gpt-5.6-luna": {
       "provider": "openai",
-      "inputPerMillion": 1,
-      "outputPerMillion": 6,
-      "cacheWritePerMillion": 1.25,
-      "cacheReadPerMillion": 0.1
+      "inputPerMillion": 0.2,
+      "outputPerMillion": 1.2,
+      "cacheWritePerMillion": 0.25,
+      "cacheReadPerMillion": 0.02
     },
     "gpt-5.6-sol": {
       "provider": "openai",
-      "inputPerMillion": 5,
-      "outputPerMillion": 30,
-      "cacheWritePerMillion": 6.25,
-      "cacheReadPerMillion": 0.5
+      "inputPerMillion": 4,
+      "outputPerMillion": 20,
+      "cacheWritePerMillion": 5,
+      "cacheReadPerMillion": 0.4
     },
     "gpt-5.6-terra": {
       "provider": "openai",
-      "inputPerMillion": 2.5,
-      "outputPerMillion": 15,
-      "cacheWritePerMillion": 3.125,
-      "cacheReadPerMillion": 0.25
+      "inputPerMillion": 2,
+      "outputPerMillion": 12,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.2
+    },
+    "gpt-6-astra": {
+      "provider": "openai",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 12.5,
+      "cacheReadPerMillion": 1
+    },
+    "gpt-6-astra-law": {
+      "provider": "openai",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 0,
+      "cacheReadPerMillion": 1
+    },
+    "gpt-6-cyber": {
+      "provider": "openai",
+      "inputPerMillion": 20,
+      "outputPerMillion": 100,
+      "cacheWritePerMillion": 25,
+      "cacheReadPerMillion": 2
+    },
+    "gpt-6-luna": {
+      "provider": "openai",
+      "inputPerMillion": 0.1,
+      "outputPerMillion": 0.5,
+      "cacheWritePerMillion": 0.125,
+      "cacheReadPerMillion": 0.01
+    },
+    "gpt-6-rosalind": {
+      "provider": "openai",
+      "inputPerMillion": 10,
+      "outputPerMillion": 50,
+      "cacheWritePerMillion": 18.75,
+      "cacheReadPerMillion": 1
+    },
+    "gpt-6-sol": {
+      "provider": "openai",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.2
+    },
+    "gpt-6.1-sol": {
+      "provider": "openai",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.1
+    },
+    "gpt-6.1-terra": {
+      "provider": "openai",
+      "inputPerMillion": 1,
+      "outputPerMillion": 5,
+      "cacheWritePerMillion": 1.25,
+      "cacheReadPerMillion": 0.05
+    },
+    "gpt-6.2-astra": {
+      "provider": "openai",
+      "inputPerMillion": 8,
+      "outputPerMillion": 40,
+      "cacheWritePerMillion": 10,
+      "cacheReadPerMillion": 0.4
+    },
+    "gpt-6.2-astra-law": {
+      "provider": "openai",
+      "inputPerMillion": 8,
+      "outputPerMillion": 40,
+      "cacheWritePerMillion": 10,
+      "cacheReadPerMillion": 0.4
+    },
+    "gpt-6.2-sol": {
+      "provider": "openai",
+      "inputPerMillion": 2,
+      "outputPerMillion": 10,
+      "cacheWritePerMillion": 2.5,
+      "cacheReadPerMillion": 0.1
+    },
+    "gpt-daybreak-blue-latest": {
+      "provider": "openai",
+      "inputPerMillion": 4,
+      "outputPerMillion": 20,
+      "cacheWritePerMillion": 5,
+      "cacheReadPerMillion": 0.4
+    },
+    "gpt-daybreak-red-latest": {
+      "provider": "openai",
+      "inputPerMillion": 12.5,
+      "outputPerMillion": 75,
+      "cacheWritePerMillion": 15.625,
+      "cacheReadPerMillion": 1.25
+    },
+    "gpt-rosalind-discovery": {
+      "provider": "openai",
+      "inputPerMillion": 5,
+      "outputPerMillion": 25,
+      "cacheWritePerMillion": 0,
+      "cacheReadPerMillion": 0.5
     },
     "o1": {
       "provider": "openai",

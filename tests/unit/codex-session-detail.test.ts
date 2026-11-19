@@ -168,9 +168,7 @@ describe('Codex session detail parser', () => {
           session_id: parentId,
           parent_thread_id: parentId,
           forked_from_id: parentId,
-          agent_nickname: 'Faraday',
-          agent_role: 'code_searcher',
-          agent_path: '/root/search',
+          source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_nickname: 'Faraday', agent_role: 'code_searcher', agent_path: '/root/search' } } },
           originator: 'codex_cli',
           cwd: 'D:/repo/child',
         },
@@ -281,9 +279,9 @@ describe('Codex session detail parser', () => {
     });
     expect(detail?.sourceFilePaths).toHaveLength(3);
     expect(detail?.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: 'user', content: 'inspect child code', subagent: expect.objectContaining({ nickname: 'Faraday', role: 'code_searcher' }) }),
+      expect.objectContaining({ role: 'agent-message', content: 'inspect child code', communication: { kind: 'Task assignment', sender: '/root', recipient: '/root/search' }, subagent: expect.objectContaining({ nickname: 'Faraday', role: 'code_searcher' }) }),
       expect.objectContaining({ role: 'assistant', content: 'child answer', subagent: expect.objectContaining({ id: childId, path: '/root/search' }) }),
-      expect.objectContaining({ role: 'user', content: 'review nested code', subagent: expect.objectContaining({ id: nestedId, depth: 2 }) }),
+      expect.objectContaining({ role: 'agent-message', content: 'review nested code', subagent: expect.objectContaining({ id: nestedId, depth: 2 }) }),
       expect.objectContaining({ role: 'assistant', content: 'nested review answer', subagent: expect.objectContaining({ nickname: 'Noether', depth: 2 }) }),
     ]));
     expect(JSON.stringify(detail?.messages)).not.toContain('inherited parent text');
@@ -291,6 +289,27 @@ describe('Codex session detail parser', () => {
     expect(JSON.stringify(detail?.messages)).not.toContain('ancestor answer must not repeat');
     expect(summary).toMatchObject({ messageCount: 7, sourceFilePaths: expect.any(Array) });
     expect(summary.sourceFilePaths).toHaveLength(3);
+  });
+
+  it('keeps addressed updates and final reports readable on the receiving thread', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const cipher = 'gAAAAA' + 'a'.repeat(100);
+    const parsed = parseCodexRecords('session.jsonl', [
+      { type: 'response_item', payload: { type: 'function_call', name: 'send_message',
+        arguments: JSON.stringify({ target: '/root', message: cipher }) } },
+      ...['MESSAGE', 'FINAL_ANSWER'].map(type => ({
+        type: 'response_item', payload: { type: 'agent_message', author: '/root/search', recipient: '/root', content: [
+          { type: 'input_text', text: `Message Type: ${type}\nPayload:\n${type === 'FINAL_ANSWER' ? 'Found the config file.' : ''}` },
+          ...(type === 'MESSAGE' ? [{ type: 'encrypted_content', encrypted_content: cipher }] : []),
+        ] },
+      })),
+    ]);
+    expect(parsed.detail.messages.filter(message => message.role === 'agent-message')).toMatchObject([
+      { content: 'Message body is encrypted in the session log.', communication: { kind: 'Agent message', sender: '/root/search', recipient: '/root' } },
+      { content: 'Found the config file.', communication: { kind: 'Final report', sender: '/root/search', recipient: '/root' } },
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain(cipher);
+    expect(parsed.info.userMessageCount).toBe(0);
   });
 
   it('renders errors and compactions as visible system events', async () => {
@@ -563,6 +582,51 @@ describe('Codex session detail parser', () => {
     });
     const paired = parseCodexRecords('D:/repo/paired-patch.jsonl', records);
     expect(getSessionDiffSummary(paired.detail.messages).editCount).toBe(1);
+  });
+
+  it('uses completed file changes inside exec for detail and indexed summaries', async () => {
+    const { parseCodexRecords } = await import('@/lib/agent-data/providers/codex/transcript-parser');
+    const { readCodexSummaryRecords } = await import('@/lib/agent-data/providers/codex/summary-records');
+    const { buildChangeEvents } = await import('@/lib/agent-data/event-metrics');
+    const file = path.join(root, 'file-changes.jsonl');
+    const patch = JSON.stringify('*** Begin Patch\n*** Add File: script.ts\n+from input\n*** End Patch');
+    const startExec = (callId: string, input: string) => ({
+      type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input },
+    });
+    const finishExec = (callId: string) => ({
+      type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: 'Script completed' },
+    });
+    const fileChange = (id: string, status: string, changes: Record<string, unknown>) => ({
+      type: 'event_msg', payload: { type: 'item_completed', item: { type: 'FileChange', id, status, changes } },
+    });
+    const completed = fileChange('exec-write', 'completed', {
+      'D:\\repo\\script.ts': { type: 'add', content: 'from recorded write\n' },
+      'D:\\repo\\config.ts': { type: 'update', unified_diff: '@@ -1 +1 @@\n-before\n+after\n' },
+    });
+    const records: CodexEnvelope[] = [
+      { type: 'session_meta', payload: { id: 'file-changes', cwd: 'D:/repo' } },
+      startExec('cell-1', 'const patch = ' + patch + '; await tools.apply_patch(patch);'),
+      completed,
+      fileChange('exec-generated', 'completed', { 'D:\\repo\\generated.ts': { type: 'add', content: 'generated\n' } }),
+      finishExec('cell-1'),
+      completed,
+      startExec('cell-2', 'const patch = ' + patch + '; await tools.apply_patch(patch);'),
+      fileChange('exec-failed', 'failed', { 'failed.ts': { type: 'add', content: 'failed write\n' } }),
+      finishExec('cell-2'),
+    ].map((record, index) => ({ ...record, timestamp: `2026-11-18T10:00:0${index}Z` }));
+    fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n'));
+
+    const full = parseCodexRecords(file, records);
+    const compact = parseCodexRecords(file, await readCodexSummaryRecords(file), undefined, { summaryOnly: true });
+    const summary = getSessionDiffSummary(full.detail.messages);
+    expect(summary).toMatchObject({ fileCount: 3, editCount: 3, addedLines: 3, removedLines: 1 });
+    expect(summary.files.map(change => change.path)).toEqual(expect.arrayContaining([
+      'D:/repo/script.ts', 'D:/repo/config.ts', 'D:/repo/generated.ts',
+    ]));
+    const tools = full.detail.messages.flatMap(message => message.toolCalls || []);
+    expect(tools.find(tool => tool.id === 'cell-1')?.details).toContainEqual(expect.objectContaining({ key: 'input' }));
+    expect(tools.find(tool => tool.summary.endsWith('script.ts'))?.artifact).toMatchObject({ newText: 'from recorded write\n' });
+    expect(buildChangeEvents(compact.detail.messages)).toEqual(buildChangeEvents(full.detail.messages));
   });
 
   it('renders response output tool results when no enriched end event exists', async () => {

@@ -546,6 +546,13 @@ describe('reader imported-data fixtures', () => {
       ]));
       expect(exportDetail?.sourceFilePaths).toHaveLength(2);
       expect(exportDetail?.totalInputTokens).toBe(session?.totalInputTokens);
+      expect(await getSessionDetail(sessionId)).toBe(rootDetail);
+      const appendedMessage = {
+        type: 'user', sessionId, timestamp: '2026-05-03T11:00:09.000Z',
+        message: { role: 'user', content: 'Appended after viewing' },
+      };
+      fs.appendFileSync(path.join(projectDir, `${sessionId}.jsonl`), `\n${JSON.stringify(appendedMessage)}\n`);
+      expect((await getSessionDetail(sessionId))?.messages.at(-1)?.content).toBe('Appended after viewing');
     } finally {
       process.env.AGENT_SCOPE_IMPORT_DIR = previousImportDir;
       fs.rmSync(importDir, { recursive: true, force: true });

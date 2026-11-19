@@ -119,7 +119,8 @@ export function clearSessionSummaryCache(cachePath = getSessionSummaryCachePath(
 }
 
 export function sourceCacheKey(provider: AgentKind, sourceFilePath: string): string {
-  return `${provider}:${sourceFilePath}`;
+  const pathKey = provider === 'codex' ? sourceFilePath.replace(/(\.jsonl)\.zst$/, '$1') : sourceFilePath;
+  return `${provider}:${pathKey}`;
 }
 
 export function summaryCacheKey(summary: Pick<CachedSessionSummary, 'provider' | 'sourceFilePath'>): string {

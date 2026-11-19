@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderHook } from '@testing-library/react';
 
 const swrMock = vi.hoisted(() => vi.fn());
 
@@ -57,6 +58,21 @@ describe('lib hook URL builders', () => {
 
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     await expect(fetcher('/api/stats')).resolves.toEqual({ ok: true });
+  });
+
+  it('refreshes a mounted page once per observed index revision', async () => {
+    const { useCacheStatus } = await import('@/lib/hooks');
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = renderHook(() => useCacheStatus(refresh));
+    swrMock.mockReturnValue({ data: { revision: 7, statusRevision: 10 } });
+    rerender();
+    swrMock.mockReturnValue({ data: { revision: 7, statusRevision: 11 } });
+    rerender();
+    expect(refresh).not.toHaveBeenCalled();
+    swrMock.mockReturnValue({ data: { revision: 8, statusRevision: 12 } });
+    rerender();
+    rerender();
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it('builds filtered analytics SWR keys', async () => {

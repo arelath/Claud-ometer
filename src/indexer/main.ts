@@ -171,8 +171,6 @@ try {
   fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { flag: 'wx' });
 }
 
-initializeSessionSummaryIndexWriter();
-
 const controlServer = await startIndexerControlServer(requiredEndpoint, token, async (request: IndexerRequest) => {
   switch (request.command) {
     case 'health': return status;
@@ -189,6 +187,10 @@ const controlServer = await startIndexerControlServer(requiredEndpoint, token, a
       return status;
   }
 });
+
+// Let the supervisor start the web server while the writer upgrades an
+// existing index. The synchronous initialization finishes before IPC handlers run.
+initializeSessionSummaryIndexWriter();
 
 const configuredReconcileInterval = Number.parseInt(process.env.AGENT_SCOPE_RECONCILE_INTERVAL_MS || '', 10);
 const reconcileIntervalMs = Number.isFinite(configuredReconcileInterval)

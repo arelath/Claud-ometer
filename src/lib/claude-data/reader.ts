@@ -62,6 +62,10 @@ interface SessionFileCacheEntry {
 }
 
 const sessionInfoCache = new Map<string, SessionFileCacheEntry>();
+// Reopening the current historical session should not tokenize its whole
+// transcript again. Keep only one detail, bounded by its source file size.
+const MAX_CACHED_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+let lastViewedTranscript: { info: ParsedSessionInfo; detail: SessionDetail } | undefined;
 export const CLAUDE_SESSION_SUMMARY_PARSER_VERSION = 'claude-summary-v4';
 export { CLAUDE_INCREMENTAL_CHECKPOINT_VERSION };
 
@@ -649,6 +653,10 @@ async function parseSessionMessagesFromFile(
 
 export async function getSessionDetailFromFile(filePath: string, projectId: string, projectName: string): Promise<SessionDetail> {
   const sessionInfo = await parseSessionFile(filePath, projectId, projectName);
+  return readSessionDetail(filePath, sessionInfo);
+}
+
+async function readSessionDetail(filePath: string, sessionInfo: ParsedSessionInfo): Promise<SessionDetail> {
   const aggregateFilePaths = getSessionAggregateFilePaths(filePath);
   const sourceFilePaths = aggregateFilePaths.length > 0 ? aggregateFilePaths : [filePath];
   const messages = await parseSessionMessagesFromFile(filePath, sessionInfo.id);
@@ -712,7 +720,15 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
     if (!fs.existsSync(filePath)) continue;
 
     const { name: projectName } = getProjectNameFromDir(projectPath, entry);
-    return getSessionDetailFromFile(filePath, entry, projectName);
+    const info = await parseSessionFile(filePath, entry, projectName);
+    // parseSessionFile returns the same info only while the root and all
+    // descendant signatures match.
+    if (lastViewedTranscript?.info === info) return lastViewedTranscript.detail;
+    const detail = await readSessionDetail(filePath, info);
+    const sourceBytes = fs.statSync(filePath, { throwIfNoEntry: false })?.size ?? Infinity;
+    lastViewedTranscript = sourceBytes <= MAX_CACHED_TRANSCRIPT_BYTES
+      ? { info, detail } : undefined;
+    return detail;
   }
 
   return null;
@@ -1158,6 +1174,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 }
 
 export function resetClaudeReaderCache(): void {
+  lastViewedTranscript = undefined;
   sessionInfoCache.clear();
   resetStatsAggregatorCache();
 }

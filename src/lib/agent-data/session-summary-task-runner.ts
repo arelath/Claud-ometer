@@ -90,7 +90,7 @@ export async function runParseSummaryTask(
       const buildLightweightSummary = options.provider?.buildLightweightSessionSummary
         || lightweightSummaryBuilderForProvider(task.provider);
       const summary = buildLightweightSummary
-        ? { ...buildLightweightSummary(task.source), isPartial: true }
+        ? { ...await buildLightweightSummary(task.source), isPartial: true }
         : await (options.provider?.buildSessionSummary || fullSummaryBuilderForProvider(task.provider))(task.source);
       return {
         ...resultBase,

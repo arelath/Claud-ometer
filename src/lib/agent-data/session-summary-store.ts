@@ -318,7 +318,7 @@ async function buildRecentSummaries(
     try {
       if (provider?.buildLightweightSessionSummary) {
         return {
-          ...provider.buildLightweightSessionSummary(source),
+          ...await provider.buildLightweightSessionSummary(source),
           isPartial: true,
         };
       }

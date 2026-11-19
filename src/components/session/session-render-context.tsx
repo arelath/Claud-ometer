@@ -14,6 +14,7 @@ export interface ArtifactViewerState {
   language?: CodeLanguage;
   sourcePath?: string;
   content?: string;
+  preserveEscapedNewlines?: boolean;
   oldText?: string;
   newText?: string;
   location?: string;

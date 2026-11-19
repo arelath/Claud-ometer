@@ -1,7 +1,9 @@
 'use client';
 
+import { useLayoutEffect, useState, type RefObject } from 'react';
+
 export interface MinimapSegment {
-  type: 'user' | 'assistant' | 'system-group' | 'compaction';
+  type: 'user' | 'assistant' | 'system-group' | 'compaction' | 'subagent';
   targetId: string;
   topPct: number;
   heightPct: number;
@@ -23,9 +25,38 @@ export function findSegmentForRatio(segments: MinimapSegment[], ratio: number): 
     }, segments[0]);
 }
 
-export function Minimap({ segments, viewport, onJump }: {
+function MinimapIndicator({ conversationRef, segments }: {
+  conversationRef: RefObject<HTMLDivElement | null>;
   segments: MinimapSegment[];
-  viewport: MinimapViewport;
+}) {
+  const [viewport, setViewport] = useState<MinimapViewport>({ topPct: 0, heightPct: 6 });
+  useLayoutEffect(() => {
+    const container = conversationRef.current;
+    if (!container) return;
+    const update = () => {
+      const { scrollHeight, clientHeight, scrollTop } = container;
+      const heightPct = Math.min(100, Math.max(6, 100 * clientHeight / Math.max(1, scrollHeight)));
+      const topPct = scrollHeight > clientHeight ? scrollTop / (scrollHeight - clientHeight) * (100 - heightPct) : 0;
+      setViewport(previous => previous.topPct === topPct && previous.heightPct === heightPct
+        ? previous : { topPct, heightPct });
+    };
+    update();
+    container.addEventListener('scroll', update, { passive: true });
+    return () => container.removeEventListener('scroll', update);
+  }, [conversationRef, segments]);
+
+  return (
+    <div
+      data-testid="session-minimap-indicator"
+      className="absolute -left-2.5 -right-2.5 rounded-sm border-2 border-primary bg-primary/20 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_2px_8px_rgba(0,0,0,0.22)] pointer-events-none transition-[top] duration-75"
+      style={{ top: `${viewport.topPct}%`, height: `${viewport.heightPct}%`, minHeight: '8px' }}
+    />
+  );
+}
+
+export function Minimap({ segments, conversationRef, onJump }: {
+  segments: MinimapSegment[];
+  conversationRef: RefObject<HTMLDivElement | null>;
   onJump: (targetId: string) => void;
 }) {
   if (segments.length === 0) return null;
@@ -37,7 +68,8 @@ export function Minimap({ segments, viewport, onJump }: {
       <span className="text-[9px] text-muted-foreground uppercase tracking-wider">Timeline</span>
       <div className="flex flex-col gap-1 text-[9px] text-muted-foreground items-start">
         <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[rgb(56,138,221)]" />You</div>
-        <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[rgb(186,117,23)]" />Claude</div>
+        <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[rgb(186,117,23)]" />Assistant</div>
+        {segments.some(segment => segment.type === 'subagent') && <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-violet-500" />Subagent</div>}
         <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[rgb(107,114,128)]" />System</div>
       </div>
       <div
@@ -85,6 +117,8 @@ export function Minimap({ segments, viewport, onJump }: {
           } else if (segment.type === 'user') {
             color = 'rgb(56, 138, 221)';
             opacity = 0.95;
+          } else if (segment.type === 'subagent') {
+            color = 'rgb(139, 92, 246)';
           } else if (segment.type === 'assistant') {
             color = 'rgb(186, 117, 23)';
             opacity = 0.85;
@@ -118,15 +152,7 @@ export function Minimap({ segments, viewport, onJump }: {
             />
           );
         })}
-        <div
-          data-testid="session-minimap-indicator"
-          className="absolute -left-2.5 -right-2.5 rounded-sm border-2 border-primary bg-primary/20 shadow-[0_0_0_1px_rgba(255,255,255,0.45),0_2px_8px_rgba(0,0,0,0.22)] pointer-events-none transition-[top] duration-75"
-          style={{
-            top: `${viewport.topPct}%`,
-            height: `${viewport.heightPct}%`,
-            minHeight: '8px',
-          }}
-        />
+        <MinimapIndicator conversationRef={conversationRef} segments={segments} />
       </div>
     </div>
   );

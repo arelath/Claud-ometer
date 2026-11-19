@@ -1,4 +1,4 @@
-import type { SessionSubagentDisplay } from '@/lib/claude-data/types';
+import type { SessionMessageDisplay, SessionSubagentDisplay } from '@/lib/claude-data/types';
 import { asRecord, getCodexPayloadKind, type CodexEnvelope } from './schema';
 import type { CodexLogicalSessionMember } from './session-index';
 
@@ -18,9 +18,21 @@ function messageText(payload: Record<string, unknown>): string {
 interface SubagentProtocolMessage {
   type: string;
   content: string;
+  communication: NonNullable<SessionMessageDisplay['communication']>;
   taskName?: string;
   author?: string;
   recipient?: string;
+}
+
+const messageKinds = {
+  NEW_TASK: 'Task assignment',
+  FOLLOWUP_TASK: 'Follow-up task',
+  MESSAGE: 'Agent message',
+  FINAL_ANSWER: 'Final report',
+} as const;
+
+export function isEncryptedAgentMessage(value: unknown): boolean {
+  return typeof value === 'string' && /^gAAAAA[A-Za-z0-9_-]{80,}={0,2}$/.test(value.trim());
 }
 
 function protocolMessage(
@@ -28,22 +40,29 @@ function protocolMessage(
   payload: Record<string, unknown>,
 ): SubagentProtocolMessage | null {
   const type = text.match(/^Message Type:\s*([A-Z_]+)/m)?.[1];
-  if (!type || (type !== 'NEW_TASK' && type !== 'MESSAGE' && type !== 'FOLLOWUP_TASK')) return null;
+  if (!type || !Object.hasOwn(messageKinds, type)) return null;
   const taskName = text.match(/^Task name:\s*(\S+)/m)?.[1];
-  const payloadMarker = text.match(/(?:^|\n)Payload:\s*\n/i);
+  const payloadMarker = text.match(/(?:^|\n)Payload:[ \t]*(?:\r?\n|$)/i);
   const content = payloadMarker
     ? text.slice((payloadMarker.index || 0) + payloadMarker[0].length).trim()
     : '';
+  const opaqueText = isEncryptedAgentMessage(content);
+  const encrypted = opaqueText || (Array.isArray(payload.content)
+    && payload.content.some(block => asRecord(block)?.type === 'encrypted_content'));
+  const author = stringValue(payload.author) || text.match(/^Sender:[ \t]*(\S+)/m)?.[1];
+  const recipient = stringValue(payload.recipient) || taskName;
   return {
     type,
-    content: content || (type === 'MESSAGE' ? 'Message from parent agent' : 'New subagent task'),
+    content: content && !opaqueText ? content
+      : encrypted ? 'Message body is encrypted in the session log.' : 'No message body was recorded.',
+    communication: { kind: messageKinds[type as keyof typeof messageKinds], sender: author, recipient },
     taskName,
-    author: stringValue(payload.author) || undefined,
-    recipient: stringValue(payload.recipient) || undefined,
+    author,
+    recipient,
   };
 }
 
-function incomingProtocol(record: CodexEnvelope): SubagentProtocolMessage | null {
+export function incomingProtocol(record: CodexEnvelope): SubagentProtocolMessage | null {
   if (record.type !== 'response_item' || getCodexPayloadKind(record) !== 'agent_message') return null;
   const payload = asRecord(record.payload) || {};
   return protocolMessage(messageText(payload), payload);
@@ -69,8 +88,10 @@ function protocolAddressScore(
 function isProtocolForMember(
   protocol: SubagentProtocolMessage,
   member: CodexLogicalSessionMember,
+  memberPath: string | undefined,
   allowUntargeted: boolean,
 ): boolean {
+  if (protocol.recipient && memberPath) return protocol.recipient === memberPath;
   if (protocolAddressScore(protocol, member) > 0) return true;
   const hasTarget = Boolean(protocol.recipient || protocol.taskName || protocol.author);
   return allowUntargeted && !hasTarget;
@@ -120,17 +141,6 @@ function rebaseTokenRecord(record: CodexEnvelope, baseline: Record<string, numbe
   };
 }
 
-function visibleProtocolRecord(record: CodexEnvelope, content: string): CodexEnvelope {
-  return {
-    ...record,
-    payload: {
-      type: 'message',
-      role: 'user',
-      content: [{ type: 'input_text', text: content }],
-    },
-  };
-}
-
 export function subagentDisplay(member: CodexLogicalSessionMember): SessionSubagentDisplay {
   const fileInfo = member.fileInfo;
   return {
@@ -163,6 +173,7 @@ export function scopeCodexSubagentRecords(
     : markerBoundary || (boundaries.length === 1 ? boundaries[0] : undefined);
   const boundaryIndex = boundary?.index ?? -1;
   if (boundaryIndex < 0) return [records[0]];
+  const memberPath = member.fileInfo.agentPath || boundary?.protocol.recipient;
 
   let contextIndex = -1;
   let baseline: Record<string, number> = {};
@@ -182,8 +193,8 @@ export function scopeCodexSubagentRecords(
       const markedFollowup = incoming.type !== 'NEW_TASK' && isTriggeredInterAgentMarker(records[index - 1]);
       if (selectedBoundary
         || markedFollowup
-        || isProtocolForMember(incoming, member, boundaries.length === 1)) {
-        scoped.push(visibleProtocolRecord(record, incoming.content));
+        || isProtocolForMember(incoming, member, memberPath, boundaries.length === 1)) {
+        scoped.push(record);
       }
       continue;
     }

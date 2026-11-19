@@ -16,7 +16,7 @@ function addDirectoryFiles(archive: ArchiveWriter, sourceDir: string, rootDir: s
 
     if (entry.isDirectory()) {
       addDirectoryFiles(archive, entryPath, rootDir, prefix);
-    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+    } else if (entry.isFile() && /\.jsonl(?:\.zst)?$/.test(entry.name)) {
       archive.file(entryPath, { name: toZipPath(prefix, relativePath) });
     }
   }

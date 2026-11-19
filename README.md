@@ -233,6 +233,22 @@ Codex exports include rollout JSONL files plus `session_index.jsonl`/`version.js
 
 Full exports also include a provider-normalized copy under `agent-data/standardized/`. Standardized-only exports contain just that normalized folder, where `projects.json`, `sessions.json`, and per-session detail files use the same dashboard schema for every provider.
 
+## Model pricing
+
+Run `npm run pricing:update` to refresh the generated LiteLLM catalog and retain
+rates for retired models used in historical sessions. Official
+OpenAI rates in `src/config/openai-pricing.json` supplement and override that
+catalog, so newer models remain available after a LiteLLM refresh. Update the
+official supplement and its verification date together when prices change.
+
+GPT-6 Astra, Sol, and Luna, GPT-6.1 Sol and Terra, and GPT-6.2 Astra and Sol use
+published Standard short-context rates, verified November 18, 2026.
+GPT-6 Sol and GPT-6.1 Sol have separate cached
+input rates. Estimates do not apply per-request long-context pricing above 272K
+input tokens, service-tier adjustments, or regional premiums. See
+[OpenAI pricing](https://developers.openai.com/api/docs/pricing) and the
+[GPT-6 Sol model page](https://developers.openai.com/api/docs/models/gpt-6-sol).
+
 ## License
 
 MIT

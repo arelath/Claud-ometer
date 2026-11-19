@@ -67,7 +67,7 @@ export const GET = withErrorHandler(async (request?: Request) => {
   if (format === 'full' && availableAgents.includes('codex')) {
     const codexDir = getAgentDataDir('codex');
     addCodexDataToArchive(archive, codexDir, toZipPath(AGENT_ARCHIVE_ROOT, 'codex'));
-    agentCounts.codex = countCodexData(codexDir);
+    agentCounts.codex = await countCodexData(codexDir);
   }
   if (format === 'full' && availableAgents.includes('copilot')) {
     const copilotDir = getAgentDataDir('copilot');

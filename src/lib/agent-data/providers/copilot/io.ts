@@ -11,6 +11,7 @@ export interface CopilotTranscriptRecord {
   id?: string;
   timestamp?: string;
   parentId?: string | null;
+  agentId?: string;
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
@@ -73,6 +74,7 @@ function parseCopilotJsonlLine(line: string): CopilotTranscriptRecord | null {
       id: typeof record.id === 'string' ? record.id : undefined,
       timestamp: typeof record.timestamp === 'string' ? record.timestamp : undefined,
       parentId: typeof record.parentId === 'string' || record.parentId === null ? record.parentId : undefined,
+      agentId: typeof record.agentId === 'string' ? record.agentId : undefined,
     };
   } catch {
     // Copilot can leave a partial final JSONL line while VS Code is open.

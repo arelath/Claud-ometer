@@ -11,16 +11,12 @@ import { ANTHROPIC_FILE_DETAIL_KEYS } from '@/config/anthropic-schema';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { findDetail } from '../detail-utils';
 import { useSessionRenderContext } from '../session-render-context';
+import { DeferredTranscriptContent } from './DeferredTranscriptContent';
 import { ToolCallInline, ToolResultInline } from './ToolCall';
 import { CompactionDivider, ThinkingSummary, BlockCard } from './SystemEvent';
 import { SubagentIndicator } from './SubagentIndicator';
 
-export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
-  msg: SessionMessageDisplay;
-  index: number;
-  toolPairs: ToolPair[];
-  toolTimeline?: AssistantTimelineItem[];
-}) {
+function AssistantHeader({ msg }: { msg: SessionMessageDisplay }) {
   const { pickCost } = useCostMode();
   const { assistantLabel = 'Claude' } = useSessionRenderContext();
   const thinkingBlocks = (msg.blocks || []).filter(block => block.type === 'thinking');
@@ -31,7 +27,6 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
     : null;
 
   const turnCost = pickCost(msg.estimatedCosts, 0);
-  const nestedTimeline = toolTimeline || toolPairs.map(pair => ({ type: 'tool-pair' as const, pair }));
   const unpairedTools = msg.toolCalls || [];
   const fallbackSummary = (() => {
     if (msg.content) return null;
@@ -51,72 +46,87 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
   })();
 
   return (
-    <div id={`conversation-message-${index}`} data-testid="assistant-turn">
-      <div className={`bg-card border rounded-lg p-3 ${msg.subagent ? 'border-violet-400/50 bg-violet-500/[0.03]' : 'border-border/50'}`}>
-        <div className="flex items-center gap-2 mb-1.5">
-          <div className="w-[18px] h-[18px] rounded bg-amber-500/10 flex items-center justify-center">
-            <Bot className="h-2.5 w-2.5 text-amber-600" />
-          </div>
-          <span className="text-[11px] font-medium text-foreground">{assistantLabel}</span>
-          <SubagentIndicator subagent={msg.subagent} />
-          {modelLabel && <span className="text-[11px] text-muted-foreground">{modelLabel}</span>}
-          {msg.timestamp && !Number.isNaN(new Date(msg.timestamp).getTime()) && (
-            <span className="text-[11px] text-muted-foreground">- {format(new Date(msg.timestamp), 'h:mm:ss a')}</span>
-          )}
-          {msg.usage && (
-            <div className="ml-auto flex gap-2.5 text-[11px] text-muted-foreground font-mono">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span>down {formatTokens((msg.usage.input_tokens || 0) + (msg.usage.cache_read_input_tokens || 0))}</span>
-                </TooltipTrigger>
-                <TooltipContent>Input tokens (including cache read)</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span>up {formatTokens(msg.usage.output_tokens || 0)}</span>
-                </TooltipTrigger>
-                <TooltipContent>Output tokens</TooltipContent>
-              </Tooltip>
-              {turnCost > 0.001 && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="text-foreground/70">{formatCost(turnCost)}</span>
-                  </TooltipTrigger>
-                  <TooltipContent>Estimated cost this turn</TooltipContent>
-                </Tooltip>
-              )}
-            </div>
-          )}
+    <div className={`bg-card border rounded-lg p-3 ${msg.subagent ? 'border-violet-400/50 bg-violet-500/[0.03]' : 'border-border/50'}`}>
+      <div className="flex items-center gap-2 mb-1.5">
+        <div className="w-[18px] h-[18px] rounded bg-amber-500/10 flex items-center justify-center">
+          <Bot className="h-2.5 w-2.5 text-amber-600" />
         </div>
-
-        {msg.content && (
-          <div className="text-sm leading-relaxed text-foreground whitespace-pre-wrap break-words">
-            {msg.content}
-          </div>
+        {!msg.subagent && <span className="text-[11px] font-medium text-foreground">{assistantLabel}</span>}
+        <SubagentIndicator subagent={msg.subagent} />
+        {modelLabel && <span className="text-[11px] text-muted-foreground">{modelLabel}</span>}
+        {msg.timestamp && !Number.isNaN(new Date(msg.timestamp).getTime()) && (
+          <span className="text-[11px] text-muted-foreground">- {format(new Date(msg.timestamp), 'h:mm:ss a')}</span>
         )}
-        {!msg.content && fallbackSummary && (
-          <div className="text-sm leading-relaxed text-foreground/70 italic">
-            {fallbackSummary}
+        {msg.usage && (
+          <div className="ml-auto flex gap-2.5 text-[11px] text-muted-foreground font-mono">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>down {formatTokens((msg.usage.input_tokens || 0) + (msg.usage.cache_read_input_tokens || 0))}</span>
+              </TooltipTrigger>
+              <TooltipContent>Input tokens (including cache read)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>up {formatTokens(msg.usage.output_tokens || 0)}</span>
+              </TooltipTrigger>
+              <TooltipContent>Output tokens</TooltipContent>
+            </Tooltip>
+            {turnCost > 0.001 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="text-foreground/70">{formatCost(turnCost)}</span>
+                </TooltipTrigger>
+                <TooltipContent>Estimated cost this turn</TooltipContent>
+              </Tooltip>
+            )}
           </div>
-        )}
-
-        {thinkingBlocks.filter(block => block.summary).map((block, i) => (
-          <ThinkingSummary key={`think-${i}`} block={block} />
-        ))}
-
-        {msg.toolCalls && msg.toolCalls.length > 0 && (
-          <div className="mt-2 border-t border-border/30 pt-2 space-y-0">
-            {msg.toolCalls.map((tool, i) => <ToolCallInline key={tool.id || i} tool={tool} />)}
-          </div>
-        )}
-
-        {eventBlocks.length > 0 && (
-          <details className="mt-2">
-            <summary className="cursor-pointer text-[10px] text-muted-foreground">{eventBlocks.length} event{eventBlocks.length === 1 ? '' : 's'}</summary>
-            <div className="space-y-0 mt-1">{eventBlocks.map((block, i) => <BlockCard key={i} block={block} />)}</div>
-          </details>
         )}
       </div>
+
+      {msg.content && (
+        <div className="text-sm leading-relaxed text-foreground whitespace-pre-wrap break-words">
+          {msg.content}
+        </div>
+      )}
+      {!msg.content && fallbackSummary && (
+        <div className="text-sm leading-relaxed text-foreground/70 italic">
+          {fallbackSummary}
+        </div>
+      )}
+
+      {thinkingBlocks.filter(block => block.summary).map((block, i) => (
+        <ThinkingSummary key={`think-${i}`} block={block} />
+      ))}
+
+      {msg.toolCalls && msg.toolCalls.length > 0 && (
+        <div className="mt-2 border-t border-border/30 pt-2 space-y-0">
+          {msg.toolCalls.map((tool, i) => <ToolCallInline key={tool.id || i} tool={tool} />)}
+        </div>
+      )}
+
+      {eventBlocks.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-[10px] text-muted-foreground">{eventBlocks.length} event{eventBlocks.length === 1 ? '' : 's'}</summary>
+          <div className="space-y-0 mt-1">{eventBlocks.map((block, i) => <BlockCard key={i} block={block} />)}</div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+export function AssistantCard({ msg, index, toolPairs, toolTimeline, deferContent = false }: {
+  msg: SessionMessageDisplay;
+  index: number;
+  toolPairs: ToolPair[];
+  toolTimeline?: AssistantTimelineItem[];
+  deferContent?: boolean;
+}) {
+  const nestedTimeline = toolTimeline || toolPairs.map(pair => ({ type: 'tool-pair' as const, pair }));
+  return (
+    <div id={`conversation-message-${index}`} data-testid="assistant-turn">
+      <DeferredTranscriptContent enabled={deferContent} placeholderHeight={96}>
+        <AssistantHeader msg={msg} />
+      </DeferredTranscriptContent>
 
       {nestedTimeline.length > 0 && (
         <div className="ml-4 border-l-2 border-border/50 pl-3 mt-1 space-y-1">
@@ -144,22 +154,31 @@ export function AssistantCard({ msg, index, toolPairs, toolTimeline }: {
                 data-tool-result-id={toolResultId}
                 className="rounded border border-border/30 bg-card/40 overflow-hidden"
               >
+                {msg.subagent && (
+                  <div className="border-l-2 border-violet-400 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300">
+                    Tool activity · {msg.subagent.path || msg.subagent.nickname || msg.subagent.id}
+                  </div>
+                )}
                 {pair.toolUse && (
                   <div id={`conversation-message-${pair.toolUse.index}`}>
-                    {(pair.toolUse.message.toolCalls || []).map((tool, j) => (
-                      <ToolCallInline key={tool.id || j} tool={tool} />
-                    ))}
-                    {(pair.toolUse.message.blocks || []).filter(block => block.type === 'thinking').filter(block => block.summary).map((block, j) => (
-                      <div key={`think-${j}`} className="flex items-center gap-1.5 px-3 py-0.5 text-[11px] text-muted-foreground">
-                        <Brain className="h-2.5 w-2.5 shrink-0" />
-                        <span className="truncate">{block.summary}</span>
-                      </div>
-                    ))}
+                    <DeferredTranscriptContent enabled={deferContent} placeholderHeight={52}>
+                      {(pair.toolUse.message.toolCalls || []).map((tool, j) => (
+                        <ToolCallInline key={tool.id || j} tool={tool} />
+                      ))}
+                      {(pair.toolUse.message.blocks || []).filter(block => block.type === 'thinking').filter(block => block.summary).map((block, j) => (
+                        <div key={`think-${j}`} className="flex items-center gap-1.5 px-3 py-0.5 text-[11px] text-muted-foreground">
+                          <Brain className="h-2.5 w-2.5 shrink-0" />
+                          <span className="truncate">{block.summary}</span>
+                        </div>
+                      ))}
+                    </DeferredTranscriptContent>
                   </div>
                 )}
                 {pair.toolResult && (
                   <div id={`conversation-message-${pair.toolResult.index}`} className="border-t border-border/30">
-                    <ToolResultInline msg={pair.toolResult.message} />
+                    <DeferredTranscriptContent enabled={deferContent} placeholderHeight={100}>
+                      <ToolResultInline msg={pair.toolResult.message} />
+                    </DeferredTranscriptContent>
                   </div>
                 )}
               </div>

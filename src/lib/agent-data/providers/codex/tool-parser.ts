@@ -5,13 +5,42 @@ import type {
   SessionToolCallDetail,
   SessionToolCallDisplay,
 } from '@/lib/claude-data/types';
-import { asRecord, type CodexEnvelope } from './schema';
+import { asRecord, getCodexPayloadKind, type CodexEnvelope } from './schema';
+import { isEncryptedAgentMessage } from './subagent';
 
 export interface CodexToolResult {
   kind: string;
   callId: string;
   payload: Record<string, unknown>;
   source: 'response-output' | 'event-end';
+  summaryBlock?: SessionMessageBlockDisplay;
+}
+
+export const SUMMARY_TOOL_RESULT = Symbol('codex-summary-tool-result');
+export type CodexSummaryEnvelope = CodexEnvelope & { [SUMMARY_TOOL_RESULT]?: CodexToolResult };
+
+export function compactCodexToolResult(result: CodexToolResult, preserveSnapshot = false): CodexToolResult {
+  const block = buildCodexToolResultBlock(result);
+  const limit = 8 * 1024;
+  // A sliced string can keep the entire multi-megabyte output alive in V8.
+  const prefix = (value: string) => Buffer.from(value.slice(0, limit), 'utf16le').toString('utf16le');
+  return {
+    ...result,
+    // Patch extraction needs changes and failure status, not the raw output.
+    payload: {
+      changes: result.payload.changes,
+      success: !resultHasScriptError(result),
+      exit_code: result.payload.exit_code ?? result.payload.exitCode,
+      duration_ms: result.payload.duration_ms ?? result.payload.durationMs,
+    },
+    summaryBlock: {
+      ...block,
+      content: preserveSnapshot ? block.content : block.content == null ? undefined : prefix(block.content),
+      outputParts: undefined,
+      images: undefined,
+      details: block.details.map(item => ({ ...item, value: prefix(item.value) })),
+    },
+  };
 }
 
 interface ParsedApplyPatchEdit {
@@ -63,29 +92,15 @@ function getImageUrl(value: unknown): string | null {
   return typeof url === 'string' ? url : null;
 }
 
-function getOutputImages(output: unknown): SessionMessageImageDisplay[] {
-  if (!Array.isArray(output)) return [];
-
-  const images: SessionMessageImageDisplay[] = [];
-  for (const item of output) {
-    const record = asRecord(item);
-    if (!record || getOptionalString(record, 'type') !== 'input_image') continue;
-
-    const url = getImageUrl(record.image_url ?? record.image);
-    if (!url) continue;
-
-    const mediaType = getOptionalString(record, 'media_type')
-      || getOptionalString(record, 'mime_type')
-      || getDataImageMediaType(url);
-    if (!mediaType?.startsWith('image/')) continue;
-
-    images.push({
-      url,
-      mediaType,
-      label: `Image ${images.length + 1}`,
-    });
-  }
-  return images;
+function getOutputImage(record: Record<string, unknown>, index: number): SessionMessageImageDisplay | undefined {
+  if (getOptionalString(record, 'type') !== 'input_image') return undefined;
+  const url = getImageUrl(record.image_url ?? record.image);
+  if (!url) return undefined;
+  const mediaType = getOptionalString(record, 'media_type')
+    || getOptionalString(record, 'mime_type')
+    || getDataImageMediaType(url);
+  if (!mediaType?.startsWith('image/')) return undefined;
+  return { url, mediaType, label: `Image ${index + 1}` };
 }
 
 function getCallId(record: Record<string, unknown>): string {
@@ -95,6 +110,55 @@ function getCallId(record: Record<string, unknown>): string {
     || '';
 }
 
+type ToolOutputPart = NonNullable<SessionMessageBlockDisplay['outputParts']>[number];
+
+function decodeTextReturn(text: string): ToolOutputPart {
+  if (text.trimStart().startsWith('[')) {
+    try {
+      const tuple: unknown = JSON.parse(text);
+      if (Array.isArray(tuple) && tuple.length === 2) {
+        const [label, body] = tuple;
+        if (typeof label === 'string' && label.trim() && !/[\r\n]/.test(label) && typeof body === 'string') {
+          return { label, text: body };
+        }
+      }
+    } catch {
+      // Text beginning with a bracket may be ordinary tool output.
+    }
+  }
+  return { text };
+}
+
+function unpackOutput(output: unknown): { parts: ToolOutputPart[]; images: SessionMessageImageDisplay[] } | undefined {
+  let entries = output;
+  if (typeof output === 'string' && /^\s*\[\s*\{/.test(output)) {
+    try {
+      entries = JSON.parse(output);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!Array.isArray(entries)) return undefined;
+
+  const parts: ToolOutputPart[] = [];
+  const images: SessionMessageImageDisplay[] = [];
+  let hasContentBlocks = false;
+  for (const entry of entries) {
+    const record = asRecord(entry);
+    const image = record && getOutputImage(record, images.length);
+    if (image) {
+      hasContentBlocks = true;
+      images.push(image);
+    } else if (record && (record.type === 'input_text' || record.type === 'output_text' || record.type === 'text') && typeof record.text === 'string') {
+      hasContentBlocks = true;
+      parts.push(decodeTextReturn(record.text));
+    } else {
+      parts.push({ text: JSON.stringify(entry, null, 2) ?? '' });
+    }
+  }
+  return hasContentBlocks ? { parts, images } : undefined;
+}
+
 export function collectCodexToolResults(records: CodexEnvelope[]): Map<string, CodexToolResult> {
   const results = new Map<string, CodexToolResult>();
   for (const record of records) {
@@ -102,16 +166,17 @@ export function collectCodexToolResults(records: CodexEnvelope[]): Map<string, C
     const kind = getOptionalString(payload, 'kind') || getOptionalString(payload, 'type') || '';
     const callId = getCallId(payload);
     if (!callId) continue;
+    const prepared = (record as CodexSummaryEnvelope)[SUMMARY_TOOL_RESULT];
 
     if (record.type === 'response_item' && (kind === 'function_call_output' || kind === 'custom_tool_call_output')) {
       if (!results.has(callId)) {
-        results.set(callId, { kind, callId, payload, source: 'response-output' });
+        results.set(callId, prepared || { kind, callId, payload, source: 'response-output' });
       }
       continue;
     }
 
     if (record.type === 'event_msg' && kind.endsWith('_end')) {
-      results.set(callId, { kind, callId, payload, source: 'event-end' });
+      results.set(callId, prepared || { kind, callId, payload, source: 'event-end' });
     }
   }
   return results;
@@ -272,12 +337,70 @@ function getApplyPatchInput(payload: Record<string, unknown>): string | undefine
   return undefined;
 }
 
-function getEmbeddedApplyPatchInputs(payload: Record<string, unknown>): string[] {
-  const source = typeof payload.input === 'string'
+function getExecInput(payload: Record<string, unknown>): string {
+  return typeof payload.input === 'string'
     ? payload.input
     : typeof payload.arguments === 'string'
       ? payload.arguments
       : '';
+}
+
+export function getCodexFileChangeItem(record: CodexEnvelope): Record<string, unknown> | null {
+  if (record.type !== 'event_msg' || getCodexPayloadKind(record) !== 'item_completed') return null;
+  const item = asRecord(getPayload(record).item);
+  return item?.type === 'FileChange' ? item : null;
+}
+
+export function collectCodexFileChanges(records: CodexEnvelope[]): {
+  byRecord: Map<CodexEnvelope, CodexToolResult>;
+  coveredCallIds: Set<string>;
+} {
+  const byRecord = new Map<CodexEnvelope, CodexToolResult>();
+  const coveredCallIds = new Set<string>();
+  const pendingPatchCalls = new Set<string>();
+  const seenItems = new Set<string>();
+
+  for (const record of records) {
+    const kind = getCodexPayloadKind(record);
+    if (record.type === 'response_item') {
+      const payload = getPayload(record);
+      const callId = getCallId(payload);
+      if (kind === 'custom_tool_call_output' || kind === 'function_call_output') {
+        pendingPatchCalls.delete(callId);
+      } else if (callId && (kind === 'custom_tool_call' || kind === 'function_call')) {
+        if (payload.name === 'apply_patch' || (payload.name === 'exec' && getExecInput(payload).includes('tools.apply_patch'))) {
+          pendingPatchCalls.add(callId);
+        }
+      }
+      continue;
+    }
+
+    if (record.type !== 'event_msg') continue;
+    if (kind === 'task_started' || kind === 'task_complete' || kind === 'turn_aborted') {
+      pendingPatchCalls.clear();
+    }
+    const item = getCodexFileChangeItem(record);
+    if (!item) continue;
+    const itemId = getCallId(item);
+    if (!itemId || seenItems.has(itemId)) continue;
+    seenItems.add(itemId);
+
+    // Nested tools get their own item IDs. Bridge to the outer call only when
+    // there is a single pending patch-capable call and no exact ID match.
+    coveredCallIds.add(itemId);
+    if (!pendingPatchCalls.has(itemId) && pendingPatchCalls.size === 1) {
+      const [parentCallId] = pendingPatchCalls;
+      coveredCallIds.add(parentCallId);
+    }
+    if (item.status !== 'completed') continue;
+    byRecord.set(record, { kind: 'file_change', callId: itemId, payload: item, source: 'event-end' });
+  }
+
+  return { byRecord, coveredCallIds };
+}
+
+function getEmbeddedApplyPatchInputs(payload: Record<string, unknown>): string[] {
+  const source = getExecInput(payload);
   if (!source || !source.includes('tools.apply_patch')) return [];
 
   const patches: string[] = [];
@@ -411,26 +534,46 @@ export function buildCodexPatchResultToolCalls(result: CodexToolResult): Session
   }, result);
 }
 
+export function isAgentMessagingTool(name: string): boolean {
+  return name === 'spawn_agent' || name === 'send_message' || name === 'followup_task';
+}
+
 function buildGenericTool(payload: Record<string, unknown>, result?: CodexToolResult): SessionToolCallDisplay {
   const name = getOptionalString(payload, 'name') || getOptionalString(payload, 'type') || 'tool_call';
   const callId = getCallId(payload);
   const input = parseJsonObject(payload.arguments ?? payload.input);
+  let summary = name;
+  if (isAgentMessagingTool(name)) {
+    const target = name === 'spawn_agent' ? input.task_name : input.target;
+    if (typeof target === 'string') {
+      summary = name === 'spawn_agent' ? `Assigned task to ${target}`
+        : name === 'followup_task' ? `Follow-up for ${target}` : `Message to ${target}`;
+    }
+  }
   return {
     name,
     id: callId,
-    summary: name,
+    summary,
     details: compactDetails([
       detail('tool_use_id', callId, 'tool use id'),
-      ...Object.entries(input).map(([key, value]) => detail(key, value)),
+      ...Object.entries(input).map(([key, value]) => detail(key,
+        key === 'message' && isAgentMessagingTool(name) && isEncryptedAgentMessage(value)
+          ? 'Message body is encrypted in the session log.' : value)),
       detail('status', result ? 'completed' : 'pending', 'status'),
     ]),
   };
 }
 
-export function buildCodexToolCalls(payload: Record<string, unknown>, results: Map<string, CodexToolResult>): SessionToolCallDisplay[] {
+export function buildCodexToolCalls(
+  payload: Record<string, unknown>,
+  results: Map<string, CodexToolResult>,
+  coveredCallIds?: ReadonlySet<string>,
+): SessionToolCallDisplay[] {
   const name = getOptionalString(payload, 'name') || getOptionalString(payload, 'type') || '';
-  const result = results.get(getCallId(payload));
+  const callId = getCallId(payload);
+  const result = results.get(callId);
   if (name === 'shell_command') return [buildShellTool(payload, result)];
+  if (coveredCallIds?.has(callId)) return [buildGenericTool(payload, result)];
   if (name === 'apply_patch') return buildPatchTools(payload, result);
   if (name === 'exec') {
     const embeddedPatches = getEmbeddedApplyPatchInputs(payload);
@@ -447,16 +590,23 @@ export function buildCodexToolCalls(payload: Record<string, unknown>, results: M
 }
 
 export function buildCodexToolResultBlock(result: CodexToolResult): SessionMessageBlockDisplay {
+  if (result.summaryBlock) return result.summaryBlock;
   const stdout = getOptionalString(result.payload, 'stdout') || '';
   const stderr = getOptionalString(result.payload, 'stderr') || '';
-  const outputImages = getOutputImages(result.payload.output);
-  const output = result.payload.output == null
-    ? ''
-    : typeof result.payload.output === 'string'
-      ? result.payload.output
-      : outputImages.length > 0
-        ? ''
-        : JSON.stringify(result.payload.output, null, 2);
+  const rawOutput = result.payload.output;
+  const unpacked = unpackOutput(rawOutput);
+  const images = unpacked?.images || [];
+  let output = '';
+  if (unpacked) {
+    output = unpacked.parts.map(part => part.label ? `${part.label}\n${part.text}` : part.text).join('\n\n');
+  } else if (rawOutput != null) {
+    output = typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput, null, 2);
+  }
+  const outputParts = unpacked?.parts.some(part => part.label || part.text.trim()) ? [
+    ...(stdout ? [{ label: 'stdout', text: stdout }] : []),
+    ...(stderr ? [{ label: 'stderr', text: stderr }] : []),
+    ...unpacked.parts,
+  ] : undefined;
   const exitCode = result.payload.exit_code ?? result.payload.exitCode;
   const content = [stdout, stderr, output].filter(Boolean).join('\n').trim();
   const failed = result.payload.success === false || (typeof exitCode === 'number' && exitCode !== 0);
@@ -464,18 +614,19 @@ export function buildCodexToolResultBlock(result: CodexToolResult): SessionMessa
   return {
     type: 'tool-result',
     title: result.kind,
-    summary: outputImages.length > 0
-      ? `${outputImages.length} image${outputImages.length === 1 ? '' : 's'}`
+    summary: images.length > 0
+      ? `${images.length} image${images.length === 1 ? '' : 's'}`
       : exitCode != null ? `exit code ${exitCode}` : (failed ? 'failed' : 'completed'),
     content,
-    images: outputImages,
+    outputParts,
+    images,
     details: compactDetails([
       detail('tool_use_id', result.callId, 'tool use id'),
       detail('status', failed ? 'failed' : 'success', 'status'),
       detail('exit_code', exitCode, 'exit code'),
       detail('stdout', stdout, 'stdout'),
       detail('stderr', stderr, 'stderr'),
-      outputImages.length > 0 ? detail('output', `${outputImages.length} image output`, 'output') : detail('output', output, 'output'),
+      detail('output', output || (images.length ? `${images.length} image output` : ''), 'output'),
       detail('duration_ms', result.payload.duration_ms ?? result.payload.durationMs, 'duration ms'),
     ]),
   };

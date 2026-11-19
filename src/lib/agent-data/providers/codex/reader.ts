@@ -12,25 +12,40 @@ import {
 } from '@/lib/agent-data/session-summary';
 import {
   discoverCodexLogicalSessions,
+  codexSessionFilePaths,
   type CodexLogicalSessionInfo,
   type CodexSessionFileInfo,
 } from './session-index';
 import {
   parseCodexRecords,
-  parseCodexSessionFile,
   parseCodexSessionSummaryFile,
   readCodexRecords,
-  readCodexRecordsSync,
   type CodexParsedSession,
 } from './transcript-parser';
 import { scopeCodexSubagentRecords, subagentDisplay } from './subagent';
 import { buildCodexDashboardStats } from './stats';
 import { getSessionChangeTotals } from '@/lib/session-diff';
 import { buildChangeEvents, buildUsageEvents } from '@/lib/agent-data/event-metrics';
+import { readCodexSummaryRecords } from './summary-records';
+import type { CodexEnvelope } from './schema';
 
 const parsedCache = new AgentDataCache<CodexParsedSession>();
 const infoCache = new AgentDataCache<SessionInfo>();
-export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v8';
+export const CODEX_SESSION_SUMMARY_PARSER_VERSION = 'codex-summary-v11';
+
+async function readSessionRecords(fileInfo: CodexSessionFileInfo, summaryOnly = false): Promise<CodexEnvelope[]> {
+  const read = summaryOnly ? readCodexSummaryRecords : readCodexRecords;
+  if (!fileInfo.rolloutSegments) return read(fileInfo.filePath);
+  const records: CodexEnvelope[] = [];
+  for (const segment of fileInfo.rolloutSegments) {
+    for (const record of await read(segment.filePath, segment.endOffset)) records.push(record);
+  }
+  return records;
+}
+
+function logicalSourcePaths(logical: CodexLogicalSessionInfo): string[] {
+  return Array.from(new Set(logical.members.flatMap(member => codexSessionFilePaths(member.fileInfo))));
+}
 
 function mergeParsedSessions(logical: CodexLogicalSessionInfo, parsedMembers: CodexParsedSession[]): CodexParsedSession {
   const rootParsed = parsedMembers[0];
@@ -75,7 +90,7 @@ function mergeParsedSessions(logical: CodexLogicalSessionInfo, parsedMembers: Co
   const info: SessionInfo = {
     ...rootInfo,
     sourceFilePath: logical.root.filePath,
-    sourceFilePaths: logical.members.map(member => member.fileInfo.filePath),
+    sourceFilePaths: logicalSourcePaths(logical),
     duration: Math.max(0, updatedAtMs - new Date(rootInfo.timestamp).getTime()),
     messageCount: parsedMembers.reduce((sum, parsed) => sum + parsed.info.messageCount, 0),
     userMessageCount: parsedMembers.reduce((sum, parsed) => sum + parsed.info.userMessageCount, 0),
@@ -110,14 +125,13 @@ async function parseDiscoveredSession(logical: CodexLogicalSessionInfo): Promise
   const cached = parsedCache.get({ provider: 'codex', filePath: logical.root.filePath, signature: logical.sourceSignature, scope: 'detail' });
   if (cached) return cached;
 
-  const parsedMembers = await Promise.all(logical.members.map(async (member) => {
-    if (!member.isSubagent) return parseCodexSessionFile(member.fileInfo.filePath, member.fileInfo);
-    const records = scopeCodexSubagentRecords(await readCodexRecords(member.fileInfo.filePath), member);
-    return parseCodexSessionFile(member.fileInfo.filePath, member.fileInfo, {
-      records,
-      subagent: subagentDisplay(member),
-    });
-  }));
+  const parsedMembers: CodexParsedSession[] = [];
+  for (const member of logical.members) {
+    const records = await readSessionRecords(member.fileInfo);
+    parsedMembers.push(parseCodexRecords(member.fileInfo.filePath,
+      member.isSubagent ? scopeCodexSubagentRecords(records, member) : records,
+      member.fileInfo, member.isSubagent ? { subagent: subagentDisplay(member) } : {}));
+  }
   const parsed = mergeParsedSessions(logical, parsedMembers);
   parsedCache.set({ provider: 'codex', filePath: logical.root.filePath, signature: logical.sourceSignature, scope: 'detail' }, parsed);
   return parsed;
@@ -125,8 +139,26 @@ async function parseDiscoveredSession(logical: CodexLogicalSessionInfo): Promise
 
 async function getParsedSessions(): Promise<CodexParsedSession[]> {
   const sessions = await discoverCodexLogicalSessions();
-  const parsed = await Promise.all(sessions.map(parseDiscoveredSession));
+  const parsed: CodexParsedSession[] = [];
+  for (const session of sessions) parsed.push(await parseDiscoveredSession(session));
   return parsed.sort((left, right) => right.info.timestamp.localeCompare(left.info.timestamp));
+}
+
+async function parseDiscoveredSummary(logical: CodexLogicalSessionInfo): Promise<CodexParsedSession> {
+  const parsedMembers: CodexParsedSession[] = [];
+  for (const member of logical.members) {
+    // A logical session may have hundreds of children. Read one transcript at a
+    // time and release its display-only text before reading the next one.
+    const records = await readSessionRecords(member.fileInfo, true);
+    const parsed = parseCodexRecords(
+      member.fileInfo.filePath,
+      member.isSubagent ? scopeCodexSubagentRecords(records, member) : records,
+      member.fileInfo,
+      { summaryOnly: true, subagent: member.isSubagent ? subagentDisplay(member) : undefined },
+    );
+    parsedMembers.push(parsed);
+  }
+  return mergeParsedSessions(logical, parsedMembers);
 }
 
 function routeNativeId(id: string): string {
@@ -165,7 +197,7 @@ function buildLightweightSessionInfo(logical: CodexLogicalSessionInfo): SessionI
     projectName: fileInfo.cwd ? fileInfo.cwd.split(/[\\/]/).filter(Boolean).at(-1) || nativeProjectId : nativeProjectId,
     title: fileInfo.title,
     sourceFilePath: fileInfo.filePath,
-    sourceFilePaths: logical.members.map(member => member.fileInfo.filePath),
+    sourceFilePaths: logicalSourcePaths(logical),
     timestamp,
     duration,
     messageCount: 0,
@@ -299,7 +331,10 @@ function getSourceLogicalInfo(source: SessionSummarySource): CodexLogicalSession
 
 export async function buildSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
   const logical = getSourceLogicalInfo(source);
-  const parsed = await parseDiscoveredSession(logical);
+  return summaryFromParsed(source, logical, await parseDiscoveredSummary(logical));
+}
+
+function summaryFromParsed(source: SessionSummarySource, logical: CodexLogicalSessionInfo, parsed: CodexParsedSession): CachedSessionSummary {
   const summary = parsed.info;
   const updatedAt = new Date(new Date(summary.timestamp).getTime() + summary.duration).toISOString();
   const changeTotals = getSessionChangeTotals(parsed.detail.messages);
@@ -345,7 +380,7 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
     projectRouteId,
     projectName: summary.cwd ? summary.cwd.split(/[\\/]/).filter(Boolean).at(-1) || 'codex' : 'codex',
     sourceFilePath: logical.root.filePath,
-    sourceFilePaths: logical.members.map(member => member.fileInfo.filePath),
+    sourceFilePaths: logicalSourcePaths(logical),
     sourceSignature: source.sourceSignature,
     createdAt: summary.timestamp,
     updatedAt,
@@ -376,18 +411,24 @@ export async function buildSessionSummary(source: SessionSummarySource): Promise
   };
 }
 
-export function buildLightweightSessionSummary(source: SessionSummarySource): CachedSessionSummary {
+export async function buildLightweightSessionSummary(source: SessionSummarySource): Promise<CachedSessionSummary> {
   const logical = getSourceLogicalInfo(source);
+  if (logical.members.some(member => member.fileInfo.rolloutSegments)) {
+    return summaryFromParsed(source, logical, await parseDiscoveredSummary(logical));
+  }
   const fileInfo = logical.root;
-  const summary = parseCodexSessionSummaryFile(source.sourceFilePath, fileInfo);
-  const childSummaries = logical.members.filter(member => (
-    member.isSubagent && member.fileInfo.filePath !== logical.root.filePath
-  )).map(member => {
-    const records = scopeCodexSubagentRecords(readCodexRecordsSync(member.fileInfo.filePath), member);
-    return parseCodexRecords(member.fileInfo.filePath, records, member.fileInfo, {
+  const summary = await parseCodexSessionSummaryFile(source.sourceFilePath, fileInfo);
+  const childSummaries: CodexParsedSession[] = [];
+  for (const member of logical.members) {
+    if (!member.isSubagent || member.fileInfo.filePath === logical.root.filePath) continue;
+    const records = scopeCodexSubagentRecords(await readCodexSummaryRecords(member.fileInfo.filePath), member);
+    const parsed = parseCodexRecords(member.fileInfo.filePath, records, member.fileInfo, {
+      summaryOnly: true,
       subagent: subagentDisplay(member),
     });
-  });
+    parsed.detail.messages = [];
+    childSummaries.push(parsed);
+  }
   const nativeProjectId = getProjectNativeId(summary.cwd, source.sourceFilePath);
   const projectRouteId = qualifyProjectId('codex', nativeProjectId);
   const routeId = makeRouteId('codex', summary.nativeId);
@@ -442,7 +483,7 @@ export function buildLightweightSessionSummary(source: SessionSummarySource): Ca
     projectRouteId,
     projectName: summary.cwd ? summary.cwd.split(/[\\/]/).filter(Boolean).at(-1) || 'codex' : 'codex',
     sourceFilePath: source.sourceFilePath,
-    sourceFilePaths: logical.members.map(member => member.fileInfo.filePath),
+    sourceFilePaths: logicalSourcePaths(logical),
     sourceSignature: source.sourceSignature,
     createdAt: summary.createdAt,
     updatedAt,

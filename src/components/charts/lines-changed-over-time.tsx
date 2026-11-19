@@ -2,7 +2,8 @@
 
 import { useMemo } from 'react';
 import {
-  Bar, BarChart, CartesianGrid, Legend, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, ReferenceLine, ResponsiveContainer,
+  Tooltip, usePlotArea, XAxis, YAxis, type CurveProps,
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,6 +25,22 @@ interface ChartRow {
   fileCount: number;
   editCount: number;
   sessionCount: number;
+}
+
+// A dense history needs just two SVG paths. Recharts supplies the scaled
+// points and keeps its usual axes, legend, keyboard navigation and tooltips.
+function ChangeBarSeries({ points, stroke, domain, removed }: Pick<CurveProps, 'points' | 'stroke'> & {
+  domain: [number, number];
+  removed?: boolean;
+}) {
+  const plot = usePlotArea();
+  if (!plot || !points?.length || domain[1] === domain[0]) return null;
+  const baseline = plot.y + plot.height * domain[1] / (domain[1] - domain[0]);
+  const barWidth = plot.width / points.length * 0.4;
+  const path = points.map(({ x, y }) => x === null || y === null ? '' :
+    `M${removed ? x : x - barWidth},${baseline}V${y}h${barWidth}V${baseline}Z`,
+  ).join('');
+  return <path d={path} fill={stroke} />;
 }
 
 export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: LinesChangedOverTimeProps) {
@@ -54,6 +71,11 @@ export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: Lin
     () => chartData.some(day => day.changedLines > 0),
     [chartData],
   );
+  const dense = chartData.length > 64;
+  const Chart = dense ? ComposedChart : BarChart;
+  const domain = useMemo(() => chartData.reduce<[number, number]>((bounds, row) => [
+    Math.min(bounds[0], row.removedLines), Math.max(bounds[1], row.addedLines),
+  ], [0, 0]), [chartData]);
 
   return (
     <Card className="border-border/50 shadow-sm">
@@ -64,15 +86,17 @@ export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: Lin
         <div className="h-[300px]">
           {hasTrackedChanges ? (
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
+              <Chart data={chartData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis
+                  scale={dense ? 'band' : 'auto'}
                   dataKey="date"
                   tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
+                  domain={dense ? domain : undefined}
                   tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
                   axisLine={false}
                   tickLine={false}
@@ -94,9 +118,18 @@ export function LinesChangedOverTime({ data, buckets, granularity = 'day' }: Lin
                 />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <ReferenceLine y={0} stroke="var(--border)" />
-                <Bar dataKey="addedLines" name="Added" fill="#3fa66b" radius={[4, 4, 0, 0]} isAnimationActive={false} />
-                <Bar dataKey="removedLines" name="Removed" fill="#d85a5a" radius={[0, 0, 4, 4]} isAnimationActive={false} />
-              </BarChart>
+                {dense ? (
+                  <>
+                    <Line dataKey="addedLines" name="Added" stroke="#3fa66b" legendType="rect" shape={<ChangeBarSeries domain={domain} />} dot={false} activeDot={false} isAnimationActive={false} />
+                    <Line dataKey="removedLines" name="Removed" stroke="#d85a5a" legendType="rect" shape={<ChangeBarSeries domain={domain} removed />} dot={false} activeDot={false} isAnimationActive={false} />
+                  </>
+                ) : (
+                  <>
+                    <Bar dataKey="addedLines" name="Added" fill="#3fa66b" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                    <Bar dataKey="removedLines" name="Removed" fill="#d85a5a" radius={[0, 0, 4, 4]} isAnimationActive={false} />
+                  </>
+                )}
+              </Chart>
             </ResponsiveContainer>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">

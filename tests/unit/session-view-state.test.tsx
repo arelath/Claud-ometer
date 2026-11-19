@@ -202,7 +202,6 @@ function Harness({
           view.state.unseenMessageCount,
           view.state.groupedMessages.length,
           view.state.minimapSegments.length,
-          view.state.minimapViewport.heightPct.toFixed(0),
           view.actions.hasDiffForPath('SRC\\APP.ts') ? 'has-diff' : 'no-has-diff',
         ].join('|')}
       </output>

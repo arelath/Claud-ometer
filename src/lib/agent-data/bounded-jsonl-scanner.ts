@@ -101,6 +101,7 @@ export function scanBoundedJsonlRecords<T = unknown>(
   let carry = Buffer.alloc(0);
   let nextOffset = startOffset;
   let partialTrailingRecord = false;
+  let batchComplete = false;
   let error: string | undefined;
 
   try {
@@ -125,7 +126,10 @@ export function scanBoundedJsonlRecords<T = unknown>(
           error = `JSONL record at ${recordStartOffset} exceeds ${maxRecordBytes} bytes`;
           break;
         }
-        if (records.length >= maxRecords || (records.length > 0 && recordEndOffset - startOffset > maxBytes)) break;
+        if (records.length >= maxRecords || (records.length > 0 && recordEndOffset - startOffset > maxBytes)) {
+          batchComplete = true;
+          break;
+        }
         let lineBuffer = combined.subarray(segmentStart, index);
         if (lineBuffer.at(-1) === 0x0d) lineBuffer = lineBuffer.subarray(0, lineBuffer.length - 1);
         const line = lineBuffer.toString('utf8');
@@ -149,13 +153,16 @@ export function scanBoundedJsonlRecords<T = unknown>(
 
       if (error) break;
       carry = combined.subarray(segmentStart);
+      // The next complete record belongs to the next batch. Reading more here
+      // would accumulate unrelated lines and falsely trip the per-record cap.
+      if (batchComplete) break;
       if (carry.length > maxRecordBytes) {
         error = `JSONL record at ${recordStartOffset} exceeds ${maxRecordBytes} bytes`;
         break;
       }
       if (records.length >= maxRecords || nextOffset - startOffset >= maxBytes) break;
     }
-    partialTrailingRecord = readPosition >= endOffset && carry.length > 0 && carry.indexOf(0x0a) < 0;
+    partialTrailingRecord = !batchComplete && readPosition >= endOffset && carry.length > 0 && carry.indexOf(0x0a) < 0;
   } finally {
     fs.closeSync(fd);
   }

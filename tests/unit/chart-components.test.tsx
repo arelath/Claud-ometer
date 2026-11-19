@@ -141,7 +141,7 @@ describe('chart components', () => {
   it('renders cost over time using precomputed model costs', () => {
     renderWithProviders(<CostChart data={dailyModelTokens} />);
 
-    expect(screen.getByText('Estimated Usage Over Time')).toBeInTheDocument();
+    expect(screen.getByText('Usage Cost Over Time')).toBeInTheDocument();
     const areaKeys = screen.getAllByTestId('mock-recharts-part').map(node => node.getAttribute('data-key'));
     expect(areaKeys.filter(key => key === 'Opus 4')).toHaveLength(1);
     expect(areaKeys).toContain('Sonnet 4');
@@ -153,6 +153,15 @@ describe('chart components', () => {
     expect(tooltip.getByText('Haiku 4').closest('li')).toHaveTextContent('Haiku 4 : $0.10');
     expect(tooltip.queryByText('Opus 4')).not.toBeInTheDocument();
     expect(tooltip.queryByText('$0.00')).not.toBeInTheDocument();
+  });
+
+  it('includes recorded costs in the cost chart without inventing tokens', () => {
+    renderWithProviders(<CostChart data={[{
+      date: '2026-09-16', tokensByModel: { unknown: 0 },
+      costsByModel: { unknown: { api: 0.40530656, conservative: 0.40530656, subscription: 0.40530656 } },
+    }]} />);
+    const areaKeys = screen.getAllByTestId('mock-recharts-part').map(node => node.getAttribute('data-key'));
+    expect(areaKeys).toContain('unknown');
   });
 
   it('renders lines changed over time', () => {

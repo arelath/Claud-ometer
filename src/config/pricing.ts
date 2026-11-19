@@ -1,4 +1,5 @@
 import litellmPricing from './litellm-pricing.generated.json';
+import openaiPricing from './openai-pricing.json';
 
 export interface ModelPricing {
   provider?: 'anthropic' | 'openai';
@@ -21,7 +22,17 @@ export const LITELLM_PRICING_SOURCE = {
   updatedAt: pricingSnapshot.updatedAt,
 };
 
-export const MODEL_PRICING: Record<string, ModelPricing> = pricingSnapshot.models;
+export const OPENAI_PRICING_SOURCE = {
+  source: openaiPricing.source,
+  verifiedAt: openaiPricing.verifiedAt,
+};
+
+// Official Standard short-context rates supplement the generated catalog.
+// Keep them separate so pricing:update cannot erase models missing in LiteLLM.
+export const MODEL_PRICING: Record<string, ModelPricing> = {
+  ...pricingSnapshot.models,
+  ...(openaiPricing.models as Record<string, ModelPricing>),
+};
 const MODEL_PRICING_ENTRIES = Object.entries(MODEL_PRICING);
 const MODEL_PRICING_ALIASES: Record<string, string> = {
   'cursor-auto': 'claude-sonnet-4-5',
@@ -112,6 +123,13 @@ const CLAUDE_MODEL_COLORS: Record<'opus' | 'sonnet' | 'haiku', string> = {
 };
 
 const OPENAI_MODEL_COLOR_RULES: Array<{ pattern: RegExp; color: string }> = [
+  { pattern: /^gpt-6\.2-astra\b/, color: '#5741B4' },
+  { pattern: /^gpt-6\.2-sol\b/, color: '#237CB6' },
+  { pattern: /^gpt-6\.1-terra\b/, color: '#A66C36' },
+  { pattern: /^gpt-6\.1-sol\b/, color: '#00B894' },
+  { pattern: /^gpt-6-astra\b/, color: '#7158E2' },
+  { pattern: /^gpt-6-sol\b/, color: '#00856A' },
+  { pattern: /^gpt-6-luna\b/, color: '#45C4B0' },
   { pattern: /^gpt-5\.5-pro\b/, color: '#0E7C66' },
   { pattern: /^gpt-5\.5\b/, color: '#10A37F' },
   { pattern: /^gpt-5\.4-pro\b/, color: '#2664B8' },
@@ -360,7 +378,11 @@ function getPricingKeyScore(model: string): { major: number; minor: number; date
   let major = 0;
   let minor = 0;
 
-  if (familyIndex === 1) {
+  const gptVersion = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(normalizeModelId(model));
+  if (gptVersion) {
+    major = Number(gptVersion[1]);
+    minor = Number(gptVersion[2] || 0);
+  } else if (familyIndex === 1) {
     major = parseVersionPart(parts[2]);
     minor = parseVersionPart(parts[3]);
   } else if (familyIndex > 1) {

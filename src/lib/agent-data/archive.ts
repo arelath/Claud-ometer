@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import type { AgentKind } from './types';
 import { getLiveCursorUserDir } from './data-source';
+import { readCodexPrefix } from './providers/codex/io';
 import { discoverCursorChatSessions } from './providers/cursor/state-db';
 
 export const AGENT_ARCHIVE_ROOT = 'agent-data';
@@ -124,17 +125,6 @@ function normalizeCodexProjectId(source: string): string {
   return source.replace(/^[A-Za-z]:/, match => match[0]).replace(/[\\/:]+/g, '-').replace(/^-+|-+$/g, '') || 'codex';
 }
 
-function readFilePrefix(filePath: string, maxBytes = 128 * 1024): string {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(maxBytes);
-    const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
-    return buffer.subarray(0, bytesRead).toString('utf-8');
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 function getOptionalString(record: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -146,8 +136,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function getCodexProjectIdFromSessionFile(filePath: string, sessionsDir: string): string {
-  for (const line of readFilePrefix(filePath).split(/\r?\n/)) {
+async function getCodexProjectIdFromSessionFile(filePath: string, sessionsDir: string): Promise<string> {
+  const prefix = await readCodexPrefix(filePath, 128 * 1024);
+  for (const line of prefix.text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const record = JSON.parse(line);
@@ -165,7 +156,7 @@ function getCodexProjectIdFromSessionFile(filePath: string, sessionsDir: string)
   return normalizeCodexProjectId(fallback);
 }
 
-export function countCodexData(codexDir: string): { projectCount: number; sessionCount: number } {
+export async function countCodexData(codexDir: string): Promise<{ projectCount: number; sessionCount: number }> {
   const sessionsDir = path.join(codexDir, 'sessions');
   if (!fs.existsSync(sessionsDir)) return { projectCount: 0, sessionCount: 0 };
 
@@ -177,9 +168,10 @@ export function countCodexData(codexDir: string): { projectCount: number; sessio
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const entryPath = path.join(current, entry.name);
       if (entry.isDirectory()) stack.push(entryPath);
-      else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      else if (entry.isFile() && /\.jsonl(?:\.zst)?$/.test(entry.name)) {
+        if (entry.name.endsWith('.zst') && fs.existsSync(entryPath.slice(0, -4))) continue;
         sessionCount++;
-        projectIds.add(getCodexProjectIdFromSessionFile(entryPath, sessionsDir));
+        projectIds.add(await getCodexProjectIdFromSessionFile(entryPath, sessionsDir));
       }
     }
   }

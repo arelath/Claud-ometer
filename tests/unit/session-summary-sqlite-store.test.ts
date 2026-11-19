@@ -16,7 +16,8 @@ import {
   readSessionSummaryIndexCache,
   writeSessionIndexerRuntimeStatus,
 } from '@/lib/agent-data/session-summary-sqlite-store';
-import { getSessionsSql } from '@/lib/agent-data/analytics-sql';
+import { getDashboardStatsSql, getProjectsSql, getSessionsSql, getSessionSummarySql } from '@/lib/agent-data/analytics-sql';
+import { getCachedCostAnalytics } from '@/lib/agent-data/analytics';
 import { sourceSummaryCacheKey, writeSessionSummaryCache } from '@/lib/agent-data/session-summary-cache';
 import type { AgentDataProvider } from '@/lib/agent-data/provider';
 import { SESSION_SUMMARY_CACHE_VERSION, type CachedSessionSummary, type SessionSummarySource } from '@/lib/agent-data/session-summary';
@@ -170,6 +171,99 @@ sqliteDescribe('SQLite session summary index store', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('backfills hourly analytics from existing events and keeps published views current', () => {
+    const source = makeSource();
+    const summary = makeSummary();
+    const usage = summary.usageEvents![0];
+    summary.usageEvents = [
+      usage,
+      { ...usage, timestamp: '2026-05-08T10:59:59.000Z' },
+      { ...usage, timestamp: '2026-05-09T10:00:00.000Z' },
+    ];
+    const providers = [{ kind: 'claude' } as AgentDataProvider];
+    const range = { start: '2026-05-08', end: '2026-05-08', timeZone: 'America/Los_Angeles', granularity: 'hour' as const };
+    commitSessionSummaryIndexSource({ source, summary });
+    const db = openWritableDatabase(getSessionSummaryIndexPath());
+    try {
+      db.exec('DROP TABLE hourly_usage; DROP TABLE hourly_changes');
+    } finally {
+      db.close();
+    }
+    const legacyStats = getDashboardStatsSql(providers, range);
+    const legacyProjects = getProjectsSql(providers, range);
+    expect(legacyStats).toMatchObject({ totalMessages: 2, hourCounts: { '3': 2 } });
+    expect(legacyProjects?.[0].lastActive).toBe('2026-05-08T10:59:59.000Z');
+    initializeSessionSummaryIndexWriter();
+    expect(getDashboardStatsSql(providers, range)).toEqual(legacyStats);
+    expect(getProjectsSql(providers, range)).toEqual(legacyProjects);
+    const original = getCachedCostAnalytics(providers, range);
+    expect(getCachedCostAnalytics(providers, range)).toBe(original);
+    commitSessionSummaryIndexSource({ source, summary: makeSummary() });
+    const updated = getCachedCostAnalytics(providers, range);
+    expect(updated.stats.totalMessages).toBe(1);
+    expect(updated.projects[0].lastActive).toBe(usage.timestamp);
+    finalizeSessionSummaryIndexDiscovery(['claude'], []);
+    expect(getCachedCostAnalytics(providers, range).projects).toEqual([]);
+  });
+
+  it.each([
+    ['gpt-6-astra', 2.425, 2.05875, 2.0305],
+    ['gpt-6-sol', 0.485, 0.41175, 0.4061],
+    ['gpt-6-luna', 0.02425, 0.0205875, 0.020305],
+    ['gpt-6.1-sol', 0.48, 0.4115, 0.40605],
+    ['gpt-6.2-sol', 0.48, 0.4115, 0.40605, 0],
+    ['claude-opus-5-5', 0.96, 0.823, 0.8121, 1.2125],
+  ] as const)('recalculates indexed %s estimates in SQL analytics and session lists', (model, api, conservative, subscription, previousApi = 0) => {
+    const source = makeSource({ provider: 'codex' });
+    const summary = makeSummary({
+      provider: 'codex', model, models: [model],
+      tokenTotals: { input: 100_000, output: 20_000, cacheRead: 50_000, cacheWrite: 30_000 },
+      modelUsage: { [model]: { inputTokens: 100_000, outputTokens: 20_000, cacheReadInputTokens: 50_000, cacheCreationInputTokens: 30_000 } },
+      usageEvents: [{
+        timestamp: '2026-05-08T10:00:01.000Z', role: 'assistant', model,
+        messageCount: 1, userMessageCount: 0, assistantMessageCount: 1, toolCallCount: 1,
+        inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 50_000, cacheWriteTokens: 30_000,
+        reasoningOutputTokens: 0, estimatedCosts: { api: previousApi, conservative: 0, subscription: 0 },
+      }],
+    });
+    commitSessionSummaryIndex({ touchedProviders: ['codex'], discoveredSources: [source], updatedSummaries: [summary] });
+    const providers = [{ kind: 'codex' } as AgentDataProvider];
+    const stats = getDashboardStatsSql(providers);
+    const sessions = getSessionsSql(providers);
+    const projects = getProjectsSql(providers);
+    for (const costs of [stats?.estimatedCosts, stats?.modelUsage[model].estimatedCosts, sessions?.sessions[0].estimatedCosts, projects?.[0].estimatedCosts]) {
+      expect(costs?.api).toBeCloseTo(api, 10);
+      expect(costs?.conservative).toBeCloseTo(conservative, 10);
+      expect(costs?.subscription).toBeCloseTo(subscription, 10);
+    }
+  });
+
+  it.each([0, 1_000_000])('preserves recorded costs with %i indexed input tokens', (inputTokens) => {
+    const source = makeSource({ provider: 'copilot' });
+    const recordedUsageCost = { usd: 0.40530656, credits: 40.530656, timestamp: '2026-05-08T10:00:01.000Z' };
+    const model = 'gpt-6.2-sol';
+    const summary = makeSummary({
+      provider: 'copilot', model, models: [model],
+      tokenTotals: { input: inputTokens, output: 0, cacheRead: 0, cacheWrite: 0 },
+      modelUsage: inputTokens ? { [model]: { inputTokens, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } } : {},
+      usageEvents: undefined,
+      recordedUsageCost,
+    });
+    commitSessionSummaryIndex({ touchedProviders: ['copilot'], discoveredSources: [source], updatedSummaries: [summary] });
+    const db = openWritableDatabase(getSessionSummaryIndexPath());
+    try {
+      db.run("UPDATE session_summaries SET payload_json = '{not valid json'");
+    } finally {
+      db.close();
+    }
+    const providers = [{ kind: 'copilot' } as AgentDataProvider];
+    const expectedCosts = { api: 0.40530656, conservative: 0.40530656, subscription: 0.40530656 };
+    expect(getSessionSummarySql(providers, summary.routeId)).toMatchObject({ recordedUsageCost, estimatedCosts: expectedCosts });
+    expect(getSessionsSql(providers)?.sessions[0]).toMatchObject({ recordedUsageCost, estimatedCosts: expectedCosts });
+    expect(getDashboardStatsSql(providers)).toMatchObject({ totalTokens: inputTokens, estimatedCosts: expectedCosts });
+    expect(getProjectsSql(providers)?.[0]).toMatchObject({ estimatedCosts: expectedCosts });
   });
 
   it('serves SQL session pages from scalar rows without reading payload JSON', () => {
@@ -789,6 +883,9 @@ sqliteDescribe('SQLite session summary index store', () => {
     expect(getRevision()).toBe(revision);
     const db = openDatabase(getSessionSummaryIndexPath());
     try {
+      expect(db.get('SELECT message_count, activity_count FROM hourly_usage')).toEqual({
+        message_count: 2, activity_count: 1,
+      });
       expect(db.get<{ count: number }>(
         "SELECT COUNT(*) AS count FROM usage_events WHERE component_key = 'root' AND record_identity = '10'",
       )?.count).toBe(1);
